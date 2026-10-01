@@ -1,6 +1,9 @@
 use settler_bots::arena::{bot_seed, play_game, run_match, GameRecord, MAX_SEEDS};
 use settler_bots::{make_bot, Bot};
 use settler_engine::{Action, GameConfig, Observation};
+use settler_bots::greedy::GreedyBot;
+use settler_engine::{Event, Game, PlayerId};
+use std::sync::{Arc, Mutex};
 
 fn per_seed_rates(records: &[GameRecord]) -> Vec<f64> {
     records
@@ -135,4 +138,75 @@ fn greedy_beats_random_decisively() {
     let recs = run_match("greedy", "random", 0..200, GameConfig::default(), 8).unwrap();
     let z = z_vs_quarter(&per_seed_rates(&recs));
     assert!(z > 3.0, "z = {z}");
+}
+
+/// GreedyBot that records the events it is shown and appends its moves to a shared list.
+struct Recorder {
+    inner: GreedyBot,
+    viewer: Option<PlayerId>,
+    seen: Arc<Mutex<Vec<Event>>>,
+    moves: Arc<Mutex<Vec<Action>>>,
+}
+
+impl Bot for Recorder {
+    fn name(&self) -> &'static str {
+        "recorder"
+    }
+
+    fn observe(&mut self, viewer: PlayerId, events: &[Event]) {
+        assert!(self.viewer.map_or(true, |v| v == viewer), "a seat's viewer never changes");
+        self.viewer = Some(viewer);
+        self.seen.lock().unwrap().extend_from_slice(events);
+    }
+
+    fn act(&mut self, obs: &Observation, legal: &[Action]) -> Action {
+        let a = self.inner.act(obs, legal);
+        self.moves.lock().unwrap().push(a);
+        a
+    }
+}
+
+#[test]
+fn each_bot_is_shown_its_own_redacted_log_before_it_moves() {
+    for seed in 0..5 {
+        let moves = Arc::new(Mutex::new(Vec::new()));
+        let seen: Vec<Arc<Mutex<Vec<Event>>>> = (0..4).map(|_| Arc::new(Mutex::new(Vec::new()))).collect();
+        let mut bots: Vec<Box<dyn Bot>> = (0..4)
+            .map(|p| {
+                Box::new(Recorder {
+                    inner: GreedyBot::new(0),
+                    viewer: None,
+                    seen: seen[p].clone(),
+                    moves: moves.clone(),
+                }) as Box<dyn Bot>
+            })
+            .collect();
+        play_game(seed, GameConfig::default(), &mut bots);
+
+        // Replay the same moves with the logging Game and note each seat's log length at its last move.
+        let mut g = Game::new(seed, GameConfig::default());
+        let mut at_last_move = [0usize; 4];
+        for &a in moves.lock().unwrap().iter() {
+            let actor = g.state().current_actor() as usize;
+            at_last_move[actor] = g.log().len();
+            g.apply(a).unwrap();
+        }
+        assert!(g.state().is_over());
+        for p in 0..4 {
+            let shown = seen[p].lock().unwrap();
+            assert_eq!(shown.len(), at_last_move[p], "seat {p} saw every event up to its last move");
+            assert_eq!(&shown[..], &g.log_for(p as u8)[..shown.len()], "seat {p} saw its redacted log");
+        }
+    }
+}
+
+#[test]
+fn split_seeds_covers_the_range_in_order() {
+    use settler_bots::arena::split_seeds;
+    let parts = split_seeds(10..33, 4);
+    assert_eq!(parts.first().unwrap().start, 10);
+    assert_eq!(parts.last().unwrap().end, 33);
+    assert!(parts.windows(2).all(|w| w[0].end == w[1].start));
+    assert!(split_seeds(5..5, 3).is_empty());
+    assert_eq!(split_seeds(0..3, 100).len(), 3);
 }

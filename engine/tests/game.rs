@@ -404,3 +404,18 @@ fn state_rejects_chance_for_an_action_without_one() {
         &mut NoEvents,
     );
 }
+
+#[test]
+fn the_full_log_is_unredacted_and_log_for_redacts_it() {
+    let mut g = Game::new(5, GameConfig::default());
+    let mut rng = settler_engine::rng::Rng::new(5);
+    while !g.state().is_over() && g.log().len() < 400 {
+        let legal = g.legal_actions();
+        g.apply(legal[rng.below(legal.len() as u32) as usize]).unwrap();
+    }
+    for viewer in 0..4u8 {
+        let redacted: Vec<Event> = g.log().iter().map(|e| e.redacted_for(viewer)).collect();
+        assert_eq!(redacted, g.log_for(viewer));
+    }
+    assert!(g.log().iter().all(|e| !matches!(e, Event::Stole { resource: None, .. })));
+}

@@ -4,12 +4,22 @@ pub mod arena;
 pub mod greedy;
 pub mod random;
 
-use settler_engine::{Action, Observation};
+use settler_engine::{Action, Event, Observation, PlayerId};
 
 pub trait Bot: Send {
     fn name(&self) -> &'static str;
+
+    /// Events since this bot last moved, as `viewer` (its seat) may see them, in log order. The
+    /// arena calls this before every `act`; bots that keep no history ignore it.
+    fn observe(&mut self, _viewer: PlayerId, _events: &[Event]) {}
+
     /// Choose one of `legal` (never empty) for `obs.viewer`, the player who must act now.
     fn act(&mut self, obs: &Observation, legal: &[Action]) -> Action;
+
+    /// Named counters for reports and tests, e.g. how often a belief had to be rebuilt.
+    fn diagnostics(&self) -> Vec<(&'static str, u64)> {
+        Vec::new()
+    }
 }
 
 pub const BOT_NAMES: &[&str] = &["random", "greedy"];

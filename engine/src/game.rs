@@ -101,4 +101,9 @@ impl Game {
     pub fn log_for(&self, viewer: PlayerId) -> Vec<Event> {
         self.log.iter().map(|e| e.redacted_for(viewer)).collect()
     }
+
+    /// The full event log with nothing redacted, for tests and tools. Bots get `log_for`.
+    pub fn log(&self) -> &[Event] {
+        &self.log
+    }
 }
