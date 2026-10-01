@@ -20,8 +20,9 @@ Rule differences that affect these numbers:
 - **Trade menus differ.** catan-rl offers 1–2 of one resource for 1 of another (≤ 40 offers);
   ours offers any bundle of ≤ 2 cards for any disjoint bundle of ≤ 2 cards (≤ 400 offers).
   Random players offer often, so this changes both steps/game and per-step cost.
-- **Catanatron's random player never offers domestic trades** and discards are random
-  (no discard decisions), so its games are closest to our trades-off config.
+- **Catanatron's random player never offers domestic trades.** It chooses its discards one
+  card per action, as ours does (Catanatron 3.3; only pre-3.0 discarded at random), so its
+  games are closest to our trades-off config.
 - **catan-rl allows winning at 10 VP on any turn**; ours wins only on the player's own turn.
 
 Reading: with trades off we are ~220× faster per step than Catanatron and within ~8% of
