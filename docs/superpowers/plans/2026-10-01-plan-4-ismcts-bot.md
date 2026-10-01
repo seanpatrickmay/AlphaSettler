@@ -295,6 +295,8 @@ git commit -m "bots: Bot::observe and diagnostics; arena feeds each seat its red
 
 ### Task 2: The `search` crate and the belief tracker
 
+> **Amended during execution (controller rulings, see the SDD ledger):** `Event::MonopolyTaken` now carries `from: [u8; 4]` (cards taken from each player) and the golden trace was re-pinned after a states-only hash proved the rules unchanged; the belief is the **exact** posterior (a weighted, sorted list of distinct joint hands, `DEFAULT_MAX_STATES = 65_536`, `states()`, `sample_hands()`, `truncations()`) instead of the particle filter below, which died out in long games. The code below is the original plan text; the committed code follows the amendment.
+
 **Files:**
 - Modify: `Cargo.toml` (workspace members)
 - Create: `search/Cargo.toml`, `search/src/lib.rs`, `search/src/belief.rs`
@@ -992,7 +994,7 @@ git commit -m "search: crate skeleton and particle-filter belief over hidden ste
 - Test: `engine/tests/snapshot.rs` (append), `search/tests/world.rs`
 
 **Interfaces:**
-- Consumes: `Belief::{check, particles, viewer}` (Task 2).
+- Consumes: `Belief::{check, states, sample_hands, viewer}` (Task 2, as amended: the belief is an exact weighted list of joint hands).
 - Produces: `State::reseed(&mut self, seed: u64)`; `settler_search::WorldSampler` with `new(obs: &Observation, belief: &Belief) -> Result<WorldSampler, String>` and `sample(&self, belief: &Belief, rng: &mut Rng) -> State`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1022,7 +1024,7 @@ mod common;
 use common::*;
 use settler_engine::rng::Rng;
 use settler_engine::*;
-use settler_search::{Belief, WorldSampler};
+use settler_search::{Belief, WorldSampler, DEFAULT_MAX_STATES};
 
 fn trade_phase(p: Phase) -> bool {
     matches!(p, Phase::TradeResponse | Phase::TradeConfirm)
@@ -1033,7 +1035,7 @@ fn sampled_worlds_are_valid_and_look_exactly_like_the_observation() {
     let games = (0..24).map(|s| (s, no_trades())).chain((24..30).map(|s| (s, GameConfig::default())));
     let mut checked = 0;
     for (seed, config) in games {
-        let mut beliefs: Vec<Belief> = (0..4).map(|p| Belief::new(p, 32, seed)).collect();
+        let mut beliefs: Vec<Belief> = (0..4).map(|p| Belief::new(p, DEFAULT_MAX_STATES, seed)).collect();
         let mut seen = [0usize; 4];
         let mut rng = Rng::new(seed);
         let mut n = 0;
@@ -1233,7 +1235,7 @@ impl WorldSampler {
         // The template's hidden parts come from one sample; `sample` overwrites them each time.
         let mut rng = Rng::new(0x7E4D);
         let deal = sampler.deal(obs.current, obs.public_vp[obs.current as usize], obs.config.vp_to_win, &mut rng)?;
-        let hands = belief.particles()[0].hands;
+        let hands = belief.states()[0].0.hands;
         let snap = Snapshot {
             board: obs.board,
             robber: obs.robber,
@@ -1297,12 +1299,11 @@ impl WorldSampler {
         Err(format!("no dev-card deal keeps player {current} below {vp_to_win} VP"))
     }
 
-    /// One world: a uniformly chosen particle's hands, a fresh deal of the unseen dev cards, and
+    /// One world: hands drawn from the belief by probability, a fresh deal of the unseen dev cards, and
     /// a fresh random seed.
     pub fn sample(&self, belief: &Belief, rng: &mut Rng) -> State {
         let mut w = self.template;
-        let particles = belief.particles();
-        let hands = particles[rng.below(particles.len() as u32) as usize].hands;
+        let hands = belief.sample_hands(rng);
         let current = w.current;
         let deal = self
             .deal(current, w.public_vp(current as usize), w.config.vp_to_win, rng)
@@ -2557,7 +2558,7 @@ use crate::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
 use crate::Bot;
 use settler_engine::rng::{mix, Rng};
 use settler_engine::{Action, Event, Observation, Phase, PlayerId};
-use settler_search::{search, search_actions, Belief, SearchConfig, SearchResult, DEFAULT_PARTICLES};
+use settler_search::{search, search_actions, Belief, SearchConfig, SearchResult, DEFAULT_MAX_STATES};
 
 pub const DEFAULT_SIMULATIONS: u32 = 1000;
 pub const MAX_SIMULATIONS: u32 = 1_000_000;
@@ -2626,7 +2627,7 @@ impl Bot for IsmctsBot {
 
     fn observe(&mut self, viewer: PlayerId, events: &[Event]) {
         if self.belief.as_ref().map_or(true, |b| b.viewer() != viewer) {
-            self.belief = Some(Belief::new(viewer, DEFAULT_PARTICLES, mix(self.seed, BELIEF_SALT)));
+            self.belief = Some(Belief::new(viewer, DEFAULT_MAX_STATES, mix(self.seed, BELIEF_SALT)));
         }
         let ok = self.belief.as_mut().expect("set above").observe(events).is_ok();
         if !ok {
@@ -2648,7 +2649,7 @@ impl Bot for IsmctsBot {
         let usable = self.belief.as_ref().is_some_and(|b| b.viewer() == obs.viewer && b.check(obs).is_ok());
         if !usable {
             self.resets += 1;
-            self.belief = Some(Belief::from_observation(obs, DEFAULT_PARTICLES, self.rng.next_u64()));
+            self.belief = Some(Belief::from_observation(obs, DEFAULT_MAX_STATES, self.rng.next_u64()));
         }
         let belief = self.belief.as_ref().expect("set above");
         match search(obs, legal, belief, &mut self.eval, &self.cfg, &mut self.rng) {
@@ -2668,7 +2669,7 @@ impl Bot for IsmctsBot {
     fn diagnostics(&self) -> Vec<(&'static str, u64)> {
         vec![
             ("belief_resets", self.resets),
-            ("belief_rebuilds", self.belief.as_ref().map_or(0, |b| b.rebuilds())),
+            ("belief_truncations", self.belief.as_ref().map_or(0, |b| b.truncations())),
             ("searches", self.searches),
         ]
     }
@@ -3230,11 +3231,14 @@ pub fn parse_event(v: &Bound<'_, PyAny>) -> PyResult<Event> {
             card: opt(&get("card")?, |c| parse_dev(&c.extract::<String>()?))?,
         },
         "played_dev" => Event::PlayedDev { player: player("player")?, card: parse_dev(&get("card")?.extract::<String>()?)? },
-        "monopoly_taken" => Event::MonopolyTaken {
-            player: player("player")?,
-            resource: resource("resource")?,
-            amount: int_arg::<u8>(&get("amount")?, "amount")?,
-        },
+        "monopoly_taken" => {
+            let xs = seq_arg(&get("from")?, NUM_PLAYERS, "from")?;
+            let mut from = [0u8; NUM_PLAYERS];
+            for (f, x) in from.iter_mut().zip(&xs) {
+                *f = int_arg::<u8>(x, "from")?;
+            }
+            Event::MonopolyTaken { player: player("player")?, resource: resource("resource")?, from }
+        }
         "year_of_plenty_taken" => Event::YearOfPlentyTaken { player: player("player")?, resources: hand("resources")? },
         "maritime_traded" => Event::MaritimeTraded { player: player("player")?, gave: hand("gave")?, got: hand("got")? },
         "trade_offered" => Event::TradeOffered { player: player("player")?, give: hand("give")?, get: hand("get")? },
@@ -3696,8 +3700,8 @@ def record_events(before: dict, after: dict, record, state) -> list[dict]:
     elif t == ActionType.PLAY_MONOPOLY:
         r = _res(v)
         ev.append(_played(p, "monopoly"))
-        ev.append({"type": "monopoly_taken", "player": p, "resource": RESOURCE_NAMES[r],
-                   "amount": _gain(before, after, p)[r]})
+        taken = [0 if q == p else -_gain(before, after, q)[r] for q in range(4)]
+        ev.append({"type": "monopoly_taken", "player": p, "resource": RESOURCE_NAMES[r], "from": taken})
     elif t == ActionType.MOVE_ROBBER:
         cube, victim = v[0], v[1]
         ev.append({"type": "robber_moved", "player": p, "tile": CUBE_TO_OUR_TILE[cube]})
@@ -3874,7 +3878,7 @@ fn main() {
 ```
 
 Run: `~/.cargo/bin/cargo run --release -p settler-bots --example search_speed 2000 1000`
-Expected: one line with simulations/s. Run it 3 times on an otherwise idle machine and record all three lines in `docs/perf/search.md` (machine: `sysctl -n machdep.cpu.brand_string`; commit: `git log -1 --format=%h`; config: trades off, 1,024 particles, batch 8, c_puct 1.5). Compare with the spec's rough estimate (50k–100k simulations/s) in one sentence; a miss is recorded with its measured profile reason, not hidden.
+Expected: one line with simulations/s. Run it 3 times on an otherwise idle machine and record all three lines in `docs/perf/search.md` (machine: `sysctl -n machdep.cpu.brand_string`; commit: `git log -1 --format=%h`; config: trades off, exact belief (cap 65,536 states), batch 8, c_puct 1.5). Compare with the spec's rough estimate (50k–100k simulations/s) in one sentence; a miss is recorded with its measured profile reason, not hidden.
 
 - [ ] **Step 2: Round 0 — the bot as built**
 

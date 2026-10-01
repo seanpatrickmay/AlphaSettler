@@ -56,7 +56,7 @@ Learning in Go" (arXiv:1902.10565); Brown & Sandholm, "Superhuman AI for multipl
 ```
 engine/     rules unchanged; + State::reseed and Game::log (the unredacted log, for tests)
 search/     NEW Rust crate, depends on engine only
-  belief.rs     card tracker: event log -> particles holding all four hands
+  belief.rs     card tracker: event log -> exact weighted joint hands
   world.rs      sampled worlds: a per-decision template with the hidden parts overwritten
   tree.rs       single-observer ISMCTS tree, keyed by the bot's information set
   puct.rs       selection and backup arithmetic; 4-player value vectors
@@ -98,32 +98,34 @@ purchases, maritime and domestic trades, discards (each card is public), Monopol
 Plenty. So once the outcome of each hidden steal is known, every opponent's hand follows exactly.
 The hidden resource state is one latent variable per hidden steal, with 5 possible values.
 
-The tracker is a particle filter over those latents, with the exact prior:
+The tracker holds the exact posterior over those latents, represented by what they imply: a
+weighted list of the distinct joint hands still possible.
 
-- `N` particles (config, default 1,024). Each one assigns every hidden steal an outcome, which
-  implies all three opponents' hands.
-- At a hidden steal, each particle draws the stolen resource in proportion to the victim's hand in
-  that particle. This is the engine's actual steal distribution, a uniform card from the hand.
-- When a player spends or gives cards (a build, a purchase, a trade, a discard, a Monopoly loss),
-  particles in which that player could not have done it are dropped. The survivors are an exact
-  sample of the posterior given public information.
-- If fewer than `N/8` particles survive, the tracker rebuilds: it replays the stored log from
-  scratch with rejection, up to `32·N` attempts, and fills any shortfall by resampling the survivors
-  (old and new) with replacement. Only when no particle survives at all does `observe` return an
-  error. IsmctsBot then rebuilds its belief from the observation (cards nobody can see dealt
-  uniformly) and counts a `belief_resets` diagnostic, which every arena run must report as 0.
-- Invariant: every particle's hand sizes equal the observation's `hand_counts`.
+- At a hidden steal, each state splits into one state per resource the victim may hold, weighted by
+  the victim's count of it. This is the engine's actual steal distribution, a uniform card from the
+  hand. Identical joint hands merge.
+- Every other event moves each state deterministically. A state in which a player could not have
+  done what they did (a build, a purchase, a trade, a discard, a Monopoly loss) is dropped.
+  `Event::MonopolyTaken` records the cards taken from each player, as real play shows them.
+- Nothing is sampled, so the true hands are never lost. Only if the support outgrows a cap (65,536
+  states, never reached in testing) is it resampled down; that counts a `belief_truncations`
+  diagnostic. If no state survives at all (an inconsistent feed), `observe` returns an error and
+  IsmctsBot rebuilds its belief from the observation (cards nobody can see dealt uniformly),
+  counting a `belief_resets` diagnostic that every arena run must report as 0.
+- (A particle filter was the first design. It died out in long games: one constraining event could
+  eliminate every particle, and replaying from scratch rarely recovered.)
+- Invariant: every state's hand sizes equal the observation's `hand_counts`.
 
 **Dev cards and the deck.** The unknown pool is the 25-card deck minus the viewer's own cards and
 every card played publicly. Opponents' held dev cards (only counts are visible) and the remaining
 deck order are a uniform random deal from that pool. That includes hidden VP cards, so a sampled
 world can let an opponent win before their public VP says so.
 
-**Sampling one world** (once per simulation): pick a uniform random particle, then deal the dev
+**Sampling one world** (once per simulation): draw joint hands by probability, then deal the dev
 holdings and the deck order fresh.
 
 **Not in 3a:** behavioural inference (for example, "they didn't play a knight when it was
-obvious"). Particles are uniformly weighted in 3a. 3b adds a weight per particle: the policy
+obvious"). States are weighted only by the steal distribution in 3a. 3b multiplies in the policy
 network's likelihood of the opponents' actual moves.
 
 ## 3. Search
@@ -216,7 +218,7 @@ already beats AlphaBeta, instead of starting from random play.
 **Sketched for 3b, not built here:** the observation encoding (tile, node and edge planes plus
 scalars); a 665-way policy head masked to legal moves and a 4-way value head; how inference runs on
 the Mac (Rust-native, ONNX/CoreML or batched PyTorch, benchmarked as 3b's first decision); playout
-cap randomization; policy-weighted belief particles.
+cap randomization; policy-weighted belief states.
 
 ## 5. Testing and done criteria
 
@@ -226,7 +228,7 @@ cap randomization; policy-weighted belief particles.
   - exact match (within 0.02) with a brute-force posterior, on hand-built and on random small
     histories;
   - across random games, the unredacted log replayed through the tracker reproduces every hand
-    exactly (so the true history is never ruled out), and every particle matches `hand_counts`.
+    exactly (so the true history is never ruled out), and every belief state matches `hand_counts`.
   - No in-game calibration test: random players' choices depend on their hands, and the belief
     deliberately ignores that behavioural evidence (Section 2). An in-game calibration test would
     measure the omission, not the tracker.
