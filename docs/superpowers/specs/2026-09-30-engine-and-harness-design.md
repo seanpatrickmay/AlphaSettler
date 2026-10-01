@@ -1,6 +1,6 @@
 # AlphaSettler — Sub-project 1+2: Engine & Benchmark Harness
 
-Status: design approved section-by-section 2026-09-30; awaiting full-spec review
+Status: approved 2026-09-30
 
 ## Goal
 
