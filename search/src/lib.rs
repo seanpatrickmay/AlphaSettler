@@ -4,3 +4,6 @@
 pub mod belief;
 
 pub use belief::{Belief, HandTracker, DEFAULT_MAX_STATES};
+pub mod world;
+
+pub use world::WorldSampler;

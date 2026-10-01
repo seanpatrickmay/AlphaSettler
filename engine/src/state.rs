@@ -137,6 +137,15 @@ impl State {
         }
     }
 
+    /// Replace the game seed and the steal and misc streams with the ones `State::new(seed, ..)`
+    /// would derive. Future dice follow the new seed; the board, hands, deck order and everything
+    /// else stay as they are. Search uses this so a sampled world's future is not the real game's.
+    pub fn reseed(&mut self, seed: u64) {
+        self.seed = seed;
+        self.rng_steal = Rng::new(mix(seed, STEAL_SALT));
+        self.rng_misc = Rng::new(mix(seed, MISC_SALT));
+    }
+
     /// The player who must choose the next action.
     pub fn current_actor(&self) -> PlayerId {
         match self.phase {

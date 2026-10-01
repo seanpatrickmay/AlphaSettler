@@ -341,3 +341,16 @@ fn board_validation() {
     bad.generic_port_nodes ^= 1;
     assert!(bad.validate().unwrap_err().contains("port node masks"));
 }
+
+#[test]
+fn reseed_changes_only_the_random_streams() {
+    let fresh = State::new(7, GameConfig::default());
+    let mut same = fresh;
+    same.reseed(7);
+    assert_eq!(same, fresh);
+    let mut other = fresh;
+    other.reseed(8);
+    assert_eq!(other.seed, 8);
+    assert_ne!(other.rng_steal, fresh.rng_steal);
+    assert_eq!(other.snapshot(), fresh.snapshot());
+}
