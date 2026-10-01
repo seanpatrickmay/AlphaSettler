@@ -589,6 +589,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "settler-bots"
+version = "0.1.0"
+dependencies = [
+ "settler-engine",
+]
+
+[[package]]
 name = "settler-engine"
 version = "0.1.0"
 dependencies = [
