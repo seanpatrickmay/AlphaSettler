@@ -2,7 +2,7 @@
 
 use crate::action::Action;
 use crate::events::Event;
-use crate::rules::{awards, build, robber, roll, setup};
+use crate::rules::{awards, build, dev, robber, roll, setup};
 use crate::state::{Phase, State};
 use crate::types::{DevCard, Hand, Resource, NUM_PLAYERS};
 
@@ -50,6 +50,14 @@ impl State {
             (Phase::Main, Action::BuildSettlement(n)) => build::apply_build_settlement(self, n, sink),
             (Phase::Main, Action::BuildCity(n)) => build::apply_build_city(self, n, sink),
             (Phase::Main, Action::EndTurn) => build::apply_end_turn(self, sink),
+            (Phase::PreRoll | Phase::Main, Action::PlayKnight) => dev::apply_play_knight(self, sink),
+            (Phase::Main, Action::BuyDev) => dev::apply_buy_dev(self, chance, sink),
+            (Phase::Main, Action::PlayRoadBuilding) => dev::apply_play_road_building(self, sink),
+            (Phase::Main, Action::PlayYearOfPlenty(a, b)) => dev::apply_year_of_plenty(self, a, b, sink),
+            (Phase::Main, Action::PlayMonopoly(r)) => dev::apply_monopoly(self, r, sink),
+            (Phase::RoadBuilding { roads_left }, Action::BuildRoad(e)) => {
+                dev::apply_road_building_road(self, e, roads_left, sink)
+            }
             (phase, a) => panic!("illegal action {a:?} in phase {phase:?} (chance {chance:?})"),
         }
         awards::check_win(self, sink);

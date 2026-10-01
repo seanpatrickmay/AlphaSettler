@@ -2,6 +2,7 @@
 
 pub mod awards;
 pub mod build;
+pub mod dev;
 pub mod robber;
 pub mod roll;
 pub mod setup;
