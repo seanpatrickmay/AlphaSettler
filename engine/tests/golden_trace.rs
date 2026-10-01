@@ -44,11 +44,10 @@ fn trace_hash(config: GameConfig, seeds: std::ops::Range<u64>) -> u64 {
     h.0
 }
 
-// Re-pinned 2026-10-01 for two rule fixes: every dev card may be played before rolling, and
-// Road Building needs a placeable road (Plan 3, Task 1).
-const TRADES_OFF: u64 = 2480314488515831906;
-const TRADES_ON: u64 = 7874488224759562945;
-const COMPAT: u64 = 2937732219135153055;
+// Re-pinned 2026-10-01: Event::MonopolyTaken now records cards taken from each player (Plan 4, Task 2); a states-only hash was unchanged.
+const TRADES_OFF: u64 = 15996709665636016481;
+const TRADES_ON: u64 = 1559303924781642305;
+const COMPAT: u64 = 9740859021671461209;
 
 #[test]
 fn golden_trace_trades_off() {

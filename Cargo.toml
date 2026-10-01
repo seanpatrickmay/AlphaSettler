@@ -1,6 +1,6 @@
 [workspace]
-members = ["engine", "bots", "bindings"]
-default-members = ["engine", "bots"]
+members = ["engine", "bots", "bindings", "search"]
+default-members = ["engine", "bots", "search"]
 resolver = "2"
 
 [profile.release]

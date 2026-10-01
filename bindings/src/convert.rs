@@ -349,12 +349,12 @@ pub fn event_dict<'py>(py: Python<'py>, e: &Event) -> PyResult<Bound<'py, PyDict
         Event::MonopolyTaken {
             player,
             resource,
-            amount,
+            from,
         } => {
             d.set_item("type", "monopoly_taken")?;
             d.set_item("player", player)?;
             d.set_item("resource", resource_name(resource))?;
-            d.set_item("amount", amount)?;
+            d.set_item("from", counts(&from))?;
         }
         Event::YearOfPlentyTaken { player, resources } => {
             d.set_item("type", "year_of_plenty_taken")?;

@@ -151,17 +151,17 @@ pub fn apply_year_of_plenty<S: EventSink>(s: &mut State, a: Resource, b: Resourc
 pub fn apply_monopoly<S: EventSink>(s: &mut State, r: Resource, sink: &mut S) {
     use_card(s, DevCard::Monopoly, sink);
     let p = s.current as usize;
-    let mut amount = 0u8;
+    let mut from = [0u8; NUM_PLAYERS];
     for q in 0..NUM_PLAYERS {
         if q != p {
-            amount += s.players[q].hand[r.index()];
+            from[q] = s.players[q].hand[r.index()];
             s.players[q].hand[r.index()] = 0;
         }
     }
-    s.players[p].hand[r.index()] += amount;
+    s.players[p].hand[r.index()] += from.iter().sum::<u8>();
     sink.emit(Event::MonopolyTaken {
         player: s.current,
         resource: r,
-        amount,
+        from,
     });
 }

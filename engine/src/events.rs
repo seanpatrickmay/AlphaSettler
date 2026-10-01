@@ -1,6 +1,6 @@
 //! What happened, for logs and observers. `Stole` and `BoughtDev` carry private details.
 
-use crate::types::{DevCard, Hand, PlayerId, Resource};
+use crate::types::{DevCard, Hand, PlayerId, Resource, NUM_PLAYERS};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
@@ -50,7 +50,8 @@ pub enum Event {
     MonopolyTaken {
         player: PlayerId,
         resource: Resource,
-        amount: u8,
+        /// Cards taken from each player (0 for the taker).
+        from: [u8; NUM_PLAYERS],
     },
     YearOfPlentyTaken {
         player: PlayerId,
