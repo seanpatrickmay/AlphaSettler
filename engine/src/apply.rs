@@ -2,7 +2,7 @@
 
 use crate::action::Action;
 use crate::events::Event;
-use crate::rules::{awards, build, dev, maritime, robber, roll, setup};
+use crate::rules::{awards, build, dev, maritime, robber, roll, setup, trade};
 use crate::state::{Phase, State};
 use crate::types::{DevCard, Hand, Resource, NUM_PLAYERS};
 
@@ -59,6 +59,11 @@ impl State {
                 dev::apply_road_building_road(self, e, roads_left, sink)
             }
             (Phase::Main, Action::MaritimeTrade { give, get }) => maritime::apply(self, give, get, sink),
+            (Phase::Main, Action::OfferTrade { give, get }) => trade::apply_offer(self, give, get, sink),
+            (Phase::TradeResponse, Action::AcceptTrade) => trade::apply_response(self, true, sink),
+            (Phase::TradeResponse, Action::RejectTrade) => trade::apply_response(self, false, sink),
+            (Phase::TradeConfirm, Action::ConfirmTrade(p)) => trade::apply_confirm(self, p, sink),
+            (Phase::TradeConfirm, Action::CancelTrade) => trade::apply_cancel(self, sink),
             (phase, a) => panic!("illegal action {a:?} in phase {phase:?} (chance {chance:?})"),
         }
         awards::check_win(self, sink);

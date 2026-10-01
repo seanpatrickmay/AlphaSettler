@@ -7,3 +7,4 @@ pub mod maritime;
 pub mod robber;
 pub mod roll;
 pub mod setup;
+pub mod trade;
