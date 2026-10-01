@@ -97,3 +97,20 @@ fn full_game_log_is_replayable_from_seed() {
     assert_eq!(a.state(), b.state());
     assert_eq!(a.log_for(0), b.log_for(0));
 }
+
+#[test]
+fn out_of_range_actions_are_rejected_not_aliased() {
+    let mut s = blank(1, Phase::Main);
+    s.players[0].settlements = 1u64 << 0;
+    give(&mut s, 0, CITY_COST);
+    let mut g = Game::from_state(s);
+    assert!(g.legal_actions().contains(&Action::BuildCity(0)));
+    let before = *g.state();
+    let err = g.apply(Action::BuildSettlement(54)).unwrap_err();
+    assert_eq!(err.action, Action::BuildSettlement(54));
+    assert_eq!(*g.state(), before);
+    let err = g.apply(Action::StealFrom(4)).unwrap_err();
+    assert_eq!(err.action, Action::StealFrom(4));
+    assert_eq!(*g.state(), before);
+    assert!(g.log_for(0).is_empty());
+}

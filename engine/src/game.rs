@@ -44,9 +44,17 @@ impl Game {
         self.apply_forced(a, None)
     }
 
+    /// Apply `a` if it is legal, otherwise return `IllegalAction` and leave the game untouched.
+    ///
+    /// `chance` forces the outcome of a random event (dice, steal, dev draw). It is trusted
+    /// input meant for tests and replay: an impossible forced outcome panics.
     pub fn apply_forced(&mut self, a: Action, chance: Option<Chance>) -> Result<(), IllegalAction> {
-        // Round-trip through the encoding to normalize Year of Plenty order.
-        let a = Action::decode(a.encode()).unwrap_or(a);
+        // Year of Plenty is unordered: canonicalize to ascending resource order.
+        // Every other action passes through untouched so out-of-range payloads are rejected.
+        let a = match a {
+            Action::PlayYearOfPlenty(x, y) if x.index() > y.index() => Action::PlayYearOfPlenty(y, x),
+            other => other,
+        };
         legal_actions(&self.state, &mut self.buf);
         if !self.buf.contains(&a) {
             return Err(IllegalAction { action: a, phase: self.state.phase });
