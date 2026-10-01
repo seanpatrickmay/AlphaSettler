@@ -14,9 +14,15 @@ pub fn apply_roll<S: EventSink>(s: &mut State, chance: Option<Chance>, sink: &mu
         Some(Chance::Roll { dice, discards }) => (dice, discards),
         Some(c) => panic!("chance {c:?} does not match Roll"),
     };
+    assert!(
+        (1..=6).contains(&d1) && (1..=6).contains(&d2),
+        "forced dice {:?} out of range",
+        (d1, d2)
+    );
     sink.emit(Event::Rolled { player: s.current, dice: (d1, d2) });
     let sum = d1 + d2;
     if sum != 7 {
+        assert!(forced_discards.is_none(), "forced discards given but the roll is not a 7");
         produce(s, sum, sink);
         s.phase = Phase::Main;
         return;
@@ -31,6 +37,10 @@ pub fn apply_roll<S: EventSink>(s: &mut State, chance: Option<Chance>, sink: &mu
         }
     }
     s.robber_return = Phase::Main;
+    if forced_discards.is_some() {
+        assert!(s.config.catanatron_compat, "forced discards given but catanatron_compat is off");
+        assert!(any, "forced discards given but no player must discard");
+    }
     if any && s.config.catanatron_compat {
         random_discards(s, forced_discards, sink);
         s.phase = Phase::MoveRobber;
@@ -107,6 +117,9 @@ fn random_discards<S: EventSink>(s: &mut State, forced: Option<[Hand; NUM_PLAYER
     for p in 0..NUM_PLAYERS {
         let k = s.players[p].discard_remaining;
         if k == 0 {
+            if let Some(f) = forced {
+                assert!(hand_total(&f[p]) == 0, "forced discard for player {p} who owes none");
+            }
             continue;
         }
         let hand = s.players[p].hand;

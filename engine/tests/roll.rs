@@ -230,3 +230,64 @@ fn tile_masks_cover_building_production() {
         assert_eq!(topo().node_tiles[n as usize], vec![t as u8]);
     }
 }
+
+fn forced_roll(s: &mut State, dice: (u8, u8), discards: Option<[Hand; 4]>) {
+    s.apply_with(Action::Roll, Some(Chance::Roll { dice, discards }), &mut NoEvents);
+}
+
+#[test]
+#[should_panic(expected = "out of range")]
+fn forced_dice_zero_panics() {
+    forced_roll(&mut blank(1, Phase::PreRoll), (0, 0), None);
+}
+
+#[test]
+#[should_panic(expected = "out of range")]
+fn forced_dice_above_six_panics() {
+    forced_roll(&mut blank(1, Phase::PreRoll), (9, 9), None);
+}
+
+#[test]
+#[should_panic(expected = "out of range")]
+fn forced_dice_mixed_out_of_range_panics() {
+    forced_roll(&mut blank(1, Phase::PreRoll), (0, 7), None);
+}
+
+#[test]
+#[should_panic(expected = "forced discards given but the roll is not a 7")]
+fn forced_discards_on_non_seven_panics() {
+    let c = GameConfig { catanatron_compat: true, ..cfg() };
+    let mut s = blank_with(1, Phase::PreRoll, c);
+    forced_roll(&mut s, (3, 3), Some([[0u8; 5]; 4]));
+}
+
+#[test]
+#[should_panic(expected = "forced discards given but catanatron_compat is off")]
+fn forced_discards_without_compat_panics() {
+    let mut s = blank(1, Phase::PreRoll);
+    give(&mut s, 0, [5, 4, 0, 0, 0]);
+    let mut discards = [[0u8; 5]; 4];
+    discards[0] = [4, 0, 0, 0, 0];
+    forced_roll(&mut s, (3, 4), Some(discards));
+}
+
+#[test]
+#[should_panic(expected = "forced discards given but no player must discard")]
+fn forced_discards_when_nobody_discards_panics() {
+    let c = GameConfig { catanatron_compat: true, ..cfg() };
+    let mut s = blank_with(1, Phase::PreRoll, c);
+    forced_roll(&mut s, (3, 4), Some([[0u8; 5]; 4]));
+}
+
+#[test]
+#[should_panic(expected = "forced discard for player 1 who owes none")]
+fn forced_discard_for_player_who_owes_none_panics() {
+    let c = GameConfig { catanatron_compat: true, ..cfg() };
+    let mut s = blank_with(1, Phase::PreRoll, c);
+    give(&mut s, 0, [5, 4, 0, 0, 0]);
+    give(&mut s, 1, [2, 0, 0, 0, 0]);
+    let mut discards = [[0u8; 5]; 4];
+    discards[0] = [4, 0, 0, 0, 0];
+    discards[1] = [1, 0, 0, 0, 0];
+    forced_roll(&mut s, (3, 4), Some(discards));
+}
