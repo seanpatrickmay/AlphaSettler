@@ -1,13 +1,13 @@
 # Engine performance baseline
 
 Machine: Apple M1 Pro, 10 cores
-Commit: 255cd18
+Commit: 255cd18 plus the then-uncommitted bench files for `clone_state`, `random_game` and throughput; `legal_actions_midgame` re-measured after the position fix, on the working tree on top of bd4fe70
 Config: default rules, domestic trades disabled (`max_offers_per_turn = 0`)
 
 | Measurement | Result | Target |
 |---|---|---|
 | `clone_state` | 11.485 ns | < 100 ns |
-| `legal_actions_midgame` | 3.2115 ns | — |
+| `legal_actions_midgame` | 10.744 ns (`Phase::Main`, 2 legal actions) | — |
 | `random_game` | 145.43 µs | — |
 | Single-thread games/s | 6887 | ≥ 1,000 |
 | Actions per game | 1100 | — |
@@ -15,10 +15,10 @@ Config: default rules, domestic trades disabled (`max_offers_per_turn = 0`)
 
 All targets met; no "Missed targets" section is needed.
 
-Note on `legal_actions_midgame`: the position produced by 400 random actions from seed 7 is in
-`Phase::PreRoll`, where the only legal actions are `Roll` (and dev-card plays), so 3.2 ns measures
-a near-trivial call, not full main-phase move generation. Per-action cost across a whole game is
-better read from `random_game`: 145.43 µs / 1100 actions is about 132 ns per
-generate-choose-apply step.
+Note on `legal_actions_midgame`: the position is built by 400 random actions from seed 7, then random
+steps until the phase is `Phase::Main` with more than one legal action (the bench asserts this and
+prints the position). It landed 1 step later: `Phase::Main` with 2 legal actions, so the position
+is a modest one. As an extra whole-game figure, `random_game` is 145.43 µs / 1100 actions, about
+132 ns per generate-choose-apply step.
 
 Catanatron side-by-side comparison: Plan 3.

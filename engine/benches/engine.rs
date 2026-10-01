@@ -2,7 +2,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use settler_engine::legal::legal_actions;
 use settler_engine::rng::Rng;
 use settler_engine::sim::play_random;
-use settler_engine::{GameConfig, State};
+use settler_engine::{GameConfig, Phase, State};
 use std::hint::black_box;
 
 fn bench(c: &mut Criterion) {
@@ -23,6 +23,27 @@ fn bench(c: &mut Criterion) {
         let a = buf[rng.below(buf.len() as u32) as usize];
         mid.apply(a);
     }
+    // Keep stepping until the position has real move-generation work: Main phase with more
+    // than one legal action. Fail loudly rather than benchmark a trivial position.
+    let mut extra = 0;
+    loop {
+        legal_actions(&mid, &mut buf);
+        if mid.phase == Phase::Main && buf.len() > 1 {
+            break;
+        }
+        assert!(
+            !mid.is_over() && extra < 10_000,
+            "no Main-phase position with >1 legal action found"
+        );
+        let a = buf[rng.below(buf.len() as u32) as usize];
+        mid.apply(a);
+        extra += 1;
+    }
+    eprintln!(
+        "legal_actions_midgame position: phase={:?}, {} legal actions ({extra} extra steps past 400)",
+        mid.phase,
+        buf.len()
+    );
 
     c.bench_function("clone_state", |b| b.iter(|| black_box(*black_box(&mid))));
     c.bench_function("legal_actions_midgame", |b| {
