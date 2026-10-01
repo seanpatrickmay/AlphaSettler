@@ -25,6 +25,9 @@ pub struct HandTracker {
     /// Free Road Building roads still available to `free_road_player`.
     free_roads: u8,
     free_road_player: PlayerId,
+    /// What the pending trade's offerer wants back (all zero when no trade is pending); every
+    /// acceptor must hold it. Identical across the states of one belief.
+    pending_get: Hand,
 }
 
 impl HandTracker {
@@ -48,6 +51,7 @@ impl HandTracker {
             setup_roads: placed(&|p| obs.roads[p].count_ones()),
             free_roads,
             free_road_player,
+            pending_get: obs.trade.map_or([0; NUM_RESOURCES], |t| t.get),
         }
     }
 
@@ -112,7 +116,20 @@ impl HandTracker {
                 hand_add(&mut h[q], &offerer_gave);
                 hand_sub(&mut h[q], &partner_gave);
                 hand_add(&mut h[o], &partner_gave);
+                self.pending_get = [0; NUM_RESOURCES];
             }
+            Event::TradeOffered { player, give, get } => {
+                if !covers(&h[player as usize], &give) {
+                    return false;
+                }
+                self.pending_get = get;
+            }
+            Event::TradeResponded { player, accepted: true } => {
+                if !covers(&h[player as usize], &self.pending_get) {
+                    return false;
+                }
+            }
+            Event::TradeCancelled { .. } => self.pending_get = [0; NUM_RESOURCES],
             _ => {}
         }
         true

@@ -243,3 +243,108 @@ fn sampling_hands_follows_the_weights() {
     let wood = (0..n).filter(|_| b.sample_hands(&mut rng)[2][0] == 1).count();
     assert!((wood as f64 / n as f64 - 0.75).abs() < 0.015);
 }
+
+#[test]
+fn an_intervening_event_closes_the_road_building_window() {
+    let mut log = setup_events();
+    log.extend([Event::PlayedDev { player: 1, card: DevCard::RoadBuilding }, Event::BuiltRoad { player: 1, edge: 50 }]);
+    let mut t = HandTracker::new();
+    let mut rng = Rng::new(0);
+    assert!(log.iter().all(|e| t.step(e, &mut rng)), "one free road after Road Building");
+    assert!(t.step(&Event::TurnEnded { player: 1 }, &mut rng));
+    assert!(!t.step(&Event::BuiltRoad { player: 1, edge: 51 }, &mut rng), "the window closed, so the road is paid");
+}
+
+/// Player 1 holds one of resource 0 and one of resource 4; player 2 steals one unseen, so player 2
+/// holds either (50% each).
+fn two_possible_thefts() -> Vec<Event> {
+    let mut log = setup_events();
+    log.extend([
+        Event::Produced { player: 1, resources: [1, 0, 0, 0, 1] },
+        Event::Stole { thief: 2, victim: 1, resource: None },
+    ]);
+    log
+}
+
+#[test]
+fn an_offer_of_a_card_only_one_state_holds_prunes_the_others() {
+    let mut log = two_possible_thefts();
+    let mut b = Belief::new(0, DEFAULT_MAX_STATES, 0);
+    b.observe(&log).unwrap();
+    assert_eq!(b.states().len(), 2);
+    log.extend([
+        Event::TradeOffered { player: 2, give: [1, 0, 0, 0, 0], get: [0, 1, 0, 0, 0] },
+        Event::TradeCancelled { player: 2 },
+    ]);
+    let mut b = Belief::new(0, DEFAULT_MAX_STATES, 0);
+    b.observe(&log).unwrap();
+    assert_eq!(b.states().len(), 1);
+    let (t, w) = &b.states()[0];
+    assert!((w - 1.0).abs() < 1e-9);
+    assert_eq!(t.hands[2], [1, 0, 0, 0, 0]);
+    assert_eq!(t.hands[1], [0, 0, 0, 0, 1]);
+}
+
+#[test]
+fn an_accept_requires_holding_what_the_offerer_wants() {
+    // Player 3 offers resource 1 for resource 0; players 0 and 1 reject; player 2 accepts.
+    let offer = [
+        Event::Produced { player: 3, resources: [0, 1, 0, 0, 0] },
+        Event::TradeOffered { player: 3, give: [0, 1, 0, 0, 0], get: [1, 0, 0, 0, 0] },
+        Event::TradeResponded { player: 0, accepted: false },
+        Event::TradeResponded { player: 1, accepted: false },
+    ];
+
+    // A rejection by player 2 says nothing about their hand: both states stay.
+    let mut log = two_possible_thefts();
+    log.extend(offer);
+    log.push(Event::TradeResponded { player: 2, accepted: false });
+    log.push(Event::TradeCancelled { player: 3 });
+    let mut b = Belief::new(0, DEFAULT_MAX_STATES, 0);
+    b.observe(&log).unwrap();
+    assert_eq!(b.states().len(), 2);
+
+    // An acceptance proves player 2 holds resource 0, and the confirmed trade then moves cards.
+    let mut log = two_possible_thefts();
+    log.extend(offer);
+    log.push(Event::TradeResponded { player: 2, accepted: true });
+    let mut b = Belief::new(0, DEFAULT_MAX_STATES, 0);
+    b.observe(&log).unwrap();
+    assert_eq!(b.states().len(), 1);
+    assert_eq!(b.states()[0].0.hands[2], [1, 0, 0, 0, 0]);
+    log.push(Event::TradeConfirmed {
+        offerer: 3,
+        partner: 2,
+        offerer_gave: [0, 1, 0, 0, 0],
+        partner_gave: [1, 0, 0, 0, 0],
+    });
+    b.observe(&log[log.len() - 1..]).unwrap();
+    let t = &b.states()[0].0;
+    assert_eq!(t.hands[3], [1, 0, 0, 0, 0]);
+    assert_eq!(t.hands[2], [0, 1, 0, 0, 0]);
+}
+
+#[test]
+fn different_parents_that_reach_the_same_child_are_merged() {
+    // Player 1 holds [2, 1, ..]. Player 2 steals twice. Orders: wood,wood (2/3 * 1/2), wood,ore
+    // (2/3 * 1/2) and ore,wood (1/3 * 1) -- the last two end in the same joint hand.
+    let mut log = setup_events();
+    log.extend([
+        Event::Produced { player: 1, resources: [2, 1, 0, 0, 0] },
+        Event::Stole { thief: 2, victim: 1, resource: None },
+        Event::Stole { thief: 2, victim: 1, resource: None },
+    ]);
+    let truth = exact(&log);
+    let mut b = Belief::new(0, DEFAULT_MAX_STATES, 0);
+    b.observe(&log).unwrap();
+    let branches = 3;
+    assert!(b.states().len() < branches, "merged support {} < {branches} branches", b.states().len());
+    assert_eq!(b.states().len(), 2);
+    assert_eq!(b.states().len(), truth.len());
+    for (t, w) in b.states() {
+        let p = truth[&t.hands];
+        assert!((w - p).abs() < 1e-9, "{:?} exact {p} tracked {w}", t.hands);
+    }
+    let merged = b.states().iter().find(|(t, _)| t.hands[2] == [1, 1, 0, 0, 0]).expect("the merged state").1;
+    assert!((merged - 2.0 / 3.0).abs() < 1e-9);
+}
