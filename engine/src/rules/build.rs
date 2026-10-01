@@ -3,6 +3,7 @@
 use crate::action::Action;
 use crate::apply::EventSink;
 use crate::events::Event;
+use crate::rules::awards;
 use crate::state::{Phase, State};
 use crate::topology::{topo, NUM_EDGES, NUM_NODES};
 use crate::types::*;
@@ -80,6 +81,7 @@ pub fn apply_build_road<S: EventSink>(s: &mut State, e: u8, free: bool, sink: &m
     }
     s.players[p].roads |= 1u128 << e;
     sink.emit(Event::BuiltRoad { player: s.current, edge: e });
+    awards::update_longest_road(s);
 }
 
 pub fn apply_build_settlement<S: EventSink>(s: &mut State, n: u8, sink: &mut S) {
@@ -87,6 +89,7 @@ pub fn apply_build_settlement<S: EventSink>(s: &mut State, n: u8, sink: &mut S) 
     pay(s, p, &SETTLEMENT_COST);
     s.players[p].settlements |= 1u64 << n;
     sink.emit(Event::BuiltSettlement { player: s.current, node: n });
+    awards::update_longest_road(s);
 }
 
 pub fn apply_build_city<S: EventSink>(s: &mut State, n: u8, sink: &mut S) {

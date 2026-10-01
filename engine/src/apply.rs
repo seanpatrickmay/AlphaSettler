@@ -2,7 +2,7 @@
 
 use crate::action::Action;
 use crate::events::Event;
-use crate::rules::{build, robber, roll, setup};
+use crate::rules::{awards, build, robber, roll, setup};
 use crate::state::{Phase, State};
 use crate::types::{DevCard, Hand, Resource, NUM_PLAYERS};
 
@@ -52,5 +52,6 @@ impl State {
             (Phase::Main, Action::EndTurn) => build::apply_end_turn(self, sink),
             (phase, a) => panic!("illegal action {a:?} in phase {phase:?} (chance {chance:?})"),
         }
+        awards::check_win(self, sink);
     }
 }
