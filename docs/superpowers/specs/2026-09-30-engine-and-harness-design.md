@@ -1,6 +1,6 @@
 # AlphaSettler — Sub-project 1+2: Engine & Benchmark Harness
 
-Status: in review (Sections 1–2 approved 2026-09-30)
+Status: design approved section-by-section 2026-09-30; awaiting full-spec review
 
 ## Goal
 
@@ -104,7 +104,8 @@ only that a card moved between two players, not which card.
 
 ### Config
 
-`GameConfig`: VP to win, discard limit, friendly robber, trade caps (N, K),
+`GameConfig`: VP to win (default 10), discard limit (default 7), friendly robber (default off),
+trade caps (defaults: N = 3 offers per turn, K = 2 cards per side),
 `catanatron_compat` (accept forced random discards/steals as Catanatron does).
 
 ### Performance targets
@@ -115,3 +116,57 @@ Measured with `criterion`:
 - ≥ 1,000 complete random-play games/sec on a single core (domestic trades disabled for
   random play)
 - Side-by-side games/sec against Catanatron on the same machine, recorded in the repo
+
+## 3. Correctness and benchmark harness
+
+### Correctness (three layers)
+
+1. **Rule unit tests (Rust, TDD).** One test per easy-to-get-wrong rule: snake-order
+   setup, second settlement pays starting resources, distance rule, road connectivity,
+   longest road (including breaks by an opponent's settlement), largest army, dev card
+   not playable the turn it's bought, one dev card per turn, hidden VP cards, discard
+   above the limit, robber blocks production, bank shortage (if the bank can't pay every
+   owed player a resource, no one receives it, unless only one player is owed), port
+   rates, a player wins only on their own turn.
+2. **Property tests (`proptest`) on random games.** Resource conservation (bank + all
+   hands = 19 per resource), piece limits (5 settlements, 4 cities, 15 roads), every
+   legal action applies without panic, VP matches board state, every game terminates.
+3. **Differential testing against Catanatron.** Play random-bot games in Catanatron,
+   record each action plus its chance outcome (dice, stolen card, random discard).
+   Replay in our engine with outcomes forced; at every step compare the legal-action set
+   (mapped between encodings) and the resulting state. Replaying recorded outcomes
+   sidesteps Catanatron's unseeded global `random`. The default test suite runs 1,000
+   games; a 50,000-game run is available on demand. Intentional rule differences go in
+   a documented allowlist, each entry with its reason.
+
+### Benchmark harness
+
+- **Format:** one candidate vs. three copies of a baseline. Each seed is played four
+  times with the candidate rotated through every seat.
+- **CRN:** every candidate plays the same seed list (identical boards and dice). In the
+  Catanatron arena, CRN covers the board and only the early rolls, since steals and
+  discards share Catanatron's global random stream; paired comparisons there are weaker.
+- **Statistics:** the unit is a seed (four rotations). Report win rate vs. the 25% null
+  with a confidence interval. Comparing two candidates uses the paired per-seed
+  difference: mean, standard error, z. Also report mean VP and game length.
+- **Arenas:** native Rust arena (fast; our bots vs. our bots) and Catanatron arena (vs.
+  their AlphaBeta and value-function bots, via `oracle/`).
+- **Baseline bots (Rust):** `RandomBot` (uniform over legal actions; domestic offers
+  disabled), `GreedyBot` (builds whenever possible using simple placement scoring; never
+  offers domestic trades, rejects all offers).
+- **Output:** one JSON line per game in `runs/` (gitignored) plus a printed summary
+  table. CLI: `alphasettler arena --candidate X --baseline Y --seeds N`.
+
+## 4. Done criteria
+
+This sub-project is complete when:
+
+- All rule unit tests and property tests pass.
+- 1,000-game differential test against Catanatron passes with only allowlisted
+  differences; the 50,000-game run has been executed once and passes.
+- Performance targets in Section 2 are met (or the measured numbers and the reason
+  they're missed are recorded).
+- `alphasettler arena` runs `GreedyBot` vs. `RandomBot` natively and against Catanatron's
+  AlphaBeta bot, and prints win rate with CI.
+- `GreedyBot` beats `RandomBot` with z > 3 in the native arena (sanity check that the
+  harness detects a real strength difference).
