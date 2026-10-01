@@ -1,7 +1,7 @@
 //! Legal action generation, dispatched on phase.
 
 use crate::action::Action;
-use crate::rules::{robber, roll, setup};
+use crate::rules::{build, robber, roll, setup};
 use crate::state::{Phase, State};
 
 pub fn legal_actions(s: &State, out: &mut Vec<Action>) {
@@ -14,8 +14,11 @@ pub fn legal_actions(s: &State, out: &mut Vec<Action>) {
         Phase::MoveRobber => robber::legal_move_robber(s, out),
         Phase::Steal => robber::legal_steal(s, out),
         Phase::GameOver { .. } => {}
-        Phase::Main
-        | Phase::RoadBuilding { .. }
+        Phase::Main => {
+            build::legal_main_builds(s, out);
+            out.push(Action::EndTurn);
+        }
+        Phase::RoadBuilding { .. }
         | Phase::TradeResponse
         | Phase::TradeConfirm => {}
     }

@@ -2,7 +2,7 @@
 
 use crate::action::Action;
 use crate::events::Event;
-use crate::rules::{robber, roll, setup};
+use crate::rules::{build, robber, roll, setup};
 use crate::state::{Phase, State};
 use crate::types::{DevCard, Hand, Resource, NUM_PLAYERS};
 
@@ -46,6 +46,10 @@ impl State {
             (Phase::Discard, Action::Discard(r)) => roll::apply_discard(self, r, sink),
             (Phase::MoveRobber, Action::MoveRobber(t)) => robber::apply_move_robber(self, t, sink),
             (Phase::Steal, Action::StealFrom(v)) => robber::apply_steal(self, v, chance, sink),
+            (Phase::Main, Action::BuildRoad(e)) => build::apply_build_road(self, e, false, sink),
+            (Phase::Main, Action::BuildSettlement(n)) => build::apply_build_settlement(self, n, sink),
+            (Phase::Main, Action::BuildCity(n)) => build::apply_build_city(self, n, sink),
+            (Phase::Main, Action::EndTurn) => build::apply_end_turn(self, sink),
             (phase, a) => panic!("illegal action {a:?} in phase {phase:?} (chance {chance:?})"),
         }
     }
