@@ -22,3 +22,6 @@ build/
 # Large generated artifacts
 runs/
 *.parquet
+
+# Third-party engines cloned for benchmarking (never vendored)
+bench/compare/.cache/

@@ -1,4 +1,5 @@
-//! Games per second on one core and on all cores. Usage: throughput [games_per_thread]
+//! Games per second and ns per action, on one core and on all cores.
+//! Usage: throughput [games_per_thread] [max_offers_per_turn (default 0 = no domestic trades)]
 
 use settler_engine::rng::Rng;
 use settler_engine::sim::play_random;
@@ -18,23 +19,29 @@ fn run(seeds: std::ops::Range<u64>, cfg: GameConfig) -> (u64, u64) {
 }
 
 fn main() {
-    let cfg = GameConfig {
-        max_offers_per_turn: 0,
-        ..GameConfig::default()
-    };
     let n: u64 = std::env::args()
         .nth(1)
         .and_then(|a| a.parse().ok())
         .unwrap_or(10_000);
+    let offers: u8 = std::env::args()
+        .nth(2)
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(0);
+    let cfg = GameConfig {
+        max_offers_per_turn: offers,
+        ..GameConfig::default()
+    };
+    println!("max_offers_per_turn = {offers}");
 
     let t0 = Instant::now();
     let (g, a) = run(0..n, cfg);
     let dt = t0.elapsed().as_secs_f64();
     println!(
-        "1 thread: {g} games in {dt:.2}s = {:.0} games/s, {:.2}M actions/s, {:.0} actions/game",
+        "1 thread: {g} games in {dt:.2}s = {:.0} games/s, {:.2}M actions/s, {:.0} actions/game, {:.1} ns/action",
         g as f64 / dt,
         a as f64 / dt / 1e6,
-        a as f64 / g as f64
+        a as f64 / g as f64,
+        dt * 1e9 / a as f64
     );
 
     let threads = std::thread::available_parallelism()
