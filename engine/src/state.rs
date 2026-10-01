@@ -44,6 +44,8 @@ pub struct PlayerState {
     /// Cards bought this turn (not yet playable).
     pub dev_new: [u8; 5],
     pub knights_played: u8,
+    /// Dev cards played so far, by kind (knights included).
+    pub dev_played: [u8; 5],
     pub settlements: u64,
     pub cities: u64,
     pub roads: u128,

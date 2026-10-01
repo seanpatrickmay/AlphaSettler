@@ -55,7 +55,9 @@ pub fn legal_road_building(s: &State, out: &mut Vec<Action>) {
 }
 
 fn use_card<S: EventSink>(s: &mut State, card: DevCard, sink: &mut S) {
-    s.players[s.current as usize].dev_hand[card.index()] -= 1;
+    let pl = &mut s.players[s.current as usize];
+    pl.dev_hand[card.index()] -= 1;
+    pl.dev_played[card.index()] += 1;
     s.dev_played_this_turn = true;
     sink.emit(Event::PlayedDev {
         player: s.current,

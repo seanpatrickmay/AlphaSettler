@@ -154,3 +154,92 @@ fn out_of_range_actions_are_rejected_not_aliased() {
     assert_eq!(*g.state(), before);
     assert!(g.log_for(0).is_empty());
 }
+
+#[test]
+fn observation_shows_config_and_turn_counters() {
+    let c = GameConfig {
+        vp_to_win: 8,
+        max_offers_per_turn: 2,
+        ..cfg()
+    };
+    let mut s = blank_with(1, Phase::Main, c);
+    s.offers_this_turn = 2;
+    let o = s.observation(3);
+    assert_eq!(o.config, c);
+    assert_eq!(o.offers_this_turn, 2);
+}
+
+#[test]
+fn observation_shows_robber_return_after_knights() {
+    let mut s = blank(1, Phase::PreRoll);
+    s.players[0].dev_hand[DevCard::Knight.index()] = 2;
+    let mut pre = s;
+    pre.apply(Action::PlayKnight);
+    let o = pre.observation(2);
+    assert_eq!(o.phase, Phase::MoveRobber);
+    assert_eq!(o.robber_return, Phase::PreRoll);
+    assert_eq!(o.dev_cards_played[0][DevCard::Knight.index()], 1);
+    let mut main = s;
+    main.phase = Phase::Main;
+    main.apply(Action::PlayKnight);
+    assert_eq!(main.observation(2).robber_return, Phase::Main);
+}
+
+#[test]
+fn observation_counts_played_dev_cards_by_kind() {
+    let mut s = blank(1, Phase::Main);
+    s.players[1].dev_hand[DevCard::Monopoly.index()] = 1;
+    s.current = 1;
+    s.apply(Action::PlayMonopoly(Resource::Wood));
+    let o = s.observation(0);
+    let mut expected = [[0u8; 5]; 4];
+    expected[1][DevCard::Monopoly.index()] = 1;
+    assert_eq!(o.dev_cards_played, expected);
+    assert_eq!(s.players[1].dev_played, expected[1]);
+}
+
+#[test]
+fn observation_shows_discards_owed_mid_discard() {
+    let mut s = blank(1, Phase::PreRoll);
+    give(&mut s, 0, [5, 4, 0, 0, 0]);
+    give(&mut s, 2, [0, 0, 4, 4, 2]);
+    roll(&mut s, 7);
+    assert_eq!(s.phase, Phase::Discard);
+    assert_eq!(s.observation(1).discard_remaining, [4, 0, 5, 0]);
+    s.apply(Action::Discard(Resource::Wood));
+    assert_eq!(s.observation(3).discard_remaining, [3, 0, 5, 0]);
+}
+
+#[test]
+fn observation_shows_new_dev_card_counts() {
+    let mut s = blank(1, Phase::Main);
+    give(&mut s, 0, DEV_COST);
+    s.apply(Action::BuyDev);
+    assert_eq!(s.observation(2).new_dev_card_counts, [1, 0, 0, 0]);
+    s.apply(Action::EndTurn);
+    assert_eq!(s.observation(2).new_dev_card_counts, [0; 4]);
+}
+
+#[test]
+fn observation_does_not_depend_on_hidden_information() {
+    let mut a = blank(1, Phase::Main);
+    give(&mut a, 1, [2, 0, 0, 0, 0]);
+    give(&mut a, 2, [0, 2, 0, 0, 0]);
+    a.players[1].dev_hand[DevCard::Knight.index()] = 1;
+    a.players[2].dev_hand[DevCard::VictoryPoint.index()] = 1;
+    a.players[2].dev_new[DevCard::VictoryPoint.index()] = 1;
+    a.dev_deck_pos = 2;
+    let mut b = a;
+    b.seed ^= 0xFFFF;
+    b.dev_deck.reverse();
+    b.rng_steal = settler_engine::rng::Rng::new(7);
+    b.rng_misc = settler_engine::rng::Rng::new(8);
+    b.players[1].hand = [0, 2, 0, 0, 0];
+    b.players[2].hand = [2, 0, 0, 0, 0];
+    b.players[1].dev_hand = [0, 0, 0, 0, 1];
+    b.players[2].dev_hand = [1, 0, 0, 0, 0];
+    b.players[2].dev_new = [1, 0, 0, 0, 0];
+    assert_ne!(a, b);
+    assert_eq!(a.observation(0), b.observation(0));
+    assert_eq!(a.observation(3), b.observation(3));
+}
