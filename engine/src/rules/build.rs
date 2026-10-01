@@ -5,43 +5,35 @@ use crate::apply::EventSink;
 use crate::events::Event;
 use crate::rules::awards;
 use crate::state::{Phase, State};
-use crate::topology::{topo, NUM_EDGES, NUM_NODES};
+use crate::topology::topo;
 use crate::types::*;
 
-/// Free edge `e` touches player `p`'s building, or `p`'s road through a node no opponent holds.
-pub fn road_connected(s: &State, p: usize, e: u8) -> bool {
+/// Nodes player `p`'s roads touch.
+#[inline]
+fn road_nodes(roads: u128) -> u64 {
+    let t = topo();
+    bits128(roads).fold(0, |m, e| m | t.edge_node_mask[e as usize])
+}
+
+/// Every free edge player `p` may build a road on: edges touching `p`'s buildings, or touching
+/// a node `p`'s roads reach that no opponent holds.
+#[inline]
+fn free_road_edges(s: &State, p: usize) -> u128 {
     let t = topo();
     let pl = &s.players[p];
     let mine = pl.settlements | pl.cities;
     let theirs = s.occupied_nodes() & !mine;
-    let (a, b) = t.edge_nodes[e as usize];
-    for n in [a, b] {
-        let bit = 1u64 << n;
-        if mine & bit != 0 {
-            return true;
-        }
-        if theirs & bit != 0 {
-            continue;
-        }
-        if pl.roads & t.node_edge_mask[n as usize] & !(1u128 << e) != 0 {
-            return true;
-        }
-    }
-    false
+    let reach = mine | (road_nodes(pl.roads) & !theirs);
+    let edges = bits64(reach).fold(0u128, |m, n| m | t.node_edge_mask[n as usize]);
+    edges & !s.occupied_edges()
 }
 
 pub fn push_free_roads(s: &State, p: usize, out: &mut Vec<Action>) {
-    let occ = s.occupied_edges();
-    for e in 0..NUM_EDGES as u8 {
-        if occ & (1u128 << e) == 0 && road_connected(s, p, e) {
-            out.push(Action::BuildRoad(e));
-        }
-    }
+    out.extend(bits128(free_road_edges(s, p)).map(Action::BuildRoad));
 }
 
 pub fn has_free_road(s: &State, p: usize) -> bool {
-    let occ = s.occupied_edges();
-    (0..NUM_EDGES as u8).any(|e| occ & (1u128 << e) == 0 && road_connected(s, p, e))
+    free_road_edges(s, p) != 0
 }
 
 pub fn legal_main_builds(s: &State, out: &mut Vec<Action>) {
@@ -53,19 +45,12 @@ pub fn legal_main_builds(s: &State, out: &mut Vec<Action>) {
     }
     if covers(&pl.hand, &SETTLEMENT_COST) && pl.settlements.count_ones() < MAX_SETTLEMENTS {
         let occ = s.occupied_nodes();
-        for n in 0..NUM_NODES {
-            if occ & (1u64 << n) == 0
-                && occ & t.node_neighbor_mask[n] == 0
-                && pl.roads & t.node_edge_mask[n] != 0
-            {
-                out.push(Action::BuildSettlement(n as u8));
-            }
-        }
+        let too_close = bits64(occ).fold(occ, |m, n| m | t.node_neighbor_mask[n as usize]);
+        let spots = road_nodes(pl.roads) & !too_close;
+        out.extend(bits64(spots).map(Action::BuildSettlement));
     }
     if covers(&pl.hand, &CITY_COST) && pl.cities.count_ones() < MAX_CITIES {
-        for n in bits64(pl.settlements) {
-            out.push(Action::BuildCity(n));
-        }
+        out.extend(bits64(pl.settlements).map(Action::BuildCity));
     }
 }
 
@@ -84,7 +69,7 @@ pub fn apply_build_road<S: EventSink>(s: &mut State, e: u8, free: bool, sink: &m
         player: s.current,
         edge: e,
     });
-    awards::recompute_road_len(s, p);
+    awards::extend_road_len(s, p, e);
     awards::assign_longest_road(s);
 }
 

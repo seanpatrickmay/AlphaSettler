@@ -6,29 +6,42 @@ use crate::apply::EventSink;
 use crate::events::Event;
 use crate::state::{PendingTrade, Phase, Response, State};
 use crate::types::*;
+use std::sync::LazyLock;
+
+/// For each card cap (1 or 2) and give bundle: every legal offer of that bundle, in id order
+/// (get bundles within the cap that share no resource with the give side).
+static OFFERS: LazyLock<[[Vec<Action>; NUM_BUNDLES]; 2]> = LazyLock::new(|| {
+    std::array::from_fn(|c| {
+        let cap = c as u8 + 1;
+        std::array::from_fn(|gi| {
+            let gi = gi as u8;
+            if bundle_size(gi) > cap {
+                return Vec::new();
+            }
+            let g = bundle(gi);
+            (0..NUM_BUNDLES as u8)
+                .filter(|&wi| {
+                    let w = bundle(wi);
+                    bundle_size(wi) <= cap && (0..NUM_RESOURCES).all(|r| g[r] == 0 || w[r] == 0)
+                })
+                .map(|wi| Action::OfferTrade { give: gi, get: wi })
+                .collect()
+        })
+    })
+});
+
+static BUNDLES: LazyLock<[Hand; NUM_BUNDLES]> =
+    LazyLock::new(|| std::array::from_fn(|i| bundle(i as u8)));
 
 pub fn legal_offers(s: &State, out: &mut Vec<Action>) {
     if s.offers_this_turn >= s.config.max_offers_per_turn {
         return;
     }
-    let cap = s.config.max_trade_cards;
+    let table = &OFFERS[s.config.max_trade_cards as usize - 1];
     let hand = s.players[s.current as usize].hand;
-    for gi in 0..NUM_BUNDLES as u8 {
-        if bundle_size(gi) > cap {
-            continue;
-        }
-        let g = bundle(gi);
-        if !covers(&hand, &g) {
-            continue;
-        }
-        for wi in 0..NUM_BUNDLES as u8 {
-            if bundle_size(wi) > cap {
-                continue;
-            }
-            let w = bundle(wi);
-            if (0..NUM_RESOURCES).all(|r| g[r] == 0 || w[r] == 0) {
-                out.push(Action::OfferTrade { give: gi, get: wi });
-            }
+    for (g, offers) in BUNDLES.iter().zip(table.iter()) {
+        if covers(&hand, g) {
+            out.extend_from_slice(offers);
         }
     }
 }

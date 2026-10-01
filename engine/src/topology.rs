@@ -27,6 +27,8 @@ pub struct Topology {
     pub node_edges: Vec<Vec<u8>>,
     pub node_edge_mask: [u128; NUM_NODES],
     pub edge_nodes: [(u8, u8); NUM_EDGES],
+    /// Both endpoints of each edge as a node bitmask.
+    pub edge_node_mask: [u64; NUM_EDGES],
     pub coastal_edges: Vec<u8>,
 }
 
@@ -168,6 +170,10 @@ impl Topology {
             node_edges,
             node_edge_mask,
             edge_nodes,
+            edge_node_mask: std::array::from_fn(|e| {
+                let (a, b) = edge_nodes[e];
+                (1u64 << a) | (1u64 << b)
+            }),
             coastal_edges,
         }
     }
