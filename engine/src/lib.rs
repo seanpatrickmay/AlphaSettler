@@ -10,6 +10,7 @@ pub mod legal;
 pub mod observation;
 pub mod rng;
 pub mod rules;
+pub mod sim;
 pub mod state;
 pub mod topology;
 pub mod types;

@@ -10,3 +10,6 @@ name = "settler_engine"
 # Index loops over fixed 4-player / 5-resource arrays read better than iterator chains here.
 [lints.clippy]
 needless_range_loop = "allow"
+
+[dev-dependencies]
+proptest = "=1.5.0"
