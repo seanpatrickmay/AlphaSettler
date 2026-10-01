@@ -1,0 +1,12 @@
+[package]
+name = "settler-engine"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+
+[lib]
+name = "settler_engine"
+
+# Index loops over fixed 4-player / 5-resource arrays read better than iterator chains here.
+[lints.clippy]
+needless_range_loop = "allow"
