@@ -23,8 +23,10 @@ echo "== catan-rl $(git -C "$CACHE/catan-rl" rev-parse --short HEAD), catanatron
 
 echo "== AlphaSettler, domestic trades off"
 (cd "$ROOT" && cargo run -q --release -p settler-engine --example throughput "$GAMES" 0)
-echo "== AlphaSettler, domestic trades on (<=3 offers/turn, <=2 cards per side)"
-(cd "$ROOT" && cargo run -q --release -p settler-engine --example throughput "$GAMES" 3)
+echo "== AlphaSettler, domestic trades on (<=3 offers/turn, <=2 cards per side: up to 400 offers)"
+(cd "$ROOT" && cargo run -q --release -p settler-engine --example throughput "$GAMES" 3 2)
+echo "== AlphaSettler, domestic trades on (<=3 offers/turn, 1 card for 1: 20 offers)"
+(cd "$ROOT" && cargo run -q --release -p settler-engine --example throughput "$GAMES" 3 1)
 
 echo "== catan-rl, random players (its trade menu: 1-2 of one resource for 1 of another, <=3 offers)"
 (cd "$CACHE/catan-rl/rust" && cargo build -q --release -p catan-sim \

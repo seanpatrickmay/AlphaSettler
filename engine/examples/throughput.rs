@@ -1,5 +1,6 @@
 //! Games per second and ns per action, on one core and on all cores.
 //! Usage: throughput [games_per_thread] [max_offers_per_turn (default 0 = no domestic trades)]
+//!                   [max_trade_cards (1 or 2, default 2)]
 
 use settler_engine::rng::Rng;
 use settler_engine::sim::play_random;
@@ -27,11 +28,16 @@ fn main() {
         .nth(2)
         .and_then(|a| a.parse().ok())
         .unwrap_or(0);
+    let cards: u8 = std::env::args()
+        .nth(3)
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(2);
     let cfg = GameConfig {
         max_offers_per_turn: offers,
+        max_trade_cards: cards,
         ..GameConfig::default()
     };
-    println!("max_offers_per_turn = {offers}");
+    println!("max_offers_per_turn = {offers}, max_trade_cards = {cards}");
 
     let t0 = Instant::now();
     let (g, a) = run(0..n, cfg);

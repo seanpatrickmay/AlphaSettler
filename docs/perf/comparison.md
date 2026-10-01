@@ -26,3 +26,24 @@ Rule differences that affect these numbers:
 
 Reading: with trades off we are ~220× faster per step than Catanatron and within ~8% of
 catan-rl's per-step cost; with trades on we are ~2.1× slower per step than catan-rl.
+
+## 2026-10-01 after optimization (alphasettler d140be6)
+
+Same machine and harness. Changes, each verified against the golden trace (600 seeded games,
+every legal-action list, event and final state) and the longest-road reference oracle:
+bitmask frontier for road/settlement legality, a precomputed table of trade offers per give
+bundle, longest-road recompute limited to the new road's network, and a compact per-call
+graph for the trail search that starts only from dead ends, branch points and blocked nodes.
+
+| Engine | Config | 1 thread ns/step | 1 thread games/s | steps/game | 10 threads steps/s |
+|---|---|---|---|---|---|
+| AlphaSettler | trades off | **68.2** (was 93.6) | 13,347 | 1,099 | 115.5M |
+| AlphaSettler | trades on, ≤2 cards per side (≤400 offers) | **57.7** (was 185.3) | 4,033 | 4,300 | 121.7M |
+| AlphaSettler | trades on, 1 card for 1 (20 offers) | **54.2** | 4,775 | 3,866 | 141.3M |
+| catan-rl | random players, its trade menu (≤40 offers) | 88 | 3,869 | 2,940 | 70.1M |
+| Catanatron | random players | 20,691 | 46 | 1,052 | — |
+
+Our two trades-on configs bracket catan-rl's menu size (20 and ≤400 offers vs its ≤40); both are
+~1.5–1.6× faster per step. Trades off is ~300× faster per step than Catanatron.
+
+Tried and not kept: `-C target-cpu=native` (no gain) and PGO (≤2%, not worth the build complexity).

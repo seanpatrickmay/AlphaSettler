@@ -32,4 +32,6 @@ that earlier versions of this bench measured. As an extra whole-game figure, `ra
   6822-6871 before vs 9674-9716 after); actions per game unchanged at 1100; all-thread games/s
   67796 (10 threads). The table above keeps the original baseline.
 
-Catanatron side-by-side comparison: Plan 3.
+Catanatron and catan-rl side-by-side comparison: see `comparison.md`.
+- 2026-10-01, optimization pass (d140be6): single-thread games/s 13,347, 68.2 ns/action
+  (trades off); 57.7 ns/action with trades on. Details in `comparison.md`.
