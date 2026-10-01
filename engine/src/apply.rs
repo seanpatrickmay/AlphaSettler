@@ -143,11 +143,15 @@ impl State {
                 dev::apply_play_knight(self, sink)
             }
             (Phase::Main, Action::BuyDev) => dev::apply_buy_dev(self, chance, sink),
-            (Phase::Main, Action::PlayRoadBuilding) => dev::apply_play_road_building(self, sink),
-            (Phase::Main, Action::PlayYearOfPlenty(a, b)) => {
+            (Phase::PreRoll | Phase::Main, Action::PlayRoadBuilding) => {
+                dev::apply_play_road_building(self, sink)
+            }
+            (Phase::PreRoll | Phase::Main, Action::PlayYearOfPlenty(a, b)) => {
                 dev::apply_year_of_plenty(self, a, b, sink)
             }
-            (Phase::Main, Action::PlayMonopoly(r)) => dev::apply_monopoly(self, r, sink),
+            (Phase::PreRoll | Phase::Main, Action::PlayMonopoly(r)) => {
+                dev::apply_monopoly(self, r, sink)
+            }
             (Phase::RoadBuilding { roads_left }, Action::BuildRoad(e)) => {
                 dev::apply_road_building_road(self, e, roads_left, sink)
             }

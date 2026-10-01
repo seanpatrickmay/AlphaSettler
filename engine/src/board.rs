@@ -120,6 +120,41 @@ impl Board {
         Board::new(terrain, tile_number, ports)
     }
 
+    /// Checks a board built outside `Board::random`, e.g. imported from another engine.
+    pub fn validate(&self) -> Result<(), String> {
+        let deserts = self.tile_resource.iter().filter(|r| r.is_none()).count();
+        if deserts != 1 {
+            return Err(format!(
+                "board must have exactly one desert, found {deserts}"
+            ));
+        }
+        for t in 0..NUM_TILES {
+            let n = self.tile_number[t];
+            match self.tile_resource[t] {
+                None if n != 0 => return Err(format!("desert tile {t} has number {n}")),
+                Some(_) if !(2..=12).contains(&n) || n == 7 => {
+                    return Err(format!("tile {t} has number {n}"))
+                }
+                _ => {}
+            }
+        }
+        let coastal = &topo().coastal_edges;
+        for (i, &(e, _)) in self.ports.iter().enumerate() {
+            if !coastal.contains(&e) {
+                return Err(format!(
+                    "port {i} is on edge {e}, which is not on the coast"
+                ));
+            }
+            if self.ports[..i].iter().any(|&(f, _)| f == e) {
+                return Err(format!("two ports share edge {e}"));
+            }
+        }
+        if *self != Board::new(self.tile_resource, self.tile_number, self.ports) {
+            return Err("port node masks do not match the ports".into());
+        }
+        Ok(())
+    }
+
     pub fn desert(&self) -> u8 {
         self.tile_resource
             .iter()

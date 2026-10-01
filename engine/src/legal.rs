@@ -11,7 +11,7 @@ pub fn legal_actions(s: &State, out: &mut Vec<Action>) {
         Phase::SetupRoad { node } => setup::legal_road(s, node, out),
         Phase::PreRoll => {
             out.push(Action::Roll);
-            dev::legal_knight(s, out);
+            dev::legal_dev_plays(s, out);
         }
         Phase::Discard => roll::legal_discard(s, out),
         Phase::MoveRobber => robber::legal_move_robber(s, out),

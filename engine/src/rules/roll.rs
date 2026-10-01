@@ -32,7 +32,7 @@ pub fn apply_roll<S: EventSink>(s: &mut State, chance: Option<Chance>, sink: &mu
             any = true;
         }
     }
-    s.robber_return = Phase::Main;
+    s.return_phase = Phase::Main;
     if any && s.config.catanatron_compat {
         random_discards(s, forced_discards, sink);
         s.phase = Phase::MoveRobber;

@@ -1,62 +1,11 @@
 use proptest::prelude::*;
 use settler_engine::legal::legal_actions;
 use settler_engine::rng::Rng;
-use settler_engine::rules::awards::longest_road;
 use settler_engine::sim::play_random;
-use settler_engine::topology::topo;
 use settler_engine::*;
 
 fn check_invariants(s: &State) {
-    for r in 0..NUM_RESOURCES {
-        let held: u32 = s.players.iter().map(|p| p.hand[r] as u32).sum();
-        assert_eq!(
-            held + s.bank[r] as u32,
-            BANK_PER_RESOURCE as u32,
-            "resource {r} not conserved"
-        );
-    }
-    let t = topo();
-    let mut nodes = 0u64;
-    let mut edges = 0u128;
-    for (i, p) in s.players.iter().enumerate() {
-        assert!(
-            p.settlements.count_ones() <= MAX_SETTLEMENTS,
-            "player {i} settlements"
-        );
-        assert!(p.cities.count_ones() <= MAX_CITIES, "player {i} cities");
-        assert!(p.roads.count_ones() <= MAX_ROADS, "player {i} roads");
-        assert_eq!(p.settlements & p.cities, 0);
-        let b = p.settlements | p.cities;
-        assert_eq!(nodes & b, 0, "two players share a node");
-        nodes |= b;
-        assert_eq!(edges & p.roads, 0, "two players share an edge");
-        edges |= p.roads;
-        for c in 0..5 {
-            assert!(p.dev_new[c] <= p.dev_hand[c]);
-        }
-    }
-    for n in bits64(nodes) {
-        assert_eq!(
-            nodes & t.node_neighbor_mask[n as usize],
-            0,
-            "distance rule broken at {n}"
-        );
-    }
-    let held_dev: u32 = s
-        .players
-        .iter()
-        .flat_map(|p| p.dev_hand.iter())
-        .map(|&c| c as u32)
-        .sum();
-    assert!(held_dev <= s.dev_deck_pos as u32);
-    let occupied = s.occupied_nodes();
-    for p in 0..NUM_PLAYERS {
-        assert_eq!(
-            s.players[p].longest_road_len,
-            longest_road(s.players[p].roads, occupied & !s.buildings(p)),
-            "cached longest road of player {p} is stale"
-        );
-    }
+    s.check_invariants().unwrap_or_else(|e| panic!("{e}"));
     check_vp(s);
 }
 

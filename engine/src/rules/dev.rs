@@ -13,19 +13,21 @@ fn playable(s: &State, card: DevCard) -> bool {
     !s.dev_played_this_turn && pl.dev_hand[card.index()] > pl.dev_new[card.index()]
 }
 
-pub fn legal_knight(s: &State, out: &mut Vec<Action>) {
-    if playable(s, DevCard::Knight) {
-        out.push(Action::PlayKnight);
-    }
-}
-
 pub fn legal_main_dev(s: &State, out: &mut Vec<Action>) {
     let pl = &s.players[s.current as usize];
     if covers(&pl.hand, &DEV_COST) && (s.dev_deck_pos as usize) < DEV_DECK_SIZE {
         out.push(Action::BuyDev);
     }
-    legal_knight(s, out);
-    if playable(s, DevCard::RoadBuilding) {
+    legal_dev_plays(s, out);
+}
+
+/// Dev cards the current player may play now, before or after rolling: one per turn, never a
+/// card bought this turn, and Road Building only when a free road can be placed.
+pub fn legal_dev_plays(s: &State, out: &mut Vec<Action>) {
+    if playable(s, DevCard::Knight) {
+        out.push(Action::PlayKnight);
+    }
+    if playable(s, DevCard::RoadBuilding) && can_place_free_road(s) {
         out.push(Action::PlayRoadBuilding);
     }
     if playable(s, DevCard::YearOfPlenty) {
@@ -48,6 +50,11 @@ pub fn legal_main_dev(s: &State, out: &mut Vec<Action>) {
             out.push(Action::PlayMonopoly(r));
         }
     }
+}
+
+fn can_place_free_road(s: &State) -> bool {
+    let p = s.current as usize;
+    s.players[p].roads.count_ones() < MAX_ROADS && build::has_free_road(s, p)
 }
 
 pub fn legal_road_building(s: &State, out: &mut Vec<Action>) {
@@ -96,7 +103,7 @@ pub fn apply_play_knight<S: EventSink>(s: &mut State, sink: &mut S) {
     use_card(s, DevCard::Knight, sink);
     s.players[p].knights_played += 1;
     awards::update_largest_army(s, p);
-    s.robber_return = if from_preroll {
+    s.return_phase = if from_preroll {
         Phase::PreRoll
     } else {
         Phase::Main
@@ -108,11 +115,16 @@ fn road_building_phase(s: &State, left: u8) -> Phase {
     if left > 0 && build::has_free_road(s, s.current as usize) {
         Phase::RoadBuilding { roads_left: left }
     } else {
-        Phase::Main
+        s.return_phase
     }
 }
 
 pub fn apply_play_road_building<S: EventSink>(s: &mut State, sink: &mut S) {
+    s.return_phase = if s.phase == Phase::PreRoll {
+        Phase::PreRoll
+    } else {
+        Phase::Main
+    };
     use_card(s, DevCard::RoadBuilding, sink);
     let pieces_left = MAX_ROADS - s.players[s.current as usize].roads.count_ones();
     s.phase = road_building_phase(s, pieces_left.min(2) as u8);

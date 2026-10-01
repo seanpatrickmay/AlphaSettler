@@ -123,3 +123,14 @@ pub fn sorted(mut v: Vec<Action>) -> Vec<Action> {
     v.sort_by_key(|a| a.encode());
     v
 }
+
+/// Give player `p` a dev card by drawing it from the deck (keeps the deck consistent).
+pub fn deal_dev(s: &mut State, p: usize, card: DevCard) {
+    let pos = s.dev_deck_pos as usize;
+    let j = (pos..DEV_DECK_SIZE)
+        .find(|&j| s.dev_deck[j] == card)
+        .expect("card left in the deck");
+    s.dev_deck.swap(pos, j);
+    s.dev_deck_pos += 1;
+    s.players[p].dev_hand[card.index()] += 1;
+}

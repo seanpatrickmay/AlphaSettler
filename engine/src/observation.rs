@@ -38,8 +38,9 @@ pub struct Observation {
     pub offers_this_turn: u8,
     /// Cards each player still owes in the Discard phase.
     pub discard_remaining: [u8; NUM_PLAYERS],
-    /// Phase resumed once the robber is resolved (PreRoll after a pre-roll knight).
-    pub robber_return: Phase,
+    /// Phase resumed after the robber is resolved or Road Building ends: PreRoll when the card
+    /// was played before rolling, otherwise Main.
+    pub return_phase: Phase,
 }
 
 impl State {
@@ -79,7 +80,7 @@ impl State {
             dev_played_this_turn: self.dev_played_this_turn,
             offers_this_turn: self.offers_this_turn,
             discard_remaining: per(&|p| self.players[p].discard_remaining),
-            robber_return: self.robber_return,
+            return_phase: self.return_phase,
         }
     }
 }

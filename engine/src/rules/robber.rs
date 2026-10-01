@@ -37,7 +37,7 @@ pub fn apply_move_robber<S: EventSink>(s: &mut State, tile: u8, sink: &mut S) {
     s.phase = if victims(s).iter().any(|&v| v) {
         Phase::Steal
     } else {
-        s.robber_return
+        s.return_phase
     };
 }
 
@@ -69,5 +69,5 @@ pub fn apply_steal<S: EventSink>(
         victim,
         resource: Some(r),
     });
-    s.phase = s.robber_return;
+    s.phase = s.return_phase;
 }

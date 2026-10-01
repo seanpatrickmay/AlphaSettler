@@ -1,0 +1,14 @@
+[package]
+name = "settler-bindings"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "_engine"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = "=0.29.3"
+settler-engine = { path = "../engine" }
+settler-bots = { path = "../bots" }

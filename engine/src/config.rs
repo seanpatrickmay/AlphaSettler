@@ -11,7 +11,8 @@ pub struct GameConfig {
     pub max_trade_cards: u8,
     /// The game ends with no winner when this many turns have been played.
     pub max_turns: u32,
-    /// Discards on a 7 are random instead of chosen, as Catanatron does.
+    /// Discards on a 7 are random instead of chosen, as Catanatron did before version 3.
+    /// Catanatron 3.3 lets each player choose, like the default; leave this off against it.
     pub catanatron_compat: bool,
 }
 

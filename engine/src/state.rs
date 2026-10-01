@@ -87,8 +87,9 @@ pub struct State {
     pub dev_played_this_turn: bool,
     pub offers_this_turn: u8,
     pub trade: Option<PendingTrade>,
-    /// Phase to resume after the robber is resolved (PreRoll for a pre-roll knight).
-    pub robber_return: Phase,
+    /// Phase resumed after the robber is resolved or Road Building ends: PreRoll when the card
+    /// was played before rolling, otherwise Main.
+    pub return_phase: Phase,
     pub longest_road_owner: Option<PlayerId>,
     pub largest_army_owner: Option<PlayerId>,
     pub rng_steal: Rng,
@@ -128,7 +129,7 @@ impl State {
             dev_played_this_turn: false,
             offers_this_turn: 0,
             trade: None,
-            robber_return: Phase::Main,
+            return_phase: Phase::Main,
             longest_road_owner: None,
             largest_army_owner: None,
             rng_steal: Rng::new(mix(seed, STEAL_SALT)),

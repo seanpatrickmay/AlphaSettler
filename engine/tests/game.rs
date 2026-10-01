@@ -182,19 +182,19 @@ fn observation_shows_config_and_turn_counters() {
 }
 
 #[test]
-fn observation_shows_robber_return_after_knights() {
+fn observation_shows_return_phase_after_knights() {
     let mut s = blank(1, Phase::PreRoll);
     s.players[0].dev_hand[DevCard::Knight.index()] = 2;
     let mut pre = s;
     pre.apply(Action::PlayKnight);
     let o = pre.observation(2);
     assert_eq!(o.phase, Phase::MoveRobber);
-    assert_eq!(o.robber_return, Phase::PreRoll);
+    assert_eq!(o.return_phase, Phase::PreRoll);
     assert_eq!(o.dev_cards_played[0][DevCard::Knight.index()], 1);
     let mut main = s;
     main.phase = Phase::Main;
     main.apply(Action::PlayKnight);
-    assert_eq!(main.observation(2).robber_return, Phase::Main);
+    assert_eq!(main.observation(2).return_phase, Phase::Main);
 }
 
 #[test]

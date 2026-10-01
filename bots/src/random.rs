@@ -25,9 +25,17 @@ impl Bot for RandomBot {
 
     fn act(&mut self, _obs: &Observation, legal: &[Action]) -> Action {
         self.pool.clear();
-        self.pool
-            .extend(legal.iter().copied().filter(|a| !matches!(a, Action::OfferTrade { .. })));
-        let pool: &[Action] = if self.pool.is_empty() { legal } else { &self.pool };
+        self.pool.extend(
+            legal
+                .iter()
+                .copied()
+                .filter(|a| !matches!(a, Action::OfferTrade { .. })),
+        );
+        let pool: &[Action] = if self.pool.is_empty() {
+            legal
+        } else {
+            &self.pool
+        };
         pool[self.rng.below(pool.len() as u32) as usize]
     }
 }

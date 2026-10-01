@@ -7,6 +7,7 @@ use crate::config::GameConfig;
 use crate::events::Event;
 use crate::legal::legal_actions;
 use crate::observation::Observation;
+use crate::snapshot::Snapshot;
 use crate::state::{Phase, State};
 use crate::types::PlayerId;
 
@@ -41,6 +42,11 @@ impl Game {
             log: Vec::new(),
             buf: Vec::new(),
         }
+    }
+
+    /// A game continuing from `snap` (see `State::from_snapshot`), with an empty event log.
+    pub fn from_snapshot(seed: u64, config: GameConfig, snap: &Snapshot) -> Result<Game, String> {
+        Ok(Game::from_state(State::from_snapshot(seed, config, snap)?))
     }
 
     pub fn state(&self) -> &State {

@@ -1,5 +1,5 @@
 [workspace]
-members = ["engine", "bots"]
+members = ["engine", "bots", "bindings"]
 default-members = ["engine", "bots"]
 resolver = "2"
 

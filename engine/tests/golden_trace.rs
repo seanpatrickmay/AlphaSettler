@@ -44,9 +44,11 @@ fn trace_hash(config: GameConfig, seeds: std::ops::Range<u64>) -> u64 {
     h.0
 }
 
-const TRADES_OFF: u64 = 5486343657698194579;
-const TRADES_ON: u64 = 9454369359677695;
-const COMPAT: u64 = 5450870153518037987;
+// Re-pinned 2026-10-01 for two rule fixes: every dev card may be played before rolling, and
+// Road Building needs a placeable road (Plan 3, Task 1).
+const TRADES_OFF: u64 = 2480314488515831906;
+const TRADES_ON: u64 = 7874488224759562945;
+const COMPAT: u64 = 2937732219135153055;
 
 #[test]
 fn golden_trace_trades_off() {

@@ -124,22 +124,43 @@ fn road_building_places_two_free_roads() {
 }
 
 #[test]
-fn road_building_with_no_legal_road_returns_to_main() {
-    let mut s = blank(1, Phase::Main);
-    s.players[0].dev_hand[RoadBuilding.index()] = 1;
-    s.apply(Action::PlayRoadBuilding);
-    assert_eq!(s.phase, Phase::Main);
-    assert_eq!(s.players[0].dev_hand[RoadBuilding.index()], 0);
+fn road_building_with_one_piece_left_grants_one_road() {
+    for start in [Phase::Main, Phase::PreRoll] {
+        let mut s = blank(1, start);
+        s.players[0].settlements = 1u64 << settler_engine::topology::topo().edge_nodes[0].0;
+        s.players[0].roads = (1u128 << 14) - 1; // 14 roads: only one piece left
+        s.players[0].dev_hand[RoadBuilding.index()] = 1;
+        s.apply(Action::PlayRoadBuilding);
+        assert_eq!(s.phase, Phase::RoadBuilding { roads_left: 1 });
+        let a = s.legal_actions()[0];
+        s.apply(a);
+        assert_eq!(s.players[0].roads.count_ones(), MAX_ROADS);
+        assert_eq!(s.phase, start);
+    }
+}
 
-    let mut s = blank(1, Phase::Main);
-    s.players[0].settlements = 1u64 << settler_engine::topology::topo().edge_nodes[0].0;
-    s.players[0].roads = (1u128 << 14) - 1; // 14 roads: only one piece left
-    s.players[0].dev_hand[RoadBuilding.index()] = 1;
+#[test]
+fn road_building_before_rolling_ends_early_without_an_edge() {
+    // A settlement at v whose only free edge e leads to u, where every other edge is taken:
+    // after the first free road there is nowhere for the second.
+    let t = settler_engine::topology::topo();
+    let (v, u) = t.edge_nodes[0];
+    let e = 0u8;
+    let others: Vec<u8> = [v, u]
+        .iter()
+        .flat_map(|&n| t.node_edges[n as usize].iter().copied())
+        .filter(|&x| x != e)
+        .collect();
+    let mut s = blank(1, Phase::PreRoll);
+    s.players[0].settlements = 1u64 << v;
+    s.players[1].roads = mask128(&others);
+    deal_dev(&mut s, 0, DevCard::RoadBuilding);
     s.apply(Action::PlayRoadBuilding);
-    assert_eq!(s.phase, Phase::RoadBuilding { roads_left: 1 });
-    let a = s.legal_actions()[0];
-    s.apply(a);
-    assert_eq!(s.phase, Phase::Main);
+    assert_eq!(s.phase, Phase::RoadBuilding { roads_left: 2 });
+    assert_eq!(s.legal_actions(), vec![Action::BuildRoad(e)]);
+    s.apply(Action::BuildRoad(e));
+    assert_eq!(s.phase, Phase::PreRoll);
+    assert_eq!(s.legal_actions(), vec![Action::Roll]);
 }
 
 #[test]
@@ -184,4 +205,101 @@ fn victory_point_cards_are_hidden_and_never_played() {
     s.players[0].dev_hand[VictoryPoint.index()] = 2;
     assert_eq!(s.total_vp(0) - s.public_vp(0), 2);
     assert_eq!(s.legal_actions(), vec![Action::EndTurn]);
+}
+
+#[test]
+fn pre_roll_offers_every_held_dev_card() {
+    let mut s = after_setup(1);
+    assert_eq!(s.phase, Phase::PreRoll);
+    let p = s.current as usize;
+    for c in [
+        DevCard::Knight,
+        DevCard::RoadBuilding,
+        DevCard::YearOfPlenty,
+        DevCard::Monopoly,
+    ] {
+        deal_dev(&mut s, p, c);
+    }
+    let legal = s.legal_actions();
+    assert_eq!(legal[0], Action::Roll);
+    for a in [
+        Action::PlayKnight,
+        Action::PlayRoadBuilding,
+        Action::PlayYearOfPlenty(Resource::Wood, Resource::Ore),
+        Action::PlayMonopoly(Resource::Sheep),
+    ] {
+        assert!(legal.contains(&a), "{a:?} missing from {legal:?}");
+    }
+    assert!(!legal.contains(&Action::BuyDev));
+}
+
+#[test]
+fn year_of_plenty_before_rolling_stays_pre_roll_and_uses_the_turns_card() {
+    let mut s = after_setup(2);
+    let p = s.current as usize;
+    deal_dev(&mut s, p, DevCard::YearOfPlenty);
+    deal_dev(&mut s, p, DevCard::Monopoly);
+    let before = s.players[p].hand;
+    s.apply(Action::PlayYearOfPlenty(Resource::Wood, Resource::Brick));
+    assert_eq!(s.phase, Phase::PreRoll);
+    assert_eq!(s.players[p].hand[0], before[0] + 1);
+    assert_eq!(s.players[p].hand[1], before[1] + 1);
+    assert_eq!(s.legal_actions(), vec![Action::Roll]);
+}
+
+#[test]
+fn monopoly_before_rolling() {
+    let mut s = after_setup(3);
+    let p = s.current as usize;
+    let q = (p + 1) % NUM_PLAYERS;
+    deal_dev(&mut s, p, DevCard::Monopoly);
+    give(&mut s, q, [0, 0, 3, 0, 0]);
+    let mine = s.players[p].hand[2];
+    let theirs: u8 = (0..NUM_PLAYERS)
+        .filter(|&o| o != p)
+        .map(|o| s.players[o].hand[2])
+        .sum();
+    assert!(theirs >= 3);
+    s.apply(Action::PlayMonopoly(Resource::Sheep));
+    assert_eq!(s.phase, Phase::PreRoll);
+    assert_eq!(s.players[p].hand[2], mine + theirs);
+    for o in (0..NUM_PLAYERS).filter(|&o| o != p) {
+        assert_eq!(s.players[o].hand[2], 0);
+    }
+}
+
+#[test]
+fn road_building_before_rolling_returns_to_pre_roll() {
+    let mut s = after_setup(4);
+    let p = s.current as usize;
+    deal_dev(&mut s, p, DevCard::RoadBuilding);
+    let roads = s.players[p].roads.count_ones();
+    s.apply(Action::PlayRoadBuilding);
+    assert_eq!(s.phase, Phase::RoadBuilding { roads_left: 2 });
+    for _ in 0..2 {
+        let a = s.legal_actions()[0];
+        assert!(matches!(a, Action::BuildRoad(_)));
+        s.apply(a);
+    }
+    assert_eq!(s.players[p].roads.count_ones(), roads + 2);
+    assert_eq!(s.phase, Phase::PreRoll);
+    assert_eq!(s.legal_actions(), vec![Action::Roll]);
+}
+
+#[test]
+fn road_building_needs_a_placeable_road() {
+    // No roads or buildings: nowhere to place a free road.
+    let mut s = blank(1, Phase::Main);
+    deal_dev(&mut s, 0, DevCard::RoadBuilding);
+    assert!(!s.legal_actions().contains(&Action::PlayRoadBuilding));
+}
+
+#[test]
+fn road_building_needs_a_road_piece() {
+    let mut s = blank(1, Phase::Main);
+    let nodes = path_nodes(0, 15, 0); // 15 edges = MAX_ROADS
+    s.players[0].roads = mask128(&path_edges(&nodes));
+    assert_eq!(s.players[0].roads.count_ones(), MAX_ROADS);
+    deal_dev(&mut s, 0, DevCard::RoadBuilding);
+    assert!(!s.legal_actions().contains(&Action::PlayRoadBuilding));
 }
