@@ -344,7 +344,7 @@ Expected: PASS, 6 tests.
 
 ```bash
 git add Cargo.toml Cargo.lock engine
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: workspace and core types"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: workspace and core types"
 git push
 ```
 
@@ -647,7 +647,7 @@ Expected: PASS, 6 tests.
 
 ```bash
 git add engine
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: board topology"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: board topology"
 git push
 ```
 
@@ -1073,7 +1073,7 @@ Expected: PASS, 9 tests.
 
 ```bash
 git add engine
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: rng, config, and board generation"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: rng, config, and board generation"
 git push
 ```
 
@@ -1357,7 +1357,7 @@ Expected: PASS, 6 tests.
 
 ```bash
 git add engine
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: fixed action space encoding"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: fixed action space encoding"
 git push
 ```
 
@@ -2066,7 +2066,7 @@ Expected: PASS, 8 tests. If `state_fits_in_512_bytes` fails, print the size, the
 
 ```bash
 git add engine
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: state, events, dispatch, and setup phase"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: state, events, dispatch, and setup phase"
 git push
 ```
 
@@ -2595,7 +2595,7 @@ Expected: PASS — all of `roll` (19 tests) plus earlier suites.
 
 ```bash
 git add engine
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: rolling, production, sevens, robber"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: rolling, production, sevens, robber"
 git push
 ```
 
@@ -2914,7 +2914,7 @@ Expected: PASS — `build` (9 tests) plus earlier suites.
 
 ```bash
 git add engine
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: building and end turn"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: building and end turn"
 git push
 ```
 
@@ -3212,7 +3212,7 @@ Expected: PASS — `awards` (12 tests) plus earlier suites.
 
 ```bash
 git add engine
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: longest road, largest army, win check"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: longest road, largest army, win check"
 git push
 ```
 
@@ -3609,7 +3609,7 @@ Expected: PASS — `dev` (15 tests) plus earlier suites.
 
 ```bash
 git add engine
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: development cards"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: development cards"
 git push
 ```
 
@@ -3760,7 +3760,7 @@ Expected: PASS — `maritime` (4 tests) plus earlier suites.
 
 ```bash
 git add engine
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: maritime trades"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: maritime trades"
 git push
 ```
 
@@ -4056,7 +4056,7 @@ Expected: PASS — `trade` (7 tests) plus earlier suites. `only_end_turn_without
 
 ```bash
 git add engine
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: domestic trade protocol"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: domestic trade protocol"
 git push
 ```
 
@@ -4351,7 +4351,7 @@ Expected: PASS — `game` (7 tests) plus earlier suites.
 
 ```bash
 git add engine
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: observation and Game wrapper"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: observation and Game wrapper"
 git push
 ```
 
@@ -4514,7 +4514,7 @@ Expected: `0 vulnerabilities found` (warnings about unmaintained transitive crat
 
 ```bash
 git add engine Cargo.lock
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: random playouts and property tests"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: random playouts and property tests"
 git push
 ```
 
@@ -4699,7 +4699,7 @@ Expected: clippy reports no warnings (fix any it finds), all tests pass.
 
 ```bash
 git add engine docs/perf Cargo.lock
-git diff --cached | grep -nE 'sk-|AKIA|ghp_|password=' && echo "SECRET FOUND - abort" || git commit -m "engine: benchmarks, throughput example, perf baseline"
+git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+' && echo "SECRET FOUND - abort" || git commit -m "engine: benchmarks, throughput example, perf baseline"
 git push
 ```
 
