@@ -2,7 +2,7 @@
 
 use crate::action::Action;
 use crate::events::Event;
-use crate::rules::setup;
+use crate::rules::{robber, roll, setup};
 use crate::state::{Phase, State};
 use crate::types::{DevCard, Hand, Resource, NUM_PLAYERS};
 
@@ -42,6 +42,10 @@ impl State {
         match (self.phase, a) {
             (Phase::SetupSettlement, Action::BuildSettlement(n)) => setup::apply_settlement(self, n, sink),
             (Phase::SetupRoad { node }, Action::BuildRoad(e)) => setup::apply_road(self, node, e, sink),
+            (Phase::PreRoll, Action::Roll) => roll::apply_roll(self, chance, sink),
+            (Phase::Discard, Action::Discard(r)) => roll::apply_discard(self, r, sink),
+            (Phase::MoveRobber, Action::MoveRobber(t)) => robber::apply_move_robber(self, t, sink),
+            (Phase::Steal, Action::StealFrom(v)) => robber::apply_steal(self, v, chance, sink),
             (phase, a) => panic!("illegal action {a:?} in phase {phase:?} (chance {chance:?})"),
         }
     }
