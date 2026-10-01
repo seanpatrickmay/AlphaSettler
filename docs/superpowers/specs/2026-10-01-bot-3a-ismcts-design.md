@@ -54,14 +54,17 @@ Learning in Go" (arXiv:1902.10565); Brown & Sandholm, "Superhuman AI for multipl
 ## 1. Architecture
 
 ```
-engine/     rules unchanged; + a fast constructor that builds a State from a sampled world
+engine/     rules unchanged; + State::reseed and Game::log (the unredacted log, for tests)
 search/     NEW Rust crate, depends on engine only
-  belief.rs     card tracker: event log -> particles over hidden steal outcomes; sample a world
+  belief.rs     card tracker: event log -> particles holding all four hands
+  world.rs      sampled worlds: a per-decision template with the hidden parts overwritten
   tree.rs       single-observer ISMCTS tree, keyed by the bot's information set
-  puct.rs       selection, expansion, backup; 4-player value vectors
+  puct.rs       selection and backup arithmetic; 4-player value vectors
   evaluator.rs  trait Evaluator: a batch of leaves -> (value[4], prior over legal actions)
-  heuristic.rs  3a's evaluator (replaced by the network in 3b)
-bots/       + IsmctsBot: wraps search as a Bot, registered as "ismcts"
+  search.rs     the simulation loop, chance nodes, leaf batching
+bots/       + heuristic.rs: 3a's evaluator (replaced by the network in 3b). It lives here, not in
+              search/, because it reuses GreedyBot's scoring and bots already depends on search
+            + IsmctsBot: wraps search as a Bot, registered as "ismcts"
 bindings/   + IsmctsBot and self-play exposed to Python
 alphasettler/ + `alphasettler selfplay` CLI and record loader
 oracle/     + translate Catanatron's action records into our Events for the bot
@@ -70,16 +73,21 @@ oracle/     + translate Catanatron's action records into our Events for the bot
 - Dependencies run one way: `bots → search → engine`. In 3b, self-play needs the search without
   the arena or the baseline bots.
 - **Bot interface change.** Today `Bot::act(obs, legal)` sees only the current observation, but
-  card tracking needs history. `Bot` gains `fn observe(&mut self, events: &[Event])`, a no-op by
-  default. The native arena calls it before every `act`, passing each viewer's new events from
-  `Game::log_for(viewer)`.
+  card tracking needs history. `Bot` gains `fn observe(&mut self, viewer: PlayerId, events: &[Event])`, a
+  no-op by default. The native arena calls it before every `act` with the events since that seat
+  last acted, redacted for that seat (the same events `Game::log_for(viewer)` holds). `Bot` also
+  gains `fn diagnostics(&self) -> Vec<(&'static str, u64)>` (empty by default), so arenas can
+  report how often IsmctsBot had to rebuild its belief.
 - **Catanatron arena.** `AlphaSettlerPlayer` keeps importing snapshots for its legal-move mapping.
   It also translates Catanatron's action records into our viewer-filtered `Event`s, so the bot plays
   inside Catanatron on exactly the information it would have natively (tested in Section 5).
-- **Sampled worlds** reuse the `Snapshot` format: our view plus sampled hidden parts. The engine
-  gains `State::from_snapshot_unchecked`, which builds the state without
-  validation for per-simulation speed. In test and debug builds its output must pass
-  `State::check_invariants`, and it must equal `State::from_snapshot` on the same input.
+- **Sampled worlds.** Once per decision, `WorldSampler` builds a template `State` with
+  `State::from_snapshot` (fully validated) from the observation plus one sampled deal. Each
+  simulation copies the template and overwrites only the hidden parts: opponents' hands, their dev
+  cards, the deck order, and a fresh random seed (`State::reseed`) so future dice and steals are
+  random rather than the real game's. Tests check every sampled world passes
+  `State::check_invariants`, equals `State::from_snapshot` of its own snapshot, and shows the
+  viewer exactly the observation it was sampled from.
 - Chance inside the tree replays through `apply_forced`.
 
 ## 2. Belief tracker
@@ -99,9 +107,11 @@ The tracker is a particle filter over those latents, with the exact prior:
 - When a player spends or gives cards (a build, a purchase, a trade, a discard, a Monopoly loss),
   particles in which that player could not have done it are dropped. The survivors are an exact
   sample of the posterior given public information.
-- If fewer than `N/8` particles survive, the tracker regenerates `N` by replaying the stored log
-  with rejection. If 64 consecutive replays from scratch all fail, that is a tracker bug. It panics
-  in tests and logs a counted error in release builds.
+- If fewer than `N/8` particles survive, the tracker rebuilds: it replays the stored log from
+  scratch with rejection, up to `32·N` attempts, and fills any shortfall by resampling the survivors
+  (old and new) with replacement. Only when no particle survives at all does `observe` return an
+  error. IsmctsBot then rebuilds its belief from the observation (cards nobody can see dealt
+  uniformly) and counts a `belief_resets` diagnostic, which every arena run must report as 0.
 - Invariant: every particle's hand sizes equal the observation's `hand_counts`.
 
 **Dev cards and the deck.** The unknown pool is the 25-card deck minus the viewer's own cards and
@@ -113,8 +123,8 @@ world can let an opponent win before their public VP says so.
 holdings and the deck order fresh.
 
 **Not in 3a:** behavioural inference (for example, "they didn't play a knight when it was
-obvious"). Particles carry a weight field that is always 1.0 in 3a. In 3b each particle is weighted
-by the policy network's likelihood of the opponents' actual moves.
+obvious"). Particles are uniformly weighted in 3a. 3b adds a weight per particle: the policy
+network's likelihood of the opponents' actual moves.
 
 ## 3. Search
 
@@ -183,18 +193,22 @@ pub trait Evaluator { fn evaluate(&mut self, leaves: &[Leaf]) -> Vec<Eval>; }
   - distance to longest road and to largest army;
   - open legal settlement spots.
 
-  A softmax over the four scores, with temperature `τ`, gives win probabilities. The weights and
-  `τ` are fit by maximum likelihood on recorded games (Python, from the self-play records below).
-  This fit is the first use of the data pipeline.
-- Prior: GreedyBot's move scores (`bots/src/greedy.rs`, shared rather than copied), softmaxed over
-  the legal moves.
+  A softmax over the four scores gives win probabilities. The weights are fit by maximum
+  likelihood on recorded games (a conditional logit solved by Newton's method in Rust, run by
+  `alphasettler fit-heuristic` on the self-play records below). A softmax temperature would only
+  rescale the weights, so the fit absorbs it. This fit is the first use of the data pipeline.
+- Prior: GreedyBot's choice (`bots/src/greedy.rs`, shared rather than copied) gets logit +2, any
+  build +1, buying a dev card +0.5, everything else 0, softmaxed over the legal moves.
+- Greedy rollout switch: an optional number of greedy moves played from the leaf before scoring
+  it. Bot names select it: `ismcts` (1,000 simulations), `ismcts@N`, `ismcts@N+rD` (D rollout
+  moves).
 
 **Self-play records (built in 3a).** `alphasettler selfplay --games N --simulations S --out DIR`
-plays IsmctsBot in all four seats and writes one record per searched decision. Each record holds:
-the game seed and config, the decision index, the actor, the actor's observation, the legal moves,
-the root visit counts, a `full_search` flag (always true in 3a), and the final outcome, written when
-the game ends. The format is JSONL, one file per run, matching the arena's output. It switches to a columnar
-format only if 3b's data loading measures too slow. Storing the seed and the
+plays IsmctsBot in all four seats and records every searched decision: the decision index, the
+actor, the actor's observation, the legal moves, the root visit counts and a `full_search` flag
+(always true in 3a). Records are grouped per game, one gzipped JSONL line per game holding the
+seed, config, every action, the decisions and the outcome. It switches to a columnar format only
+if 3b's data loading measures too slow. Storing the seed and the
 observation means any feature encoding can be computed later, so 3b designs its network input
 without replaying games. If 3a meets its headline target, the first network trains on a search that
 already beats AlphaBeta, instead of starting from random play.
@@ -209,20 +223,25 @@ cap randomization; policy-weighted belief particles.
 **Correctness tests.**
 
 - Belief tracker:
-  - exact match with a brute-force posterior on small hand-built histories;
-  - across thousands of random games, the true hands always have nonzero probability;
-  - calibration: across those games, the predicted probability for each resource bucket is within
-    0.05 of its observed frequency;
-  - every particle matches `hand_counts`.
-- Fast world constructor: equal to `from_snapshot` on random sampled worlds; output passes
-  `check_invariants`.
+  - exact match (within 0.02) with a brute-force posterior, on hand-built and on random small
+    histories;
+  - across random games, the unredacted log replayed through the tracker reproduces every hand
+    exactly (so the true history is never ruled out), and every particle matches `hand_counts`.
+  - No in-game calibration test: random players' choices depend on their hands, and the belief
+    deliberately ignores that behavioural evidence (Section 2). An in-game calibration test would
+    measure the omission, not the tracker.
+- Sampled worlds: pass `check_invariants`, equal `from_snapshot` of their own snapshot, and give
+  the viewer exactly the observation they were sampled from, in every phase of random games.
 - Search mechanics with a mock evaluator on tiny synthetic trees: availability counts, max^n backup,
   virtual loss, branching on public chance, no branching on hidden chance.
 - Evaluator contract: the prior-invariance property test (Section 4).
-- Tactical positions the bot must solve at 200 simulations:
-  - take the 10th VP when it is available;
-  - rob the leader, not a player on 2 VP;
-  - don't discard the cards needed for a city it can afford next turn.
+- Tactical positions the bot must solve:
+  - take a winning build when it is available (uniform evaluator, 200 simulations);
+  - build an affordable city rather than end the turn (heuristic, 1,000 simulations);
+  - never put the robber on its own buildings when an opponent's tile is available (heuristic,
+    1,000 simulations).
+  The discard tactic first proposed here needs lookahead past three opponents' turns, which 3a's
+  evaluator cannot supply. It belongs in 3b's evaluation suite.
 - Determinism: same seed and budget give the same move. The native arena stays independent of
   thread count with IsmctsBot playing.
 - Catanatron event feed: in lockstep differential games (the existing `oracle/diff.py` harness), the
@@ -231,7 +250,8 @@ cap randomization; policy-weighted belief particles.
 
 **Done criteria.**
 
-1. All of the above pass. The Catanatron arena records **0 fallbacks** for IsmctsBot.
+1. All of the above pass. The Catanatron arena records **0 fallbacks** and **0 belief resets**
+   for IsmctsBot.
 2. Search throughput (simulations/s per core) is measured and recorded in `docs/perf/`.
 3. Strength curve: IsmctsBot at 100, 300, 1,000 and 3,000 simulations against GreedyBot in the
    native CRN arena, each z > 3 against the 0.25 null.
