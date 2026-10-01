@@ -86,3 +86,67 @@ fn coastline_is_a_30_edge_cycle() {
         );
     }
 }
+
+// Golden pins. Node, edge, and tile numbering are frozen contracts: the policy head's action
+// ids and the Catanatron mapping both depend on them. If one of these fails, the numbering
+// changed; that breaks the action space, so fix the change rather than the expected values.
+
+#[test]
+fn golden_tile_coords() {
+    let expected: [(i8, i8); NUM_TILES] = [
+        (0, -2),
+        (1, -2),
+        (2, -2),
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+        (2, -1),
+        (-2, 0),
+        (-1, 0),
+        (0, 0),
+        (1, 0),
+        (2, 0),
+        (-2, 1),
+        (-1, 1),
+        (0, 1),
+        (1, 1),
+        (-2, 2),
+        (-1, 2),
+        (0, 2),
+    ];
+    assert_eq!(topo().tile_coords, expected);
+}
+
+#[test]
+fn golden_tile_nodes() {
+    let t = topo();
+    assert_eq!(t.tile_nodes[0], [0, 4, 8, 12, 7, 3]);
+    assert_eq!(t.tile_nodes[9], [18, 24, 30, 35, 29, 23]);
+    assert_eq!(t.tile_nodes[18], [41, 46, 50, 53, 49, 45]);
+}
+
+/// 64-bit FNV-1a.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+#[test]
+fn golden_topology_hash() {
+    let t = topo();
+    let mut bytes = Vec::new();
+    for &(a, b) in &t.edge_nodes {
+        bytes.extend_from_slice(&[a, b]);
+    }
+    for nodes in &t.tile_nodes {
+        bytes.extend_from_slice(nodes);
+    }
+    bytes.extend_from_slice(&t.coastal_edges);
+    assert_eq!(bytes.len(), 2 * NUM_EDGES + 6 * NUM_TILES + 30);
+    // Changing this value breaks the action space (see the golden-pin note above).
+    assert_eq!(fnv1a(&bytes), 0x71a3_7ac2_6534_a23f);
+}

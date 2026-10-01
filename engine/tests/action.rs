@@ -69,3 +69,58 @@ fn bundles() {
     all.dedup();
     assert_eq!(all.len(), NUM_BUNDLES);
 }
+
+/// First and last id of every range in the frozen encoding table (Plan 1, Task 4). The policy
+/// head and the Catanatron mapping depend on these; never renumber.
+#[test]
+fn golden_range_bounds() {
+    use Resource::*;
+    let pins = [
+        (Action::Roll, 0),
+        (Action::EndTurn, 1),
+        (Action::BuyDev, 2),
+        (Action::PlayKnight, 3),
+        (Action::PlayRoadBuilding, 4),
+        (Action::PlayMonopoly(Wood), 5),
+        (Action::PlayMonopoly(Ore), 9),
+        (Action::PlayYearOfPlenty(Wood, Wood), 10),
+        (Action::PlayYearOfPlenty(Ore, Ore), 24),
+        (Action::BuildSettlement(0), 25),
+        (Action::BuildSettlement(53), 78),
+        (Action::BuildCity(0), 79),
+        (Action::BuildCity(53), 132),
+        (Action::BuildRoad(0), 133),
+        (Action::BuildRoad(71), 204),
+        (Action::MoveRobber(0), 205),
+        (Action::MoveRobber(18), 223),
+        (Action::StealFrom(0), 224),
+        (Action::StealFrom(3), 227),
+        (Action::Discard(Wood), 228),
+        (Action::Discard(Ore), 232),
+        (
+            Action::MaritimeTrade {
+                give: Wood,
+                get: Brick,
+            },
+            234,
+        ),
+        (
+            Action::MaritimeTrade {
+                give: Ore,
+                get: Wheat,
+            },
+            256,
+        ),
+        (Action::OfferTrade { give: 0, get: 0 }, 258),
+        (Action::OfferTrade { give: 19, get: 19 }, 657),
+        (Action::AcceptTrade, 658),
+        (Action::RejectTrade, 659),
+        (Action::ConfirmTrade(0), 660),
+        (Action::ConfirmTrade(3), 663),
+        (Action::CancelTrade, 664),
+    ];
+    for (a, id) in pins {
+        assert_eq!(a.encode(), id, "{a:?}");
+        assert_eq!(Action::decode(id), Some(a), "id {id}");
+    }
+}
