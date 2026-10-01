@@ -4,7 +4,7 @@ use crate::action::Action;
 use crate::events::Event;
 use crate::rules::{awards, build, dev, maritime, robber, roll, setup, trade};
 use crate::state::{Phase, State};
-use crate::types::{DevCard, Hand, Resource, NUM_PLAYERS};
+use crate::types::{covers, hand_total, DevCard, Hand, Resource, NUM_PLAYERS};
 
 /// A random outcome supplied by the caller instead of drawn from the state's streams.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,12 +36,92 @@ impl EventSink for Vec<Event> {
     }
 }
 
+const DISCARD_OWES_NONE: [&str; NUM_PLAYERS] = [
+    "forced discard for player 0 who owes none",
+    "forced discard for player 1 who owes none",
+    "forced discard for player 2 who owes none",
+    "forced discard for player 3 who owes none",
+];
+const DISCARD_WRONG_SIZE: [&str; NUM_PLAYERS] = [
+    "forced discard for player 0 has wrong size",
+    "forced discard for player 1 has wrong size",
+    "forced discard for player 2 has wrong size",
+    "forced discard for player 3 has wrong size",
+];
+const DISCARD_EXCEEDS_HAND: [&str; NUM_PLAYERS] = [
+    "forced discard for player 0 exceeds hand",
+    "forced discard for player 1 exceeds hand",
+    "forced discard for player 2 exceeds hand",
+    "forced discard for player 3 exceeds hand",
+];
+
+/// Whether forcing outcome `c` for action `a` is possible in `s`, checked before anything
+/// mutates. Assumes `a` is legal in `s`; `Err` carries the reason.
+pub fn check_chance(s: &State, a: Action, c: Chance) -> Result<(), &'static str> {
+    match (a, c) {
+        (Action::Roll, Chance::Roll { dice, discards }) => {
+            let (d1, d2) = dice;
+            if !(1..=6).contains(&d1) || !(1..=6).contains(&d2) {
+                return Err("forced dice out of range");
+            }
+            let Some(forced) = discards else {
+                return Ok(());
+            };
+            if d1 + d2 != 7 {
+                return Err("forced discards given but the roll is not a 7");
+            }
+            if !s.config.catanatron_compat {
+                return Err("forced discards given but catanatron_compat is off");
+            }
+            let owed: [u8; NUM_PLAYERS] = std::array::from_fn(|p| roll::discard_owed(s, p));
+            if owed.iter().all(|&k| k == 0) {
+                return Err("forced discards given but no player must discard");
+            }
+            for p in 0..NUM_PLAYERS {
+                let n = hand_total(&forced[p]);
+                if owed[p] == 0 && n != 0 {
+                    return Err(DISCARD_OWES_NONE[p]);
+                }
+                if n != owed[p] as u32 {
+                    return Err(DISCARD_WRONG_SIZE[p]);
+                }
+                if !covers(&s.players[p].hand, &forced[p]) {
+                    return Err(DISCARD_EXCEEDS_HAND[p]);
+                }
+            }
+            Ok(())
+        }
+        (Action::StealFrom(v), Chance::Steal(r)) => match s.players.get(v as usize) {
+            Some(pl) if pl.hand[r.index()] > 0 => Ok(()),
+            _ => Err("forced steal of a resource the victim has none of"),
+        },
+        (Action::BuyDev, Chance::Dev(card)) => {
+            if s.dev_deck[s.dev_deck_pos as usize..].contains(&card) {
+                Ok(())
+            } else {
+                Err("forced dev card not left in deck")
+            }
+        }
+        (Action::Roll | Action::StealFrom(_) | Action::BuyDev, _) => {
+            Err("chance kind does not match the action")
+        }
+        _ => Err("action does not take a chance outcome"),
+    }
+}
+
 impl State {
     pub fn apply(&mut self, a: Action) {
         self.apply_with(a, None, &mut NoEvents);
     }
 
+    /// Apply `a`, forcing the random outcome to `chance` if given. Panics if `chance` is
+    /// impossible (see `check_chance`), before anything changes.
     pub fn apply_with<S: EventSink>(&mut self, a: Action, chance: Option<Chance>, sink: &mut S) {
+        if let Some(c) = chance {
+            if let Err(reason) = check_chance(self, a, c) {
+                panic!("impossible chance {c:?} for {a:?}: {reason}");
+            }
+        }
         match (self.phase, a) {
             (Phase::SetupSettlement, Action::BuildSettlement(n)) => {
                 setup::apply_settlement(self, n, sink)

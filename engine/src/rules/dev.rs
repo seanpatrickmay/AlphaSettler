@@ -75,10 +75,10 @@ pub fn apply_buy_dev<S: EventSink>(s: &mut State, chance: Option<Chance>, sink: 
         Some(Chance::Dev(card)) => {
             let j = (pos..DEV_DECK_SIZE)
                 .find(|&j| s.dev_deck[j] == card)
-                .unwrap_or_else(|| panic!("forced dev card {card:?} not left in deck"));
+                .expect("chance checked in apply_with");
             s.dev_deck.swap(pos, j);
         }
-        Some(c) => panic!("chance {c:?} does not match BuyDev"),
+        Some(_) => unreachable!("chance checked in apply_with"),
     }
     let card = s.dev_deck[pos];
     s.dev_deck_pos += 1;

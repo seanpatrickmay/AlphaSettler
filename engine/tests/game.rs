@@ -1,6 +1,6 @@
 mod common;
 use common::*;
-use settler_engine::apply::Chance;
+use settler_engine::apply::{Chance, NoEvents};
 use settler_engine::*;
 
 #[test]
@@ -89,7 +89,7 @@ fn illegal_action_is_rejected_without_changing_state() {
     let err = g.apply(Action::Roll).unwrap_err();
     assert_eq!(
         err,
-        IllegalAction {
+        ApplyError::Illegal {
             action: Action::Roll,
             phase: Phase::SetupSettlement
         }
@@ -147,10 +147,22 @@ fn out_of_range_actions_are_rejected_not_aliased() {
     assert!(g.legal_actions().contains(&Action::BuildCity(0)));
     let before = *g.state();
     let err = g.apply(Action::BuildSettlement(54)).unwrap_err();
-    assert_eq!(err.action, Action::BuildSettlement(54));
+    assert_eq!(
+        err,
+        ApplyError::Illegal {
+            action: Action::BuildSettlement(54),
+            phase: Phase::Main
+        }
+    );
     assert_eq!(*g.state(), before);
     let err = g.apply(Action::StealFrom(4)).unwrap_err();
-    assert_eq!(err.action, Action::StealFrom(4));
+    assert_eq!(
+        err,
+        ApplyError::Illegal {
+            action: Action::StealFrom(4),
+            phase: Phase::Main
+        }
+    );
     assert_eq!(*g.state(), before);
     assert!(g.log_for(0).is_empty());
 }
@@ -242,4 +254,153 @@ fn observation_does_not_depend_on_hidden_information() {
     assert_ne!(a, b);
     assert_eq!(a.observation(0), b.observation(0));
     assert_eq!(a.observation(3), b.observation(3));
+}
+
+/// `a` with forced outcome `c` is rejected as impossible and leaves the game untouched.
+fn assert_impossible(g: &mut Game, a: Action, c: Chance) {
+    let before = *g.state();
+    let log = g.log_for(0);
+    let err = g.apply_forced(a, Some(c)).unwrap_err();
+    assert!(
+        matches!(err, ApplyError::ImpossibleChance { action, chance, .. } if action == a && chance == c),
+        "{err:?}"
+    );
+    assert_eq!(*g.state(), before);
+    assert_eq!(g.log_for(0), log);
+}
+
+fn forced_roll(dice: (u8, u8), discards: Option<[Hand; 4]>) -> Chance {
+    Chance::Roll { dice, discards }
+}
+
+fn compat() -> GameConfig {
+    GameConfig {
+        catanatron_compat: true,
+        ..cfg()
+    }
+}
+
+/// Compat mode, PreRoll; player 0 holds 9 cards (owes 4), player 1 holds 2.
+fn compat_seven_game() -> Game {
+    let mut s = blank_with(1, Phase::PreRoll, compat());
+    give(&mut s, 0, [5, 4, 0, 0, 0]);
+    give(&mut s, 1, [2, 0, 0, 0, 0]);
+    Game::from_state(s)
+}
+
+#[test]
+fn forced_chance_of_the_wrong_kind_is_impossible() {
+    let mut g = Game::from_state(blank(1, Phase::PreRoll));
+    assert_impossible(&mut g, Action::Roll, Chance::Steal(Resource::Wood));
+    assert_impossible(&mut g, Action::Roll, Chance::Dev(DevCard::Knight));
+    let mut s = blank(1, Phase::Main);
+    give(&mut s, 0, DEV_COST);
+    let mut g = Game::from_state(s);
+    assert_impossible(&mut g, Action::BuyDev, Chance::Steal(Resource::Wood));
+    assert_impossible(&mut g, Action::BuyDev, forced_roll((1, 2), None));
+    assert_impossible(&mut g, Action::EndTurn, Chance::Dev(DevCard::Knight));
+    assert_impossible(&mut g, Action::EndTurn, Chance::Steal(Resource::Ore));
+}
+
+#[test]
+fn forced_dice_out_of_range_are_impossible() {
+    let mut g = Game::from_state(blank(1, Phase::PreRoll));
+    for dice in [(0, 3), (3, 0), (7, 1), (6, 7), (0, 0)] {
+        assert_impossible(&mut g, Action::Roll, forced_roll(dice, None));
+    }
+}
+
+#[test]
+fn forced_discards_that_cannot_be_consumed_are_impossible() {
+    let mut owed = [[0u8; 5]; 4];
+    owed[0] = [4, 0, 0, 0, 0];
+    // Not a 7.
+    let mut g = compat_seven_game();
+    assert_impossible(&mut g, Action::Roll, forced_roll((3, 3), Some(owed)));
+    // Compat mode off.
+    let mut s = blank(1, Phase::PreRoll);
+    give(&mut s, 0, [5, 4, 0, 0, 0]);
+    let mut g = Game::from_state(s);
+    assert_impossible(&mut g, Action::Roll, forced_roll((3, 4), Some(owed)));
+    // Nobody over the limit.
+    let mut g = Game::from_state(blank_with(1, Phase::PreRoll, compat()));
+    assert_impossible(&mut g, Action::Roll, forced_roll((3, 4), Some([[0; 5]; 4])));
+}
+
+#[test]
+fn forced_discards_of_the_wrong_cards_are_impossible() {
+    let mut g = compat_seven_game();
+    let mut too_few = [[0u8; 5]; 4];
+    too_few[0] = [3, 0, 0, 0, 0];
+    assert_impossible(&mut g, Action::Roll, forced_roll((3, 4), Some(too_few)));
+    let mut too_many = [[0u8; 5]; 4];
+    too_many[0] = [3, 2, 0, 0, 0];
+    assert_impossible(&mut g, Action::Roll, forced_roll((3, 4), Some(too_many)));
+    let mut not_held = [[0u8; 5]; 4];
+    not_held[0] = [2, 0, 2, 0, 0];
+    assert_impossible(&mut g, Action::Roll, forced_roll((3, 4), Some(not_held)));
+    let mut owes_none = [[0u8; 5]; 4];
+    owes_none[0] = [4, 0, 0, 0, 0];
+    owes_none[1] = [1, 0, 0, 0, 0];
+    assert_impossible(&mut g, Action::Roll, forced_roll((3, 4), Some(owes_none)));
+}
+
+#[test]
+fn forced_steal_of_a_missing_resource_is_impossible() {
+    let mut s = blank(1, Phase::MoveRobber);
+    let t = lonely_tile(&s) as u8;
+    s.players[1].settlements = 1u64 << exclusive_nodes(t as usize)[0];
+    give(&mut s, 1, [0, 0, 0, 0, 1]);
+    let mut g = Game::from_state(s);
+    g.apply(Action::MoveRobber(t)).unwrap();
+    assert_impossible(&mut g, Action::StealFrom(1), Chance::Steal(Resource::Wood));
+    g.apply_forced(Action::StealFrom(1), Some(Chance::Steal(Resource::Ore)))
+        .unwrap();
+    assert_eq!(g.state().players[0].hand, [0, 0, 0, 0, 1]);
+}
+
+#[test]
+fn forced_dev_card_already_drawn_is_impossible() {
+    let mut s = blank(1, Phase::Main);
+    s.dev_deck = [DevCard::Knight; 25];
+    s.dev_deck[0] = DevCard::Monopoly;
+    s.dev_deck_pos = 1;
+    give(&mut s, 0, DEV_COST);
+    let mut g = Game::from_state(s);
+    assert_impossible(&mut g, Action::BuyDev, Chance::Dev(DevCard::Monopoly));
+    g.apply_forced(Action::BuyDev, Some(Chance::Dev(DevCard::Knight)))
+        .unwrap();
+    assert_eq!(g.state().players[0].dev_hand[DevCard::Knight.index()], 1);
+}
+
+#[test]
+fn valid_forced_rolls_still_apply() {
+    let mut g = compat_seven_game();
+    let mut owed = [[0u8; 5]; 4];
+    owed[0] = [1, 3, 0, 0, 0];
+    g.apply_forced(Action::Roll, Some(forced_roll((3, 4), Some(owed))))
+        .unwrap();
+    assert_eq!(g.state().players[0].hand, [4, 1, 0, 0, 0]);
+    assert_eq!(g.state().phase, Phase::MoveRobber);
+    let mut g = Game::from_state(blank(1, Phase::PreRoll));
+    g.apply_forced(Action::Roll, Some(forced_roll((2, 3), None)))
+        .unwrap();
+    assert_eq!(
+        g.log_for(0)[0],
+        Event::Rolled {
+            player: 0,
+            dice: (2, 3)
+        }
+    );
+}
+
+#[test]
+#[should_panic(expected = "does not take a chance outcome")]
+fn state_rejects_chance_for_an_action_without_one() {
+    let mut s = blank(1, Phase::Main);
+    s.apply_with(
+        Action::EndTurn,
+        Some(Chance::Steal(Resource::Wood)),
+        &mut NoEvents,
+    );
 }

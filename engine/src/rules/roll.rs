@@ -12,44 +12,27 @@ pub fn apply_roll<S: EventSink>(s: &mut State, chance: Option<Chance>, sink: &mu
     let ((d1, d2), forced_discards) = match chance {
         None => (dice_for(s.seed, s.turn), None),
         Some(Chance::Roll { dice, discards }) => (dice, discards),
-        Some(c) => panic!("chance {c:?} does not match Roll"),
+        Some(_) => unreachable!("chance checked in apply_with"),
     };
-    assert!(
-        (1..=6).contains(&d1) && (1..=6).contains(&d2),
-        "forced dice {:?} out of range",
-        (d1, d2)
-    );
     sink.emit(Event::Rolled {
         player: s.current,
         dice: (d1, d2),
     });
     let sum = d1 + d2;
     if sum != 7 {
-        assert!(
-            forced_discards.is_none(),
-            "forced discards given but the roll is not a 7"
-        );
         produce(s, sum, sink);
         s.phase = Phase::Main;
         return;
     }
-    let limit = s.config.discard_limit as u32;
     let mut any = false;
     for p in 0..NUM_PLAYERS {
-        let n = hand_total(&s.players[p].hand);
-        if n > limit {
-            s.players[p].discard_remaining = (n / 2) as u8;
+        let k = discard_owed(s, p);
+        if k > 0 {
+            s.players[p].discard_remaining = k;
             any = true;
         }
     }
     s.robber_return = Phase::Main;
-    if forced_discards.is_some() {
-        assert!(
-            s.config.catanatron_compat,
-            "forced discards given but catanatron_compat is off"
-        );
-        assert!(any, "forced discards given but no player must discard");
-    }
     if any && s.config.catanatron_compat {
         random_discards(s, forced_discards, sink);
         s.phase = Phase::MoveRobber;
@@ -57,6 +40,16 @@ pub fn apply_roll<S: EventSink>(s: &mut State, chance: Option<Chance>, sink: &mu
         s.phase = Phase::Discard;
     } else {
         s.phase = Phase::MoveRobber;
+    }
+}
+
+/// Cards player `p` must discard if a 7 is rolled now: half (rounded down) of a hand over the limit.
+pub fn discard_owed(s: &State, p: usize) -> u8 {
+    let n = hand_total(&s.players[p].hand);
+    if n > s.config.discard_limit as u32 {
+        (n / 2) as u8
+    } else {
+        0
     }
 }
 
@@ -131,29 +124,11 @@ fn random_discards<S: EventSink>(s: &mut State, forced: Option<[Hand; NUM_PLAYER
     for p in 0..NUM_PLAYERS {
         let k = s.players[p].discard_remaining;
         if k == 0 {
-            if let Some(f) = forced {
-                assert!(
-                    hand_total(&f[p]) == 0,
-                    "forced discard for player {p} who owes none"
-                );
-            }
             continue;
         }
-        let hand = s.players[p].hand;
         let discard = match forced {
-            Some(f) => {
-                assert_eq!(
-                    hand_total(&f[p]),
-                    k as u32,
-                    "forced discard for player {p} has wrong size"
-                );
-                assert!(
-                    covers(&hand, &f[p]),
-                    "forced discard for player {p} exceeds hand"
-                );
-                f[p]
-            }
-            None => sample_cards(&hand, k, &mut s.rng_misc),
+            Some(f) => f[p],
+            None => sample_cards(&s.players[p].hand, k, &mut s.rng_misc),
         };
         for r in 0..NUM_RESOURCES {
             for _ in 0..discard[r] {

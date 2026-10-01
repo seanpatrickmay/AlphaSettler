@@ -20,7 +20,7 @@ pub use apply::{Chance, EventSink, NoEvents};
 pub use board::{Board, PortKind};
 pub use config::GameConfig;
 pub use events::Event;
-pub use game::{Game, IllegalAction};
+pub use game::{ApplyError, Game};
 pub use observation::Observation;
 pub use state::{PendingTrade, Phase, PlayerState, Response, State};
 pub use types::*;

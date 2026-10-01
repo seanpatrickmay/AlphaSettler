@@ -59,14 +59,8 @@ pub fn apply_steal<S: EventSink>(
     let hand = s.players[v].hand;
     let r = match chance {
         None => pick_card(&hand, &mut s.rng_steal),
-        Some(Chance::Steal(r)) => {
-            assert!(
-                hand[r.index()] > 0,
-                "forced steal of {r:?} but victim has none"
-            );
-            r
-        }
-        Some(c) => panic!("chance {c:?} does not match StealFrom"),
+        Some(Chance::Steal(r)) => r,
+        Some(_) => unreachable!("chance checked in apply_with"),
     };
     s.players[v].hand[r.index()] -= 1;
     s.players[s.current as usize].hand[r.index()] += 1;
