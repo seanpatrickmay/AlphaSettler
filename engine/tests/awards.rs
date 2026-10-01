@@ -26,6 +26,14 @@ fn ring_counts_every_edge() {
     assert_eq!(longest_road(mask128(&path_edges(&nodes)), 0), 6);
 }
 
+/// Full recompute: every player's cached length, then the award.
+fn update_all(s: &mut State) {
+    for p in 0..NUM_PLAYERS {
+        recompute_road_len(s, p);
+    }
+    assign_longest_road(s);
+}
+
 fn two_roads(len0: usize, len1: usize) -> State {
     let mut s = blank(1, Phase::Main);
     let n0 = path_nodes(0, len0, 0);
@@ -41,10 +49,10 @@ fn two_roads(len0: usize, len1: usize) -> State {
 #[test]
 fn award_needs_five() {
     let mut s = two_roads(4, 3);
-    update_longest_road(&mut s);
+    update_all(&mut s);
     assert_eq!(s.longest_road_owner, None);
     let mut s = two_roads(5, 3);
-    update_longest_road(&mut s);
+    update_all(&mut s);
     assert_eq!(s.longest_road_owner, Some(0));
     assert_eq!(s.public_vp(0), 2);
     assert_eq!(s.players[0].longest_road_len, 5);
@@ -54,7 +62,7 @@ fn award_needs_five() {
 fn holder_keeps_award_on_tie() {
     let mut s = two_roads(5, 5);
     s.longest_road_owner = Some(1);
-    update_longest_road(&mut s);
+    update_all(&mut s);
     assert_eq!(s.longest_road_owner, Some(1));
 }
 
@@ -62,7 +70,7 @@ fn holder_keeps_award_on_tie() {
 fn longer_road_takes_award() {
     let mut s = two_roads(6, 5);
     s.longest_road_owner = Some(1);
-    update_longest_road(&mut s);
+    update_all(&mut s);
     assert_eq!(s.longest_road_owner, Some(0));
 }
 
@@ -71,14 +79,14 @@ fn broken_holder_with_tied_challengers_leaves_award_unowned() {
     let mut s = two_roads(5, 5);
     s.longest_road_owner = Some(2);
     s.players[2].roads = 0; // holder's road was broken below everyone else
-    update_longest_road(&mut s);
+    update_all(&mut s);
     assert_eq!(s.longest_road_owner, None);
 }
 
 #[test]
 fn settlement_breaking_road_moves_award() {
     let mut s = two_roads(6, 5);
-    update_longest_road(&mut s);
+    update_all(&mut s);
     assert_eq!(s.longest_road_owner, Some(0));
     // Player 1 reaches a middle node of player 0's road with a spur and settles there.
     // Cutting a 6-road at index 2, 3, or 4 leaves at most 4 on either side.

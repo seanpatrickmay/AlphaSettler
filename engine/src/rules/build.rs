@@ -84,7 +84,8 @@ pub fn apply_build_road<S: EventSink>(s: &mut State, e: u8, free: bool, sink: &m
         player: s.current,
         edge: e,
     });
-    awards::update_longest_road(s);
+    awards::recompute_road_len(s, p);
+    awards::assign_longest_road(s);
 }
 
 pub fn apply_build_settlement<S: EventSink>(s: &mut State, n: u8, sink: &mut S) {
@@ -95,7 +96,14 @@ pub fn apply_build_settlement<S: EventSink>(s: &mut State, n: u8, sink: &mut S) 
         player: s.current,
         node: n,
     });
-    awards::update_longest_road(s);
+    // Only opponents whose roads run through `n` can have been cut.
+    let touching = topo().node_edge_mask[n as usize];
+    for q in 0..NUM_PLAYERS {
+        if q != p && s.players[q].roads & touching != 0 {
+            awards::recompute_road_len(s, q);
+        }
+    }
+    awards::assign_longest_road(s);
 }
 
 pub fn apply_build_city<S: EventSink>(s: &mut State, n: u8, sink: &mut S) {

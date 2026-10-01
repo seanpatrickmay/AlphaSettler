@@ -24,4 +24,12 @@ position, compared with 3.2 ns for a `PreRoll` position and 10.7 ns for a 2-acti
 that earlier versions of this bench measured. As an extra whole-game figure, `random_game` is
 145.43 µs / 1100 actions, about 132 ns per generate-choose-apply step.
 
+## Updates
+
+- 2026-09-30, incremental longest road (final-review fix): `cargo run --release -p settler-engine
+  --example throughput 10000`, same machine and config. Single-thread games/s 9686 (was 6866 on
+  the commit just before the change, measured interleaved with the new build over 5 runs each:
+  6822-6871 before vs 9674-9716 after); actions per game unchanged at 1100; all-thread games/s
+  67796 (10 threads). The table above keeps the original baseline.
+
 Catanatron side-by-side comparison: Plan 3.
