@@ -32,6 +32,39 @@ fn check_invariants(s: &State) {
     }
     let held_dev: u32 = s.players.iter().flat_map(|p| p.dev_hand.iter()).map(|&c| c as u32).sum();
     assert!(held_dev <= s.dev_deck_pos as u32);
+    check_vp(s);
+}
+
+/// VP recomputed from raw board fields, independent of `State::public_vp` / `total_vp`.
+fn check_vp(s: &State) {
+    for (i, p) in s.players.iter().enumerate() {
+        let mut expect = p.settlements.count_ones() + 2 * p.cities.count_ones();
+        if s.longest_road_owner == Some(i as PlayerId) {
+            expect += 2;
+        }
+        if s.largest_army_owner == Some(i as PlayerId) {
+            expect += 2;
+        }
+        assert_eq!(s.public_vp(i) as u32, expect, "public vp of player {i}");
+    }
+    if let Some(h) = s.longest_road_owner {
+        let len = s.players[h as usize].longest_road_len;
+        assert!(len >= 5, "longest road holder {h} has only {len}");
+        assert!(s.players.iter().all(|p| p.longest_road_len <= len), "longer road than holder {h}");
+    }
+    if let Some(h) = s.largest_army_owner {
+        let k = s.players[h as usize].knights_played;
+        assert!(k >= 3, "largest army holder {h} has only {k} knights");
+        assert!(s.players.iter().all(|p| p.knights_played <= k), "more knights than holder {h}");
+    }
+    if !s.is_over() {
+        let c = s.current as usize;
+        assert!(
+            (s.total_vp(c) as u32) < s.config.vp_to_win as u32,
+            "player {c} has {} vp but the game is not over",
+            s.total_vp(c)
+        );
+    }
 }
 
 proptest! {
@@ -53,6 +86,11 @@ proptest! {
             prop_assert!(!buf.is_empty(), "no legal actions in {:?}", s.phase);
             for &a in &buf {
                 prop_assert_eq!(Action::decode(a.encode()), Some(a));
+            }
+            for &other in &buf {
+                let mut c = s;
+                c.apply(other);
+                check_invariants(&c);
             }
             let a = buf[rng.below(buf.len() as u32) as usize];
             s.apply(a);
@@ -78,4 +116,22 @@ fn play_random_finishes_games() {
         assert!(s.is_over());
         assert!(n > 0);
     }
+}
+
+#[test]
+fn turn_limit_ends_game_as_draw() {
+    let cfg = GameConfig { max_turns: 5, max_offers_per_turn: 0, ..GameConfig::default() };
+    let mut rng = Rng::new(3);
+    let mut buf = Vec::new();
+    let mut draws = 0;
+    for seed in 0..20 {
+        let mut s = State::new(seed, cfg);
+        play_random(&mut s, &mut rng, &mut buf);
+        assert!(s.is_over());
+        if s.winner().is_none() {
+            draws += 1;
+            assert!(s.turn >= 5, "draw before the turn limit (turn {})", s.turn);
+        }
+    }
+    assert!(draws >= 1, "no game hit the turn limit");
 }
