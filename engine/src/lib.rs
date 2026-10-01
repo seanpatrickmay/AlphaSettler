@@ -2,3 +2,6 @@
 
 pub mod types;
 pub mod topology;
+pub mod board;
+pub mod config;
+pub mod rng;
