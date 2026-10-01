@@ -1,0 +1,24 @@
+# Rust
+target/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+*.so
+dist/
+build/
+
+# Secrets / local
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+.DS_Store
+
+# Large generated artifacts
+runs/
+*.parquet
