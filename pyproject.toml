@@ -1,0 +1,26 @@
+[build-system]
+requires = ["maturin==1.15.0"]
+build-backend = "maturin"
+
+[project]
+name = "alphasettler"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["maturin==1.15.0", "pytest==9.1.1"]
+oracle = ["catanatron @ git+https://github.com/bcollazo/catanatron.git@ecf931181b9a65bb4116a2153fb78c16f1438e00"]
+
+[project.scripts]
+alphasettler = "alphasettler.cli:main"
+
+[tool.maturin]
+manifest-path = "bindings/Cargo.toml"
+module-name = "alphasettler._engine"
+python-source = "."
+python-packages = ["oracle"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+markers = ["slow: long-running (AlphaBeta, thousands of games)"]
