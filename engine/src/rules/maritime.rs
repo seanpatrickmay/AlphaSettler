@@ -33,5 +33,9 @@ pub fn apply<S: EventSink>(s: &mut State, give: Resource, get: Resource, sink: &
     hand_add(&mut s.bank, &gave);
     hand_sub(&mut s.bank, &got);
     hand_add(&mut s.players[p].hand, &got);
-    sink.emit(Event::MaritimeTraded { player: s.current, gave, got });
+    sink.emit(Event::MaritimeTraded {
+        player: s.current,
+        gave,
+        got,
+    });
 }

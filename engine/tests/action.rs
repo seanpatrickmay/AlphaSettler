@@ -34,7 +34,10 @@ fn maritime_same_resource_is_not_an_action() {
     assert_eq!(Action::decode(233), None); // give Wood, get Wood
     assert_eq!(
         Action::decode(234),
-        Some(Action::MaritimeTrade { give: Resource::Wood, get: Resource::Brick })
+        Some(Action::MaritimeTrade {
+            give: Resource::Wood,
+            get: Resource::Brick
+        })
     );
 }
 

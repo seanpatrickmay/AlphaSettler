@@ -16,18 +16,24 @@ pub const SETUP_ORDER: [PlayerId; 8] = [0, 1, 2, 3, 3, 2, 1, 0];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     SetupSettlement,
-    SetupRoad { node: u8 },
+    SetupRoad {
+        node: u8,
+    },
     PreRoll,
     /// Players with `discard_remaining > 0` discard one card at a time, lowest seat first.
     Discard,
     MoveRobber,
     Steal,
     Main,
-    RoadBuilding { roads_left: u8 },
+    RoadBuilding {
+        roads_left: u8,
+    },
     /// Opponents answer the pending offer in seat order after the offerer.
     TradeResponse,
     TradeConfirm,
-    GameOver { winner: Option<PlayerId> },
+    GameOver {
+        winner: Option<PlayerId>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -133,8 +139,13 @@ impl State {
         match self.phase {
             Phase::Discard => (0..NUM_PLAYERS)
                 .find(|&p| self.players[p].discard_remaining > 0)
-                .expect("Discard phase with nobody discarding") as PlayerId,
-            Phase::TradeResponse => self.trade.expect("TradeResponse without a trade").next_responder,
+                .expect("Discard phase with nobody discarding")
+                as PlayerId,
+            Phase::TradeResponse => {
+                self.trade
+                    .expect("TradeResponse without a trade")
+                    .next_responder
+            }
             _ => self.current,
         }
     }

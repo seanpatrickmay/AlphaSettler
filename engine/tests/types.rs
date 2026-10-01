@@ -47,6 +47,9 @@ fn hand_arithmetic() {
 #[test]
 fn bit_iterators() {
     assert_eq!(bits64(0b1010_0001).collect::<Vec<_>>(), vec![0, 5, 7]);
-    assert_eq!(bits128((1u128 << 100) | 1).collect::<Vec<_>>(), vec![0, 100]);
+    assert_eq!(
+        bits128((1u128 << 100) | 1).collect::<Vec<_>>(),
+        vec![0, 100]
+    );
     assert_eq!(bits64(0).count(), 0);
 }

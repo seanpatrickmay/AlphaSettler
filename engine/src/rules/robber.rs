@@ -30,8 +30,15 @@ pub fn victims(s: &State) -> [bool; NUM_PLAYERS] {
 
 pub fn apply_move_robber<S: EventSink>(s: &mut State, tile: u8, sink: &mut S) {
     s.robber = tile;
-    sink.emit(Event::RobberMoved { player: s.current, tile });
-    s.phase = if victims(s).iter().any(|&v| v) { Phase::Steal } else { s.robber_return };
+    sink.emit(Event::RobberMoved {
+        player: s.current,
+        tile,
+    });
+    s.phase = if victims(s).iter().any(|&v| v) {
+        Phase::Steal
+    } else {
+        s.robber_return
+    };
 }
 
 pub fn legal_steal(s: &State, out: &mut Vec<Action>) {
@@ -42,19 +49,31 @@ pub fn legal_steal(s: &State, out: &mut Vec<Action>) {
     }
 }
 
-pub fn apply_steal<S: EventSink>(s: &mut State, victim: PlayerId, chance: Option<Chance>, sink: &mut S) {
+pub fn apply_steal<S: EventSink>(
+    s: &mut State,
+    victim: PlayerId,
+    chance: Option<Chance>,
+    sink: &mut S,
+) {
     let v = victim as usize;
     let hand = s.players[v].hand;
     let r = match chance {
         None => pick_card(&hand, &mut s.rng_steal),
         Some(Chance::Steal(r)) => {
-            assert!(hand[r.index()] > 0, "forced steal of {r:?} but victim has none");
+            assert!(
+                hand[r.index()] > 0,
+                "forced steal of {r:?} but victim has none"
+            );
             r
         }
         Some(c) => panic!("chance {c:?} does not match StealFrom"),
     };
     s.players[v].hand[r.index()] -= 1;
     s.players[s.current as usize].hand[r.index()] += 1;
-    sink.emit(Event::Stole { thief: s.current, victim, resource: Some(r) });
+    sink.emit(Event::Stole {
+        thief: s.current,
+        victim,
+        resource: Some(r),
+    });
     s.phase = s.robber_return;
 }

@@ -29,7 +29,9 @@ fn ring_counts_every_edge() {
 fn two_roads(len0: usize, len1: usize) -> State {
     let mut s = blank(1, Phase::Main);
     let n0 = path_nodes(0, len0, 0);
-    let avoid = n0.iter().fold(0u64, |m, &n| m | (1u64 << n) | topo().node_neighbor_mask[n as usize]);
+    let avoid = n0.iter().fold(0u64, |m, &n| {
+        m | (1u64 << n) | topo().node_neighbor_mask[n as usize]
+    });
     let n1 = path_nodes(53, len1, avoid);
     s.players[0].roads = mask128(&path_edges(&n0));
     s.players[1].roads = mask128(&path_edges(&n1));
@@ -119,7 +121,10 @@ fn largest_army() {
 
 #[test]
 fn building_to_target_vp_wins() {
-    let c = GameConfig { vp_to_win: 3, ..cfg() };
+    let c = GameConfig {
+        vp_to_win: 3,
+        ..cfg()
+    };
     let mut s = blank_with(1, Phase::Main, c);
     let nodes = path_nodes(20, 2, 0);
     s.players[0].roads = mask128(&path_edges(&nodes));
@@ -131,7 +136,10 @@ fn building_to_target_vp_wins() {
 
 #[test]
 fn players_win_only_on_their_own_turn() {
-    let c = GameConfig { vp_to_win: 3, ..cfg() };
+    let c = GameConfig {
+        vp_to_win: 3,
+        ..cfg()
+    };
     let mut s = blank_with(1, Phase::Main, c);
     s.players[1].cities = 1u64 << 0;
     s.players[1].settlements = 1u64 << 30;

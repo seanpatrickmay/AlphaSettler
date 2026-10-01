@@ -35,11 +35,28 @@ fn steal_game() -> Game {
 #[test]
 fn steals_are_private_to_thief_and_victim() {
     let g = steal_game();
-    let stole = |v: PlayerId| *g.log_for(v).iter().rev().find(|e| matches!(e, Event::Stole { .. })).unwrap();
-    let full = Event::Stole { thief: 0, victim: 1, resource: Some(Resource::Ore) };
+    let stole = |v: PlayerId| {
+        *g.log_for(v)
+            .iter()
+            .rev()
+            .find(|e| matches!(e, Event::Stole { .. }))
+            .unwrap()
+    };
+    let full = Event::Stole {
+        thief: 0,
+        victim: 1,
+        resource: Some(Resource::Ore),
+    };
     assert_eq!(stole(0), full);
     assert_eq!(stole(1), full);
-    assert_eq!(stole(2), Event::Stole { thief: 0, victim: 1, resource: None });
+    assert_eq!(
+        stole(2),
+        Event::Stole {
+            thief: 0,
+            victim: 1,
+            resource: None
+        }
+    );
 }
 
 #[test]
@@ -47,9 +64,22 @@ fn bought_dev_cards_are_private() {
     let mut s = blank(1, Phase::Main);
     give(&mut s, 0, DEV_COST);
     let mut g = Game::from_state(s);
-    g.apply_forced(Action::BuyDev, Some(Chance::Dev(DevCard::Monopoly))).unwrap();
-    assert_eq!(g.log_for(0).last(), Some(&Event::BoughtDev { player: 0, card: Some(DevCard::Monopoly) }));
-    assert_eq!(g.log_for(3).last(), Some(&Event::BoughtDev { player: 0, card: None }));
+    g.apply_forced(Action::BuyDev, Some(Chance::Dev(DevCard::Monopoly)))
+        .unwrap();
+    assert_eq!(
+        g.log_for(0).last(),
+        Some(&Event::BoughtDev {
+            player: 0,
+            card: Some(DevCard::Monopoly)
+        })
+    );
+    assert_eq!(
+        g.log_for(3).last(),
+        Some(&Event::BoughtDev {
+            player: 0,
+            card: None
+        })
+    );
 }
 
 #[test]
@@ -57,14 +87,23 @@ fn illegal_action_is_rejected_without_changing_state() {
     let mut g = Game::new(1, cfg());
     let before = *g.state();
     let err = g.apply(Action::Roll).unwrap_err();
-    assert_eq!(err, IllegalAction { action: Action::Roll, phase: Phase::SetupSettlement });
+    assert_eq!(
+        err,
+        IllegalAction {
+            action: Action::Roll,
+            phase: Phase::SetupSettlement
+        }
+    );
     assert_eq!(*g.state(), before);
     assert!(g.log_for(0).is_empty());
 }
 
 #[test]
 fn actions_after_game_over_are_rejected() {
-    let c = GameConfig { max_turns: 1, ..cfg() };
+    let c = GameConfig {
+        max_turns: 1,
+        ..cfg()
+    };
     let mut g = Game::from_state(blank_with(1, Phase::Main, c));
     g.apply(Action::EndTurn).unwrap();
     assert!(g.state().is_over());
@@ -78,7 +117,8 @@ fn year_of_plenty_order_is_normalized() {
     let mut s = blank(1, Phase::Main);
     s.players[0].dev_hand[DevCard::YearOfPlenty.index()] = 1;
     let mut g = Game::from_state(s);
-    g.apply(Action::PlayYearOfPlenty(Resource::Ore, Resource::Wood)).unwrap();
+    g.apply(Action::PlayYearOfPlenty(Resource::Ore, Resource::Wood))
+        .unwrap();
     assert_eq!(g.state().players[0].hand, [1, 0, 0, 0, 1]);
 }
 

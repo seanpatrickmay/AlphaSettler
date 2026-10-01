@@ -18,9 +18,15 @@ pub enum Action {
     MoveRobber(u8),
     StealFrom(PlayerId),
     Discard(Resource),
-    MaritimeTrade { give: Resource, get: Resource },
+    MaritimeTrade {
+        give: Resource,
+        get: Resource,
+    },
     /// Indices into the trade bundles (see `bundle`).
-    OfferTrade { give: u8, get: u8 },
+    OfferTrade {
+        give: u8,
+        get: u8,
+    },
     AcceptTrade,
     RejectTrade,
     ConfirmTrade(PlayerId),
@@ -31,10 +37,20 @@ pub const ACTION_SPACE_SIZE: usize = 665;
 
 /// Unordered resource pairs (i <= j): Year of Plenty choices and 2-card trade bundles.
 pub const PAIRS: [(u8, u8); 15] = [
-    (0, 0), (0, 1), (0, 2), (0, 3), (0, 4),
-    (1, 1), (1, 2), (1, 3), (1, 4),
-    (2, 2), (2, 3), (2, 4),
-    (3, 3), (3, 4),
+    (0, 0),
+    (0, 1),
+    (0, 2),
+    (0, 3),
+    (0, 4),
+    (1, 1),
+    (1, 2),
+    (1, 3),
+    (1, 4),
+    (2, 2),
+    (2, 3),
+    (2, 4),
+    (3, 3),
+    (3, 4),
     (4, 4),
 ];
 
@@ -63,7 +79,10 @@ pub fn bundle_size(i: u8) -> u8 {
 }
 
 fn pair_index(a: Resource, b: Resource) -> u16 {
-    let (a, b) = (a.index().min(b.index()) as u8, a.index().max(b.index()) as u8);
+    let (a, b) = (
+        a.index().min(b.index()) as u8,
+        a.index().max(b.index()) as u8,
+    );
     PAIRS.iter().position(|&p| p == (a, b)).unwrap() as u16
 }
 
@@ -83,7 +102,9 @@ impl Action {
             Action::MoveRobber(t) => 205 + t as u16,
             Action::StealFrom(p) => 224 + p as u16,
             Action::Discard(r) => 228 + r.index() as u16,
-            Action::MaritimeTrade { give, get } => 233 + 5 * give.index() as u16 + get.index() as u16,
+            Action::MaritimeTrade { give, get } => {
+                233 + 5 * give.index() as u16 + get.index() as u16
+            }
             Action::OfferTrade { give, get } => 258 + 20 * give as u16 + get as u16,
             Action::AcceptTrade => 658,
             Action::RejectTrade => 659,
@@ -117,11 +138,17 @@ impl Action {
                 if give == get {
                     return None;
                 }
-                Action::MaritimeTrade { give: r(give), get: r(get) }
+                Action::MaritimeTrade {
+                    give: r(give),
+                    get: r(get),
+                }
             }
             258..=657 => {
                 let k = id - 258;
-                Action::OfferTrade { give: (k / 20) as u8, get: (k % 20) as u8 }
+                Action::OfferTrade {
+                    give: (k / 20) as u8,
+                    get: (k % 20) as u8,
+                }
             }
             658 => Action::AcceptTrade,
             659 => Action::RejectTrade,

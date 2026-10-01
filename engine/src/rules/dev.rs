@@ -57,7 +57,10 @@ pub fn legal_road_building(s: &State, out: &mut Vec<Action>) {
 fn use_card<S: EventSink>(s: &mut State, card: DevCard, sink: &mut S) {
     s.players[s.current as usize].dev_hand[card.index()] -= 1;
     s.dev_played_this_turn = true;
-    sink.emit(Event::PlayedDev { player: s.current, card });
+    sink.emit(Event::PlayedDev {
+        player: s.current,
+        card,
+    });
 }
 
 pub fn apply_buy_dev<S: EventSink>(s: &mut State, chance: Option<Chance>, sink: &mut S) {
@@ -79,7 +82,10 @@ pub fn apply_buy_dev<S: EventSink>(s: &mut State, chance: Option<Chance>, sink: 
     s.dev_deck_pos += 1;
     s.players[p].dev_hand[card.index()] += 1;
     s.players[p].dev_new[card.index()] += 1;
-    sink.emit(Event::BoughtDev { player: s.current, card: Some(card) });
+    sink.emit(Event::BoughtDev {
+        player: s.current,
+        card: Some(card),
+    });
 }
 
 pub fn apply_play_knight<S: EventSink>(s: &mut State, sink: &mut S) {
@@ -88,7 +94,11 @@ pub fn apply_play_knight<S: EventSink>(s: &mut State, sink: &mut S) {
     use_card(s, DevCard::Knight, sink);
     s.players[p].knights_played += 1;
     awards::update_largest_army(s, p);
-    s.robber_return = if from_preroll { Phase::PreRoll } else { Phase::Main };
+    s.robber_return = if from_preroll {
+        Phase::PreRoll
+    } else {
+        Phase::Main
+    };
     s.phase = Phase::MoveRobber;
 }
 
@@ -118,7 +128,10 @@ pub fn apply_year_of_plenty<S: EventSink>(s: &mut State, a: Resource, b: Resourc
     got[b.index()] += 1;
     hand_add(&mut s.players[s.current as usize].hand, &got);
     hand_sub(&mut s.bank, &got);
-    sink.emit(Event::YearOfPlentyTaken { player: s.current, resources: got });
+    sink.emit(Event::YearOfPlentyTaken {
+        player: s.current,
+        resources: got,
+    });
 }
 
 pub fn apply_monopoly<S: EventSink>(s: &mut State, r: Resource, sink: &mut S) {
@@ -132,5 +145,9 @@ pub fn apply_monopoly<S: EventSink>(s: &mut State, r: Resource, sink: &mut S) {
         }
     }
     s.players[p].hand[r.index()] += amount;
-    sink.emit(Event::MonopolyTaken { player: s.current, resource: r, amount });
+    sink.emit(Event::MonopolyTaken {
+        player: s.current,
+        resource: r,
+        amount,
+    });
 }

@@ -16,7 +16,13 @@ fn unforced_roll_uses_seed_and_turn() {
     let mut s = after_setup(4);
     let mut log: Vec<Event> = Vec::new();
     s.apply_with(Action::Roll, None, &mut log);
-    assert_eq!(log[0], Event::Rolled { player: 0, dice: dice_for(4, 0) });
+    assert_eq!(
+        log[0],
+        Event::Rolled {
+            player: 0,
+            dice: dice_for(4, 0)
+        }
+    );
 }
 
 #[test]
@@ -94,7 +100,11 @@ fn seven_makes_big_hands_discard_half() {
     assert_eq!(s.current_actor(), 0);
     assert_eq!(
         sorted(s.legal_actions()),
-        vec![Action::Discard(Resource::Wood), Action::Discard(Resource::Brick), Action::Discard(Resource::Sheep)]
+        vec![
+            Action::Discard(Resource::Wood),
+            Action::Discard(Resource::Brick),
+            Action::Discard(Resource::Sheep)
+        ]
     );
     for _ in 0..3 {
         s.apply(Action::Discard(Resource::Wood));
@@ -128,7 +138,10 @@ fn multiple_discarders_go_in_seat_order() {
 
 #[test]
 fn compat_mode_discards_randomly() {
-    let c = GameConfig { catanatron_compat: true, ..cfg() };
+    let c = GameConfig {
+        catanatron_compat: true,
+        ..cfg()
+    };
     let mut s = blank_with(1, Phase::PreRoll, c);
     give(&mut s, 0, [3, 3, 3, 0, 0]);
     roll(&mut s, 7);
@@ -139,12 +152,22 @@ fn compat_mode_discards_randomly() {
 
 #[test]
 fn compat_mode_accepts_forced_discards() {
-    let c = GameConfig { catanatron_compat: true, ..cfg() };
+    let c = GameConfig {
+        catanatron_compat: true,
+        ..cfg()
+    };
     let mut s = blank_with(1, Phase::PreRoll, c);
     give(&mut s, 0, [5, 4, 0, 0, 0]);
     let mut discards = [[0u8; 5]; 4];
     discards[0] = [4, 0, 0, 0, 0];
-    s.apply_with(Action::Roll, Some(Chance::Roll { dice: (3, 4), discards: Some(discards) }), &mut NoEvents);
+    s.apply_with(
+        Action::Roll,
+        Some(Chance::Roll {
+            dice: (3, 4),
+            discards: Some(discards),
+        }),
+        &mut NoEvents,
+    );
     assert_eq!(s.players[0].hand, [1, 4, 0, 0, 0]);
 }
 
@@ -166,7 +189,11 @@ fn steal_from_victim_on_new_tile() {
     assert_eq!(s.robber, t);
     assert_eq!(s.phase, Phase::Steal);
     assert_eq!(s.legal_actions(), vec![Action::StealFrom(1)]);
-    s.apply_with(Action::StealFrom(1), Some(Chance::Steal(Resource::Wood)), &mut NoEvents);
+    s.apply_with(
+        Action::StealFrom(1),
+        Some(Chance::Steal(Resource::Wood)),
+        &mut NoEvents,
+    );
     assert_eq!(s.players[0].hand, [1, 0, 0, 0, 0]);
     assert_eq!(s.players[1].hand, [1, 0, 0, 0, 0]);
     assert_eq!(s.phase, Phase::Main);
@@ -211,14 +238,22 @@ fn forced_steal_of_missing_resource_panics() {
     s.players[1].settlements = 1u64 << exclusive_nodes(t as usize)[0];
     give(&mut s, 1, [1, 0, 0, 0, 0]);
     s.apply(Action::MoveRobber(t));
-    s.apply_with(Action::StealFrom(1), Some(Chance::Steal(Resource::Ore)), &mut NoEvents);
+    s.apply_with(
+        Action::StealFrom(1),
+        Some(Chance::Steal(Resource::Ore)),
+        &mut NoEvents,
+    );
 }
 
 #[test]
 #[should_panic(expected = "does not match")]
 fn mismatched_chance_panics() {
     let mut s = blank(1, Phase::PreRoll);
-    s.apply_with(Action::Roll, Some(Chance::Steal(Resource::Wood)), &mut NoEvents);
+    s.apply_with(
+        Action::Roll,
+        Some(Chance::Steal(Resource::Wood)),
+        &mut NoEvents,
+    );
 }
 
 #[test]
@@ -232,7 +267,11 @@ fn tile_masks_cover_building_production() {
 }
 
 fn forced_roll(s: &mut State, dice: (u8, u8), discards: Option<[Hand; 4]>) {
-    s.apply_with(Action::Roll, Some(Chance::Roll { dice, discards }), &mut NoEvents);
+    s.apply_with(
+        Action::Roll,
+        Some(Chance::Roll { dice, discards }),
+        &mut NoEvents,
+    );
 }
 
 #[test]
@@ -256,7 +295,10 @@ fn forced_dice_mixed_out_of_range_panics() {
 #[test]
 #[should_panic(expected = "forced discards given but the roll is not a 7")]
 fn forced_discards_on_non_seven_panics() {
-    let c = GameConfig { catanatron_compat: true, ..cfg() };
+    let c = GameConfig {
+        catanatron_compat: true,
+        ..cfg()
+    };
     let mut s = blank_with(1, Phase::PreRoll, c);
     forced_roll(&mut s, (3, 3), Some([[0u8; 5]; 4]));
 }
@@ -274,7 +316,10 @@ fn forced_discards_without_compat_panics() {
 #[test]
 #[should_panic(expected = "forced discards given but no player must discard")]
 fn forced_discards_when_nobody_discards_panics() {
-    let c = GameConfig { catanatron_compat: true, ..cfg() };
+    let c = GameConfig {
+        catanatron_compat: true,
+        ..cfg()
+    };
     let mut s = blank_with(1, Phase::PreRoll, c);
     forced_roll(&mut s, (3, 4), Some([[0u8; 5]; 4]));
 }
@@ -282,7 +327,10 @@ fn forced_discards_when_nobody_discards_panics() {
 #[test]
 #[should_panic(expected = "forced discard for player 1 who owes none")]
 fn forced_discard_for_player_who_owes_none_panics() {
-    let c = GameConfig { catanatron_compat: true, ..cfg() };
+    let c = GameConfig {
+        catanatron_compat: true,
+        ..cfg()
+    };
     let mut s = blank_with(1, Phase::PreRoll, c);
     give(&mut s, 0, [5, 4, 0, 0, 0]);
     give(&mut s, 1, [2, 0, 0, 0, 0]);

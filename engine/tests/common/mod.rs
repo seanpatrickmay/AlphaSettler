@@ -46,7 +46,10 @@ pub fn dice_for_sum(sum: u8) -> (u8, u8) {
 pub fn roll(s: &mut State, sum: u8) {
     s.apply_with(
         Action::Roll,
-        Some(Chance::Roll { dice: dice_for_sum(sum), discards: None }),
+        Some(Chance::Roll {
+            dice: dice_for_sum(sum),
+            discards: None,
+        }),
         &mut NoEvents,
     );
 }
@@ -89,7 +92,10 @@ pub fn path_nodes(start: u8, len: usize, avoid: u64) -> Vec<u8> {
         false
     }
     let mut path = vec![start];
-    assert!(go(&mut path, len, avoid), "no path of length {len} from {start}");
+    assert!(
+        go(&mut path, len, avoid),
+        "no path of length {len} from {start}"
+    );
     path
 }
 

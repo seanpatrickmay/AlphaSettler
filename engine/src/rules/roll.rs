@@ -19,10 +19,16 @@ pub fn apply_roll<S: EventSink>(s: &mut State, chance: Option<Chance>, sink: &mu
         "forced dice {:?} out of range",
         (d1, d2)
     );
-    sink.emit(Event::Rolled { player: s.current, dice: (d1, d2) });
+    sink.emit(Event::Rolled {
+        player: s.current,
+        dice: (d1, d2),
+    });
     let sum = d1 + d2;
     if sum != 7 {
-        assert!(forced_discards.is_none(), "forced discards given but the roll is not a 7");
+        assert!(
+            forced_discards.is_none(),
+            "forced discards given but the roll is not a 7"
+        );
         produce(s, sum, sink);
         s.phase = Phase::Main;
         return;
@@ -38,7 +44,10 @@ pub fn apply_roll<S: EventSink>(s: &mut State, chance: Option<Chance>, sink: &mu
     }
     s.robber_return = Phase::Main;
     if forced_discards.is_some() {
-        assert!(s.config.catanatron_compat, "forced discards given but catanatron_compat is off");
+        assert!(
+            s.config.catanatron_compat,
+            "forced discards given but catanatron_compat is off"
+        );
         assert!(any, "forced discards given but no player must discard");
     }
     if any && s.config.catanatron_compat {
@@ -58,7 +67,9 @@ fn produce<S: EventSink>(s: &mut State, roll: u8, sink: &mut S) {
         if s.board.tile_number[tile] != roll || tile as u8 == s.robber {
             continue;
         }
-        let Some(r) = s.board.tile_resource[tile] else { continue };
+        let Some(r) = s.board.tile_resource[tile] else {
+            continue;
+        };
         let mask = t.tile_node_mask[tile];
         for p in 0..NUM_PLAYERS {
             let pl = &s.players[p];
@@ -84,7 +95,10 @@ fn produce<S: EventSink>(s: &mut State, roll: u8, sink: &mut S) {
         if hand_total(&owed[p]) > 0 {
             hand_add(&mut s.players[p].hand, &owed[p]);
             hand_sub(&mut s.bank, &owed[p]);
-            sink.emit(Event::Produced { player: p as PlayerId, resources: owed[p] });
+            sink.emit(Event::Produced {
+                player: p as PlayerId,
+                resources: owed[p],
+            });
         }
     }
 }
@@ -118,22 +132,35 @@ fn random_discards<S: EventSink>(s: &mut State, forced: Option<[Hand; NUM_PLAYER
         let k = s.players[p].discard_remaining;
         if k == 0 {
             if let Some(f) = forced {
-                assert!(hand_total(&f[p]) == 0, "forced discard for player {p} who owes none");
+                assert!(
+                    hand_total(&f[p]) == 0,
+                    "forced discard for player {p} who owes none"
+                );
             }
             continue;
         }
         let hand = s.players[p].hand;
         let discard = match forced {
             Some(f) => {
-                assert_eq!(hand_total(&f[p]), k as u32, "forced discard for player {p} has wrong size");
-                assert!(covers(&hand, &f[p]), "forced discard for player {p} exceeds hand");
+                assert_eq!(
+                    hand_total(&f[p]),
+                    k as u32,
+                    "forced discard for player {p} has wrong size"
+                );
+                assert!(
+                    covers(&hand, &f[p]),
+                    "forced discard for player {p} exceeds hand"
+                );
                 f[p]
             }
             None => sample_cards(&hand, k, &mut s.rng_misc),
         };
         for r in 0..NUM_RESOURCES {
             for _ in 0..discard[r] {
-                sink.emit(Event::Discarded { player: p as PlayerId, resource: Resource::from_index(r) });
+                sink.emit(Event::Discarded {
+                    player: p as PlayerId,
+                    resource: Resource::from_index(r),
+                });
             }
         }
         hand_sub(&mut s.players[p].hand, &discard);
@@ -156,7 +183,10 @@ pub fn apply_discard<S: EventSink>(s: &mut State, r: Resource, sink: &mut S) {
     s.players[p].hand[r.index()] -= 1;
     s.bank[r.index()] += 1;
     s.players[p].discard_remaining -= 1;
-    sink.emit(Event::Discarded { player: p as PlayerId, resource: r });
+    sink.emit(Event::Discarded {
+        player: p as PlayerId,
+        resource: r,
+    });
     if s.players.iter().all(|pl| pl.discard_remaining == 0) {
         s.phase = Phase::MoveRobber;
     }

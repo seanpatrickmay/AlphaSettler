@@ -80,7 +80,10 @@ pub fn apply_build_road<S: EventSink>(s: &mut State, e: u8, free: bool, sink: &m
         pay(s, p, &ROAD_COST);
     }
     s.players[p].roads |= 1u128 << e;
-    sink.emit(Event::BuiltRoad { player: s.current, edge: e });
+    sink.emit(Event::BuiltRoad {
+        player: s.current,
+        edge: e,
+    });
     awards::update_longest_road(s);
 }
 
@@ -88,7 +91,10 @@ pub fn apply_build_settlement<S: EventSink>(s: &mut State, n: u8, sink: &mut S) 
     let p = s.current as usize;
     pay(s, p, &SETTLEMENT_COST);
     s.players[p].settlements |= 1u64 << n;
-    sink.emit(Event::BuiltSettlement { player: s.current, node: n });
+    sink.emit(Event::BuiltSettlement {
+        player: s.current,
+        node: n,
+    });
     awards::update_longest_road(s);
 }
 
@@ -97,7 +103,10 @@ pub fn apply_build_city<S: EventSink>(s: &mut State, n: u8, sink: &mut S) {
     pay(s, p, &CITY_COST);
     s.players[p].settlements &= !(1u64 << n);
     s.players[p].cities |= 1u64 << n;
-    sink.emit(Event::BuiltCity { player: s.current, node: n });
+    sink.emit(Event::BuiltCity {
+        player: s.current,
+        node: n,
+    });
 }
 
 pub fn apply_end_turn<S: EventSink>(s: &mut State, sink: &mut S) {

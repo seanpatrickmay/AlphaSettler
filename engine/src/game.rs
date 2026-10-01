@@ -29,7 +29,11 @@ impl Game {
     }
 
     pub fn from_state(state: State) -> Game {
-        Game { state, log: Vec::new(), buf: Vec::new() }
+        Game {
+            state,
+            log: Vec::new(),
+            buf: Vec::new(),
+        }
     }
 
     pub fn state(&self) -> &State {
@@ -52,12 +56,17 @@ impl Game {
         // Year of Plenty is unordered: canonicalize to ascending resource order.
         // Every other action passes through untouched so out-of-range payloads are rejected.
         let a = match a {
-            Action::PlayYearOfPlenty(x, y) if x.index() > y.index() => Action::PlayYearOfPlenty(y, x),
+            Action::PlayYearOfPlenty(x, y) if x.index() > y.index() => {
+                Action::PlayYearOfPlenty(y, x)
+            }
             other => other,
         };
         legal_actions(&self.state, &mut self.buf);
         if !self.buf.contains(&a) {
-            return Err(IllegalAction { action: a, phase: self.state.phase });
+            return Err(IllegalAction {
+                action: a,
+                phase: self.state.phase,
+            });
         }
         self.state.apply_with(a, chance, &mut self.log);
         Ok(())

@@ -31,10 +31,16 @@ impl Default for GameConfig {
 impl GameConfig {
     pub fn validate(&self) -> Result<(), String> {
         if !(1..=2).contains(&self.max_trade_cards) {
-            return Err(format!("max_trade_cards must be 1 or 2, got {}", self.max_trade_cards));
+            return Err(format!(
+                "max_trade_cards must be 1 or 2, got {}",
+                self.max_trade_cards
+            ));
         }
         if self.vp_to_win < 3 {
-            return Err(format!("vp_to_win must be at least 3, got {}", self.vp_to_win));
+            return Err(format!(
+                "vp_to_win must be at least 3, got {}",
+                self.vp_to_win
+            ));
         }
         if self.max_turns == 0 {
             return Err("max_turns must be positive".into());

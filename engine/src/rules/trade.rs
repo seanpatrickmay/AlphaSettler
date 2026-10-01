@@ -43,7 +43,11 @@ pub fn apply_offer<S: EventSink>(s: &mut State, give: u8, get: u8, sink: &mut S)
         next_responder: (s.current + 1) % NUM_PLAYERS as PlayerId,
     });
     s.phase = Phase::TradeResponse;
-    sink.emit(Event::TradeOffered { player: s.current, give, get });
+    sink.emit(Event::TradeOffered {
+        player: s.current,
+        give,
+        get,
+    });
 }
 
 pub fn legal_response(s: &State, out: &mut Vec<Action>) {
@@ -57,8 +61,15 @@ pub fn legal_response(s: &State, out: &mut Vec<Action>) {
 pub fn apply_response<S: EventSink>(s: &mut State, accepted: bool, sink: &mut S) {
     let mut tr = s.trade.expect("TradeResponse without a trade");
     let r = tr.next_responder;
-    tr.responses[r as usize] = if accepted { Response::Accepted } else { Response::Rejected };
-    sink.emit(Event::TradeResponded { player: r, accepted });
+    tr.responses[r as usize] = if accepted {
+        Response::Accepted
+    } else {
+        Response::Rejected
+    };
+    sink.emit(Event::TradeResponded {
+        player: r,
+        accepted,
+    });
     let next = (r + 1) % NUM_PLAYERS as PlayerId;
     if next != s.current {
         tr.next_responder = next;

@@ -27,11 +27,24 @@ pub struct Board {
 use Resource::*;
 
 pub const STANDARD_TERRAIN: [Option<Resource>; NUM_TILES] = [
-    Some(Wood), Some(Wood), Some(Wood), Some(Wood),
-    Some(Brick), Some(Brick), Some(Brick),
-    Some(Sheep), Some(Sheep), Some(Sheep), Some(Sheep),
-    Some(Wheat), Some(Wheat), Some(Wheat), Some(Wheat),
-    Some(Ore), Some(Ore), Some(Ore),
+    Some(Wood),
+    Some(Wood),
+    Some(Wood),
+    Some(Wood),
+    Some(Brick),
+    Some(Brick),
+    Some(Brick),
+    Some(Sheep),
+    Some(Sheep),
+    Some(Sheep),
+    Some(Sheep),
+    Some(Wheat),
+    Some(Wheat),
+    Some(Wheat),
+    Some(Wheat),
+    Some(Ore),
+    Some(Ore),
+    Some(Ore),
     None,
 ];
 
@@ -131,6 +144,9 @@ fn red_adjacent(tile_number: &[u8; NUM_TILES]) -> bool {
     let t = topo();
     let red = |n: u8| n == 6 || n == 8;
     (0..NUM_TILES).any(|i| {
-        red(tile_number[i]) && t.tile_neighbors[i].iter().any(|&j| red(tile_number[j as usize]))
+        red(tile_number[i])
+            && t.tile_neighbors[i]
+                .iter()
+                .any(|&j| red(tile_number[j as usize]))
     })
 }

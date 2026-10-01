@@ -8,13 +8,20 @@ use settler_engine::*;
 fn check_invariants(s: &State) {
     for r in 0..NUM_RESOURCES {
         let held: u32 = s.players.iter().map(|p| p.hand[r] as u32).sum();
-        assert_eq!(held + s.bank[r] as u32, BANK_PER_RESOURCE as u32, "resource {r} not conserved");
+        assert_eq!(
+            held + s.bank[r] as u32,
+            BANK_PER_RESOURCE as u32,
+            "resource {r} not conserved"
+        );
     }
     let t = topo();
     let mut nodes = 0u64;
     let mut edges = 0u128;
     for (i, p) in s.players.iter().enumerate() {
-        assert!(p.settlements.count_ones() <= MAX_SETTLEMENTS, "player {i} settlements");
+        assert!(
+            p.settlements.count_ones() <= MAX_SETTLEMENTS,
+            "player {i} settlements"
+        );
         assert!(p.cities.count_ones() <= MAX_CITIES, "player {i} cities");
         assert!(p.roads.count_ones() <= MAX_ROADS, "player {i} roads");
         assert_eq!(p.settlements & p.cities, 0);
@@ -28,9 +35,18 @@ fn check_invariants(s: &State) {
         }
     }
     for n in bits64(nodes) {
-        assert_eq!(nodes & t.node_neighbor_mask[n as usize], 0, "distance rule broken at {n}");
+        assert_eq!(
+            nodes & t.node_neighbor_mask[n as usize],
+            0,
+            "distance rule broken at {n}"
+        );
     }
-    let held_dev: u32 = s.players.iter().flat_map(|p| p.dev_hand.iter()).map(|&c| c as u32).sum();
+    let held_dev: u32 = s
+        .players
+        .iter()
+        .flat_map(|p| p.dev_hand.iter())
+        .map(|&c| c as u32)
+        .sum();
     assert!(held_dev <= s.dev_deck_pos as u32);
     check_vp(s);
 }
@@ -50,12 +66,18 @@ fn check_vp(s: &State) {
     if let Some(h) = s.longest_road_owner {
         let len = s.players[h as usize].longest_road_len;
         assert!(len >= 5, "longest road holder {h} has only {len}");
-        assert!(s.players.iter().all(|p| p.longest_road_len <= len), "longer road than holder {h}");
+        assert!(
+            s.players.iter().all(|p| p.longest_road_len <= len),
+            "longer road than holder {h}"
+        );
     }
     if let Some(h) = s.largest_army_owner {
         let k = s.players[h as usize].knights_played;
         assert!(k >= 3, "largest army holder {h} has only {k} knights");
-        assert!(s.players.iter().all(|p| p.knights_played <= k), "more knights than holder {h}");
+        assert!(
+            s.players.iter().all(|p| p.knights_played <= k),
+            "more knights than holder {h}"
+        );
     }
     if !s.is_over() {
         let c = s.current as usize;
@@ -107,7 +129,10 @@ proptest! {
 
 #[test]
 fn play_random_finishes_games() {
-    let cfg = GameConfig { max_offers_per_turn: 0, ..GameConfig::default() };
+    let cfg = GameConfig {
+        max_offers_per_turn: 0,
+        ..GameConfig::default()
+    };
     let mut rng = Rng::new(1);
     let mut buf = Vec::new();
     for seed in 0..20 {
@@ -120,7 +145,11 @@ fn play_random_finishes_games() {
 
 #[test]
 fn turn_limit_ends_game_as_draw() {
-    let cfg = GameConfig { max_turns: 5, max_offers_per_turn: 0, ..GameConfig::default() };
+    let cfg = GameConfig {
+        max_turns: 5,
+        max_offers_per_turn: 0,
+        ..GameConfig::default()
+    };
     let mut rng = Rng::new(3);
     let mut buf = Vec::new();
     let mut draws = 0;

@@ -39,7 +39,11 @@ impl State {
             viewer,
             phase: self.phase,
             current: self.current,
-            actor: if self.is_over() { self.current } else { self.current_actor() },
+            actor: if self.is_over() {
+                self.current
+            } else {
+                self.current_actor()
+            },
             turn: self.turn,
             board: self.board,
             robber: self.robber,

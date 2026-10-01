@@ -29,7 +29,10 @@ pub fn legal_road(s: &State, node: u8, out: &mut Vec<Action>) {
 pub fn apply_settlement<S: EventSink>(s: &mut State, n: u8, sink: &mut S) {
     let p = s.current as usize;
     s.players[p].settlements |= 1u64 << n;
-    sink.emit(Event::BuiltSettlement { player: s.current, node: n });
+    sink.emit(Event::BuiltSettlement {
+        player: s.current,
+        node: n,
+    });
     if s.setup_step >= 4 {
         let mut got = [0u8; 5];
         for &tile in &topo().node_tiles[n as usize] {
@@ -40,7 +43,10 @@ pub fn apply_settlement<S: EventSink>(s: &mut State, n: u8, sink: &mut S) {
         hand_add(&mut s.players[p].hand, &got);
         hand_sub(&mut s.bank, &got);
         if hand_total(&got) > 0 {
-            sink.emit(Event::Produced { player: s.current, resources: got });
+            sink.emit(Event::Produced {
+                player: s.current,
+                resources: got,
+            });
         }
     }
     s.phase = Phase::SetupRoad { node: n };
@@ -50,7 +56,10 @@ pub fn apply_road<S: EventSink>(s: &mut State, node: u8, e: u8, sink: &mut S) {
     debug_assert!(topo().node_edges[node as usize].contains(&e));
     let p = s.current as usize;
     s.players[p].roads |= 1u128 << e;
-    sink.emit(Event::BuiltRoad { player: s.current, edge: e });
+    sink.emit(Event::BuiltRoad {
+        player: s.current,
+        edge: e,
+    });
     s.setup_step += 1;
     if s.setup_step as usize == SETUP_ORDER.len() {
         s.current = 0;

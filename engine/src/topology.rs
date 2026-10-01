@@ -61,8 +61,11 @@ impl Topology {
         points.sort_by_key(|&(x, y)| (y, x));
         points.dedup();
         assert_eq!(points.len(), NUM_NODES);
-        let node_of: BTreeMap<(i32, i32), u8> =
-            points.iter().enumerate().map(|(i, &p)| (p, i as u8)).collect();
+        let node_of: BTreeMap<(i32, i32), u8> = points
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| (p, i as u8))
+            .collect();
 
         let mut tile_coords = [(0i8, 0i8); NUM_TILES];
         let mut tile_nodes = [[0u8; 6]; NUM_TILES];
@@ -116,7 +119,10 @@ impl Topology {
                 AXIAL_DIRS
                     .iter()
                     .filter_map(|&(dq, dr)| {
-                        coords.iter().position(|&c| c == (q + dq, r + dr)).map(|i| i as u8)
+                        coords
+                            .iter()
+                            .position(|&c| c == (q + dq, r + dr))
+                            .map(|i| i as u8)
                     })
                     .collect()
             })

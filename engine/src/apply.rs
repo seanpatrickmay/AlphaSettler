@@ -10,7 +10,10 @@ use crate::types::{DevCard, Hand, Resource, NUM_PLAYERS};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Chance {
     /// `discards` is only used in `catanatron_compat` mode on a 7.
-    Roll { dice: (u8, u8), discards: Option<[Hand; NUM_PLAYERS]> },
+    Roll {
+        dice: (u8, u8),
+        discards: Option<[Hand; NUM_PLAYERS]>,
+    },
     Steal(Resource),
     Dev(DevCard),
 }
@@ -40,26 +43,40 @@ impl State {
 
     pub fn apply_with<S: EventSink>(&mut self, a: Action, chance: Option<Chance>, sink: &mut S) {
         match (self.phase, a) {
-            (Phase::SetupSettlement, Action::BuildSettlement(n)) => setup::apply_settlement(self, n, sink),
-            (Phase::SetupRoad { node }, Action::BuildRoad(e)) => setup::apply_road(self, node, e, sink),
+            (Phase::SetupSettlement, Action::BuildSettlement(n)) => {
+                setup::apply_settlement(self, n, sink)
+            }
+            (Phase::SetupRoad { node }, Action::BuildRoad(e)) => {
+                setup::apply_road(self, node, e, sink)
+            }
             (Phase::PreRoll, Action::Roll) => roll::apply_roll(self, chance, sink),
             (Phase::Discard, Action::Discard(r)) => roll::apply_discard(self, r, sink),
             (Phase::MoveRobber, Action::MoveRobber(t)) => robber::apply_move_robber(self, t, sink),
             (Phase::Steal, Action::StealFrom(v)) => robber::apply_steal(self, v, chance, sink),
             (Phase::Main, Action::BuildRoad(e)) => build::apply_build_road(self, e, false, sink),
-            (Phase::Main, Action::BuildSettlement(n)) => build::apply_build_settlement(self, n, sink),
+            (Phase::Main, Action::BuildSettlement(n)) => {
+                build::apply_build_settlement(self, n, sink)
+            }
             (Phase::Main, Action::BuildCity(n)) => build::apply_build_city(self, n, sink),
             (Phase::Main, Action::EndTurn) => build::apply_end_turn(self, sink),
-            (Phase::PreRoll | Phase::Main, Action::PlayKnight) => dev::apply_play_knight(self, sink),
+            (Phase::PreRoll | Phase::Main, Action::PlayKnight) => {
+                dev::apply_play_knight(self, sink)
+            }
             (Phase::Main, Action::BuyDev) => dev::apply_buy_dev(self, chance, sink),
             (Phase::Main, Action::PlayRoadBuilding) => dev::apply_play_road_building(self, sink),
-            (Phase::Main, Action::PlayYearOfPlenty(a, b)) => dev::apply_year_of_plenty(self, a, b, sink),
+            (Phase::Main, Action::PlayYearOfPlenty(a, b)) => {
+                dev::apply_year_of_plenty(self, a, b, sink)
+            }
             (Phase::Main, Action::PlayMonopoly(r)) => dev::apply_monopoly(self, r, sink),
             (Phase::RoadBuilding { roads_left }, Action::BuildRoad(e)) => {
                 dev::apply_road_building_road(self, e, roads_left, sink)
             }
-            (Phase::Main, Action::MaritimeTrade { give, get }) => maritime::apply(self, give, get, sink),
-            (Phase::Main, Action::OfferTrade { give, get }) => trade::apply_offer(self, give, get, sink),
+            (Phase::Main, Action::MaritimeTrade { give, get }) => {
+                maritime::apply(self, give, get, sink)
+            }
+            (Phase::Main, Action::OfferTrade { give, get }) => {
+                trade::apply_offer(self, give, get, sink)
+            }
             (Phase::TradeResponse, Action::AcceptTrade) => trade::apply_response(self, true, sink),
             (Phase::TradeResponse, Action::RejectTrade) => trade::apply_response(self, false, sink),
             (Phase::TradeConfirm, Action::ConfirmTrade(p)) => trade::apply_confirm(self, p, sink),

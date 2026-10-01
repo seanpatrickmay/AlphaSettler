@@ -74,7 +74,10 @@ fn one_dev_card_per_turn() {
 fn knight_before_roll_returns_to_preroll() {
     let mut s = blank(1, Phase::PreRoll);
     s.players[0].dev_hand[Knight.index()] = 1;
-    assert_eq!(sorted(s.legal_actions()), vec![Action::Roll, Action::PlayKnight]);
+    assert_eq!(
+        sorted(s.legal_actions()),
+        vec![Action::Roll, Action::PlayKnight]
+    );
     s.apply(Action::PlayKnight);
     assert_eq!(s.phase, Phase::MoveRobber);
     assert_eq!(s.players[0].knights_played, 1);
@@ -153,8 +156,14 @@ fn year_of_plenty_respects_bank() {
     let mut s = blank(1, Phase::Main);
     s.players[0].dev_hand[YearOfPlenty.index()] = 1;
     s.bank[Resource::Wheat.index()] = 1;
-    assert!(has(&s, Action::PlayYearOfPlenty(Resource::Wheat, Resource::Ore)));
-    assert!(!has(&s, Action::PlayYearOfPlenty(Resource::Wheat, Resource::Wheat)));
+    assert!(has(
+        &s,
+        Action::PlayYearOfPlenty(Resource::Wheat, Resource::Ore)
+    ));
+    assert!(!has(
+        &s,
+        Action::PlayYearOfPlenty(Resource::Wheat, Resource::Wheat)
+    ));
 }
 
 #[test]

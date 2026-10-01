@@ -18,7 +18,9 @@ fn new_game_starts_in_setup() {
     assert_eq!(s.bank, [19; 5]);
     let legal = s.legal_actions();
     assert_eq!(legal.len(), 54);
-    assert!(legal.iter().all(|a| matches!(a, Action::BuildSettlement(_))));
+    assert!(legal
+        .iter()
+        .all(|a| matches!(a, Action::BuildSettlement(_))));
 }
 
 #[test]
@@ -33,7 +35,10 @@ fn settlement_then_road_at_that_node() {
     let n = 20u8;
     s.apply(Action::BuildSettlement(n));
     assert_eq!(s.phase, Phase::SetupRoad { node: n });
-    let expected: Vec<Action> = topo().node_edges[n as usize].iter().map(|&e| Action::BuildRoad(e)).collect();
+    let expected: Vec<Action> = topo().node_edges[n as usize]
+        .iter()
+        .map(|&e| Action::BuildRoad(e))
+        .collect();
     assert_eq!(sorted(s.legal_actions()), sorted(expected));
 }
 
@@ -50,7 +55,10 @@ fn distance_rule_in_setup() {
     for &nb in &topo().node_neighbors[n as usize] {
         assert!(!legal.contains(&Action::BuildSettlement(nb)));
     }
-    assert_eq!(legal.len(), 54 - 1 - topo().node_neighbors[n as usize].len());
+    assert_eq!(
+        legal.len(),
+        54 - 1 - topo().node_neighbors[n as usize].len()
+    );
 }
 
 #[test]

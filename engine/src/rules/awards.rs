@@ -13,7 +13,9 @@ pub fn longest_road(roads: u128, blocked: u64) -> u8 {
     for e in bits128(roads) {
         let (a, b) = t.edge_nodes[e as usize];
         let rest = roads & !(1u128 << e);
-        best = best.max(extend(a, rest, blocked, 1)).max(extend(b, rest, blocked, 1));
+        best = best
+            .max(extend(a, rest, blocked, 1))
+            .max(extend(b, rest, blocked, 1));
     }
     best
 }

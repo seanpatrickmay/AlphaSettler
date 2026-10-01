@@ -79,6 +79,10 @@ fn coastline_is_a_30_edge_cycle() {
     for i in 0..30 {
         let (a, b) = t.edge_nodes[c[i] as usize];
         let (x, y) = t.edge_nodes[c[(i + 1) % 30] as usize];
-        assert!(a == x || a == y || b == x || b == y, "coastal edges {i} and {} not adjacent", i + 1);
+        assert!(
+            a == x || a == y || b == x || b == y,
+            "coastal edges {i} and {} not adjacent",
+            i + 1
+        );
     }
 }
