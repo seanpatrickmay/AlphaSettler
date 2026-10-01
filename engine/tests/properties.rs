@@ -1,6 +1,7 @@
 use proptest::prelude::*;
 use settler_engine::legal::legal_actions;
 use settler_engine::rng::Rng;
+use settler_engine::rules::awards::longest_road;
 use settler_engine::sim::play_random;
 use settler_engine::topology::topo;
 use settler_engine::*;
@@ -48,6 +49,14 @@ fn check_invariants(s: &State) {
         .map(|&c| c as u32)
         .sum();
     assert!(held_dev <= s.dev_deck_pos as u32);
+    let occupied = s.occupied_nodes();
+    for p in 0..NUM_PLAYERS {
+        assert_eq!(
+            s.players[p].longest_road_len,
+            longest_road(s.players[p].roads, occupied & !s.buildings(p)),
+            "cached longest road of player {p} is stale"
+        );
+    }
     check_vp(s);
 }
 

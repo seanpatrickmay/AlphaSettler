@@ -3,6 +3,7 @@
 use crate::action::Action;
 use crate::apply::EventSink;
 use crate::events::Event;
+use crate::rules::awards;
 use crate::state::{Phase, State, SETUP_ORDER};
 use crate::topology::{topo, NUM_NODES};
 use crate::types::{hand_add, hand_sub, hand_total};
@@ -60,6 +61,7 @@ pub fn apply_road<S: EventSink>(s: &mut State, node: u8, e: u8, sink: &mut S) {
         player: s.current,
         edge: e,
     });
+    awards::update_longest_road(s);
     s.setup_step += 1;
     if s.setup_step as usize == SETUP_ORDER.len() {
         s.current = 0;

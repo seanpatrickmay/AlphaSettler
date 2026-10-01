@@ -111,6 +111,17 @@ fn only_second_settlement_pays_out() {
 }
 
 #[test]
+fn setup_roads_count_toward_longest_road() {
+    for seed in 0..5 {
+        let s = after_setup(seed);
+        for p in 0..NUM_PLAYERS {
+            let len = s.players[p].longest_road_len;
+            assert!((1..=2).contains(&len), "seed {seed} player {p}: {len}");
+        }
+    }
+}
+
+#[test]
 #[should_panic(expected = "illegal action")]
 fn illegal_action_panics() {
     let mut s = State::new(1, cfg());
