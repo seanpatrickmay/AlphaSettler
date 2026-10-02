@@ -72,6 +72,11 @@ fn hidden_dev_cards_are_dealt_uniformly() {
     assert!((rate - 14.0 / 25.0).abs() < 0.03, "knight rate {rate}");
 }
 
+/// Dev cards of `kind` in `w`'s deck, not yet drawn.
+fn in_deck(w: &State, kind: DevCard) -> usize {
+    w.dev_deck[w.dev_deck_pos as usize..].iter().filter(|&&c| c == kind).count()
+}
+
 #[test]
 fn the_opponent_on_turn_is_never_dealt_a_win() {
     // With 3 VP to win, player 1 (on turn, 2 public VP) would already have won holding a VP card.
@@ -87,14 +92,88 @@ fn the_opponent_on_turn_is_never_dealt_a_win() {
     let b = Belief::from_observation(&obs, 16, 3);
     let sampler = WorldSampler::new(&obs, &b).unwrap();
     let mut rng = Rng::new(7);
-    let mut vp_in_deck = 0;
-    for _ in 0..2000 {
+    let n = 10_000;
+    let mut knights = 0;
+    for _ in 0..n {
         let w = sampler.sample(&b, &mut rng);
         assert_eq!(w.players[1].dev_hand[DevCard::VictoryPoint.index()], 0);
         w.check_invariants().unwrap();
-        vp_in_deck += w.dev_deck[w.dev_deck_pos as usize..].contains(&DevCard::VictoryPoint) as u32;
+        assert_eq!(in_deck(&w, DevCard::VictoryPoint), 5, "the VP cards are all in the deck");
+        knights += w.players[1].dev_hand[DevCard::Knight.index()] as u32;
     }
-    assert_eq!(vp_in_deck, 2000, "the VP cards are all in the deck");
+    // Two cards drawn uniformly from the 20 non-VP cards (14 of them knights): 2 * 14 / 20 knights.
+    let mean = knights as f64 / n as f64;
+    assert!((mean - 1.4).abs() < 0.03, "mean knights {mean}");
+}
+
+#[test]
+fn an_on_turn_opponent_holding_most_of_the_pool_is_still_sampled() {
+    // The viewer holds 5 knights, leaving 20 unseen cards (9 knights, 5 VP, 6 others). Player 1, on
+    // turn one VP short with 14 of them, can only hold non-VP cards; a rejection sampler accepts
+    // such a deal about 4 times in 10,000.
+    let cfg = GameConfig { vp_to_win: 3, ..no_trades() };
+    let base = after_setup(8, cfg);
+    let s = edit(&base, cfg, |snap| {
+        give_dev(snap, 0, DevCard::Knight, 5);
+        give_dev(snap, 1, DevCard::Knight, 9);
+        give_dev(snap, 1, DevCard::Monopoly, 2);
+        give_dev(snap, 1, DevCard::YearOfPlenty, 2);
+        give_dev(snap, 1, DevCard::RoadBuilding, 1);
+        snap.current = 1;
+        snap.phase = Phase::PreRoll;
+    });
+    assert_eq!(s.players[1].dev_hand.iter().sum::<u8>(), 14);
+    let obs = s.observation(0);
+    let b = Belief::from_observation(&obs, 16, 3);
+    let sampler = WorldSampler::new(&obs, &b).unwrap();
+    let mut rng = Rng::new(9);
+    let n = 2000;
+    let mut all_nine = 0;
+    for _ in 0..n {
+        let w = sampler.sample(&b, &mut rng);
+        assert_eq!(w.players[1].dev_hand.iter().sum::<u8>(), 14);
+        assert_eq!(w.players[1].dev_hand[DevCard::VictoryPoint.index()], 0);
+        assert_eq!(in_deck(&w, DevCard::VictoryPoint), 5);
+        w.check_invariants().unwrap();
+        all_nine += (w.players[1].dev_hand[DevCard::Knight.index()] == 9) as u32;
+    }
+    // 14 of the 15 non-VP cards: every knight is held unless the one left out is a knight (9/15).
+    let rate = all_nine as f64 / n as f64;
+    assert!((rate - 0.4).abs() < 0.03, "all-nine-knights rate {rate}");
+}
+
+#[test]
+fn sampled_hands_follow_the_beliefs_weights() {
+    // The first position in a random game whose belief for some viewer has 2 to 6 joint hands.
+    let mut case = None;
+    random_game(24, GameConfig::default(), |g| {
+        if case.is_some() || g.state().is_over() || trade_phase(g.state().phase) {
+            return;
+        }
+        // Rebuild each viewer's belief from the whole log.
+        for p in 0..4u8 {
+            let mut b = Belief::new(p, DEFAULT_MAX_STATES, 0);
+            b.observe(&g.log_for(p)).unwrap();
+            if (2..=6).contains(&b.states().len()) && case.is_none() {
+                case = Some((g.observation(p), b));
+            }
+        }
+    });
+    let (obs, b) = case.expect("a random game has a position with an ambiguous hand");
+    let sampler = WorldSampler::new(&obs, &b).unwrap();
+    let mut rng = Rng::new(11);
+    let n = 5000;
+    let mut counts: std::collections::HashMap<[Hand; 4], usize> = Default::default();
+    for _ in 0..n {
+        let w = sampler.sample(&b, &mut rng);
+        *counts.entry(std::array::from_fn(|q| w.players[q].hand)).or_default() += 1;
+    }
+    assert!(counts.len() >= 2, "only {} distinct hand sets", counts.len());
+    assert_eq!(counts.len(), b.states().len());
+    for (t, weight) in b.states() {
+        let freq = counts.get(&t.hands).copied().unwrap_or(0) as f64 / n as f64;
+        assert!((freq - weight).abs() < 0.03, "hands {:?}: frequency {freq}, weight {weight}", t.hands);
+    }
 }
 
 #[test]

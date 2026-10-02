@@ -42,6 +42,26 @@ pub struct Snapshot {
 }
 
 impl State {
+    /// Make `rest` the cards left in the deck (next draw first); the already-drawn region holds
+    /// the other cards in kind order. The caller guarantees `rest` fits the deck's composition.
+    pub fn set_remaining_deck(&mut self, rest: &[DevCard]) {
+        debug_assert!(rest.len() <= DEV_DECK_SIZE);
+        let mut drawn = DEV_DECK_COUNTS;
+        for c in rest {
+            drawn[c.index()] -= 1;
+        }
+        let pos = DEV_DECK_SIZE - rest.len();
+        let mut i = 0;
+        for (k, &n) in drawn.iter().enumerate() {
+            for _ in 0..n {
+                self.dev_deck[i] = DevCard::from_index(k);
+                i += 1;
+            }
+        }
+        self.dev_deck[pos..].copy_from_slice(rest);
+        self.dev_deck_pos = pos as u8;
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             board: self.board,
@@ -94,7 +114,7 @@ impl State {
                 snap.dev_deck.len()
             ));
         }
-        // Cards already drawn first (in kind order), then the remaining cards in draw order.
+        // The drawn cards (the deck minus `dev_deck`) must not be negative in any kind.
         let mut drawn = DEV_DECK_COUNTS.map(|c| c as i32);
         for c in &snap.dev_deck {
             drawn[c.index()] -= 1;
@@ -105,20 +125,9 @@ impl State {
                 DevCard::from_index(k)
             ));
         }
-        let pos = DEV_DECK_SIZE - snap.dev_deck.len();
-        let mut deck = [DevCard::Knight; DEV_DECK_SIZE];
-        let mut i = 0;
-        for (k, &n) in drawn.iter().enumerate() {
-            for _ in 0..n {
-                deck[i] = DevCard::from_index(k);
-                i += 1;
-            }
-        }
-        deck[pos..].copy_from_slice(&snap.dev_deck);
 
         let mut s = State::with_board(seed, config, snap.board);
-        s.dev_deck = deck;
-        s.dev_deck_pos = pos as u8;
+        s.set_remaining_deck(&snap.dev_deck);
         for (p, ps) in snap.players.iter().enumerate() {
             if ps.roads.count_ones() > MAX_ROADS {
                 return Err(format!(

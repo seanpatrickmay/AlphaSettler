@@ -352,5 +352,6 @@ fn reseed_changes_only_the_random_streams() {
     other.reseed(8);
     assert_eq!(other.seed, 8);
     assert_ne!(other.rng_steal, fresh.rng_steal);
+    assert_ne!(other.rng_misc, fresh.rng_misc);
     assert_eq!(other.snapshot(), fresh.snapshot());
 }

@@ -10,9 +10,6 @@ use settler_engine::rng::Rng;
 use settler_engine::types::*;
 use settler_engine::{Observation, Phase, PlayerSnapshot, Snapshot, State};
 
-/// Deals rejected before giving up because every deal hands the player on turn a win.
-const MAX_DEALS: u32 = 10_000;
-
 pub struct WorldSampler {
     template: State,
     viewer: PlayerId,
@@ -22,6 +19,9 @@ pub struct WorldSampler {
     /// Per player: dev cards held (0 for the viewer, whose cards are known) and how many are new.
     held: [u8; NUM_PLAYERS],
     new: [u8; NUM_PLAYERS],
+    /// Weights of how many VP cards the opponent on turn holds (index = count), when that opponent
+    /// is not the viewer: the hypergeometric weights cut off at the VP that would win the game.
+    on_turn_vp: Option<(usize, [f64; 6])>,
 }
 
 struct Deal {
@@ -42,9 +42,18 @@ fn setup_step(obs: &Observation) -> u8 {
     }
 }
 
+/// Binomial coefficient as a float (0 when `r > n`).
+fn choose(n: usize, r: usize) -> f64 {
+    if r > n {
+        return 0.0;
+    }
+    (0..r).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
+}
+
 impl WorldSampler {
     pub fn new(obs: &Observation, belief: &Belief) -> Result<WorldSampler, String> {
         belief.check(obs)?;
+        let hands = belief.states().first().ok_or("the belief has no states")?.0.hands;
         if matches!(obs.phase, Phase::TradeResponse | Phase::TradeConfirm | Phase::GameOver { .. }) {
             return Err(format!("no worlds to sample in phase {:?}", obs.phase));
         }
@@ -71,11 +80,29 @@ impl WorldSampler {
                 unseen_len += 1;
             }
         }
-        let mut sampler = WorldSampler { template: State::new(0, obs.config), viewer: obs.viewer, unseen, unseen_len, held, new };
+        let on_turn_vp = if obs.current == obs.viewer {
+            None
+        } else {
+            let public = obs.public_vp[obs.current as usize];
+            if public >= obs.config.vp_to_win {
+                return Err(format!("player {} has {public} public VP with the game still on", obs.current));
+            }
+            let (n, v, h) = (unseen_len, unseen_counts[DevCard::VictoryPoint.index()] as usize, held[obs.current as usize] as usize);
+            let most = ((obs.config.vp_to_win - public - 1) as usize).min(v).min(h);
+            let mut w = [0.0; 6];
+            for (k, wk) in w.iter_mut().enumerate().take(most + 1) {
+                *wk = choose(v, k) * choose(n - v, h - k);
+            }
+            if w.iter().all(|&x| x == 0.0) {
+                return Err(format!("no dev-card deal keeps player {} below {} VP", obs.current, obs.config.vp_to_win));
+            }
+            Some((obs.current as usize, w))
+        };
+        let mut sampler =
+            WorldSampler { template: State::new(0, obs.config), viewer: obs.viewer, unseen, unseen_len, held, new, on_turn_vp };
         // The template's hidden parts come from one sample; `sample` overwrites them each time.
         let mut rng = Rng::new(0x7E4D);
-        let deal = sampler.deal(obs.current, obs.public_vp[obs.current as usize], obs.config.vp_to_win, &mut rng)?;
-        let hands = belief.states()[0].0.hands;
+        let deal = sampler.deal(&mut rng);
         let snap = Snapshot {
             board: obs.board,
             robber: obs.robber,
@@ -106,37 +133,76 @@ impl WorldSampler {
         Ok(sampler)
     }
 
-    /// A uniform deal of the unseen dev cards to opponents (new cards first) and the deck,
-    /// rejecting deals that would give `current` (an opponent on turn) enough VP to have won.
-    fn deal(&self, current: PlayerId, current_public_vp: u8, vp_to_win: u8, rng: &mut Rng) -> Result<Deal, String> {
-        for _ in 0..MAX_DEALS {
-            let mut cards = self.unseen;
-            rng.shuffle(&mut cards[..self.unseen_len]);
-            let mut d = Deal {
-                dev_hand: [[0; 5]; NUM_PLAYERS],
-                dev_new: [[0; 5]; NUM_PLAYERS],
-                deck: [DevCard::Knight; DEV_DECK_SIZE],
-                deck_len: 0,
-            };
-            let mut next = 0;
-            for q in 0..NUM_PLAYERS {
-                for i in 0..self.held[q] {
-                    let c = cards[next].index();
-                    next += 1;
-                    d.dev_hand[q][c] += 1;
-                    if i < self.new[q] {
-                        d.dev_new[q][c] += 1;
-                    }
+    /// A uniform deal of the unseen dev cards to opponents (new cards first) and the deck, except that
+    /// an opponent on turn never holds enough VP cards to have already won. That is the uniform deal
+    /// conditioned on it, drawn exactly: first how many VP cards that opponent holds (truncated
+    /// hypergeometric), then their cards from the VP and other parts of the pool, then everything
+    /// left uniformly to the others and the deck.
+    fn deal(&self, rng: &mut Rng) -> Deal {
+        let mut pool = self.unseen;
+        let pool = &mut pool[..self.unseen_len];
+        rng.shuffle(pool);
+        let mut d = Deal {
+            dev_hand: [[0; 5]; NUM_PLAYERS],
+            dev_new: [[0; 5]; NUM_PLAYERS],
+            deck: [DevCard::Knight; DEV_DECK_SIZE],
+            deck_len: 0,
+        };
+        let mut dealt = [false; NUM_PLAYERS];
+        let mut rest: &[DevCard] = pool;
+        let mut leftover = [DevCard::Knight; DEV_DECK_SIZE];
+        if let Some((cur, weights)) = self.on_turn_vp {
+            let total: f64 = weights.iter().sum();
+            let mut u = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64 * total;
+            let mut k = weights.iter().rposition(|&w| w > 0.0).expect("`new` checked a deal exists");
+            for (i, &w) in weights.iter().enumerate() {
+                if u < w {
+                    k = i;
+                    break;
+                }
+                u -= w;
+            }
+            // The pool is in random order, so its first `k` VP cards and first `h - k` other cards are
+            // a uniform choice of each.
+            let (mut vp_left, mut other_left) = (k, self.held[cur] as usize - k);
+            let mut mine = [DevCard::Knight; DEV_DECK_SIZE];
+            let (mut taken, mut kept) = (0, 0);
+            for &c in pool.iter() {
+                let want = if c == DevCard::VictoryPoint { &mut vp_left } else { &mut other_left };
+                if *want > 0 {
+                    *want -= 1;
+                    mine[taken] = c;
+                    taken += 1;
+                } else {
+                    leftover[kept] = c;
+                    kept += 1;
                 }
             }
-            d.deck_len = self.unseen_len - next;
-            d.deck[..d.deck_len].copy_from_slice(&cards[next..self.unseen_len]);
-            let hidden_vp = d.dev_hand[current as usize][DevCard::VictoryPoint.index()];
-            if current == self.viewer || current_public_vp + hidden_vp < vp_to_win {
-                return Ok(d);
+            rng.shuffle(&mut mine[..taken]);
+            for (i, c) in mine[..taken].iter().enumerate() {
+                d.dev_hand[cur][c.index()] += 1;
+                if i < self.new[cur] as usize {
+                    d.dev_new[cur][c.index()] += 1;
+                }
+            }
+            dealt[cur] = true;
+            // `leftover` keeps the pool's random order.
+            rest = &leftover[..kept];
+        }
+        let mut next = 0;
+        for q in (0..NUM_PLAYERS).filter(|&q| !dealt[q]) {
+            for i in 0..self.held[q] {
+                let c = rest[next].index();
+                next += 1;
+                d.dev_hand[q][c] += 1;
+                if i < self.new[q] {
+                    d.dev_new[q][c] += 1;
+                }
             }
         }
-        Err(format!("no dev-card deal keeps player {current} below {vp_to_win} VP"))
+        d.deck_len = rest.len() - next;
+        d.deck[..d.deck_len].copy_from_slice(&rest[next..]);
+        d
     }
 
     /// One world: hands drawn from the belief by probability, a fresh deal of the unseen dev cards, and
@@ -144,10 +210,7 @@ impl WorldSampler {
     pub fn sample(&self, belief: &Belief, rng: &mut Rng) -> State {
         let mut w = self.template;
         let hands = belief.sample_hands(rng);
-        let current = w.current;
-        let deal = self
-            .deal(current, w.public_vp(current as usize), w.config.vp_to_win, rng)
-            .expect("the template's own deal passed this check");
+        let deal = self.deal(rng);
         for q in 0..NUM_PLAYERS {
             if q != self.viewer as usize {
                 w.players[q].hand = hands[q];
@@ -155,21 +218,7 @@ impl WorldSampler {
                 w.players[q].dev_new = deal.dev_new[q];
             }
         }
-        let rest = &deal.deck[..deal.deck_len];
-        let pos = DEV_DECK_SIZE - rest.len();
-        let mut drawn = DEV_DECK_COUNTS;
-        for c in rest {
-            drawn[c.index()] -= 1;
-        }
-        let mut i = 0;
-        for (k, &n) in drawn.iter().enumerate() {
-            for _ in 0..n {
-                w.dev_deck[i] = DevCard::from_index(k);
-                i += 1;
-            }
-        }
-        w.dev_deck[pos..].copy_from_slice(rest);
-        w.dev_deck_pos = pos as u8;
+        w.set_remaining_deck(&deal.deck[..deal.deck_len]);
         w.reseed(rng.next_u64());
         w
     }
