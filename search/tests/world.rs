@@ -96,7 +96,8 @@ fn in_deck(w: &State, kind: DevCard) -> usize {
 
 #[test]
 fn the_opponent_on_turn_is_never_dealt_a_win() {
-    // With 3 VP to win, player 1 (on turn, 2 public VP) would already have won holding a VP card.
+    // With 3 VP to win, player 1 (on turn, 2 public VP) would already have won holding a VP card,
+    // and player 2 (off turn, also 2 public VP) would win at their first move.
     let cfg = GameConfig {
         vp_to_win: 3,
         ..no_trades()
@@ -114,37 +115,214 @@ fn the_opponent_on_turn_is_never_dealt_a_win() {
     let sampler = WorldSampler::new(&obs, &b).unwrap();
     let mut rng = Rng::new(7);
     let n = 10_000;
-    let (mut knights, mut next_is_vp, mut p2_vp) = (0, 0, 0);
+    let (mut knights, mut p2_knights, mut next_is_vp) = (0, 0, 0);
     for _ in 0..n {
         let w = sampler.sample(&b, &mut rng);
-        assert_eq!(w.players[1].dev_hand[DevCard::VictoryPoint.index()], 0);
+        for q in 1..4 {
+            assert_eq!(w.players[q].dev_hand[DevCard::VictoryPoint.index()], 0);
+        }
         w.check_invariants().unwrap();
-        // Player 1 holds none of the 5 VP cards: they are in the deck or with player 2.
-        let p2_cards = w.players[2].dev_hand[DevCard::VictoryPoint.index()] as usize;
         assert_eq!(
-            in_deck(&w, DevCard::VictoryPoint) + p2_cards,
+            in_deck(&w, DevCard::VictoryPoint),
             5,
-            "the VP cards are not player 1's"
+            "every VP card is in the deck"
         );
         knights += w.players[1].dev_hand[DevCard::Knight.index()] as u32;
+        p2_knights += w.players[2].dev_hand[DevCard::Knight.index()] as u32;
         next_is_vp += (w.dev_deck[w.dev_deck_pos as usize] == DevCard::VictoryPoint) as u32;
-        p2_vp += w.players[2].dev_hand[DevCard::VictoryPoint.index()] as u32;
     }
-    // Two cards drawn uniformly from the 20 non-VP cards (14 of them knights): 2 * 14 / 20 knights.
+    // Players 1 and 2's three cards are drawn uniformly from the 20 non-VP cards (14 of them
+    // knights): 2 * 14 / 20 knights for player 1, 14 / 20 for player 2.
     let mean = knights as f64 / n as f64;
     assert!((mean - 1.4).abs() < 0.03, "mean knights {mean}");
-    // The 23 cards left after player 1's two (5 of them VP) are in uniform order: the next draw and
-    // player 2's one card are each a VP card with probability 5/23.
-    let exact = 5.0 / 23.0;
+    let p2 = p2_knights as f64 / n as f64;
+    assert!((p2 - 0.7).abs() < 0.03, "player 2 knights {p2}");
+    // The 22 cards left in the deck (5 of them VP) are in uniform order: the next draw is a VP
+    // card with probability 5/22.
+    let exact = 5.0 / 22.0;
     let next = next_is_vp as f64 / n as f64;
     assert!(
         (next - exact).abs() < 0.03,
         "next deck card is VP {next}, exact {exact}"
     );
-    let p2 = p2_vp as f64 / n as f64;
+}
+
+/// Positions of `vp` VP cards among `n` places, each subset once (lexicographic), for `f`.
+fn each_subset(n: usize, vp: usize, f: &mut impl FnMut(&[usize])) {
+    fn go(start: usize, n: usize, left: usize, cur: &mut Vec<usize>, f: &mut impl FnMut(&[usize])) {
+        if left == 0 {
+            f(cur);
+            return;
+        }
+        for i in start..=n - left {
+            cur.push(i);
+            go(i + 1, n, left - 1, cur, f);
+            cur.pop();
+        }
+    }
+    go(0, n, vp, &mut Vec::new(), f);
+}
+
+#[test]
+fn capped_opponents_vp_cards_follow_the_exact_conditional() {
+    // 4 VP to win and 2 public VP each: every opponent may hold at most one VP card. Players 1
+    // and 2 hold three hidden dev cards each and player 3 one, so the cap binds on 1 and 2 jointly.
+    let cfg = GameConfig {
+        vp_to_win: 4,
+        ..no_trades()
+    };
+    let base = after_setup(10, cfg);
+    let s = edit(&base, cfg, |snap| {
+        give_dev(snap, 1, DevCard::Knight, 3);
+        give_dev(snap, 2, DevCard::Knight, 2);
+        give_dev(snap, 2, DevCard::Monopoly, 1);
+        give_dev(snap, 3, DevCard::YearOfPlenty, 1);
+    });
+    assert_eq!(s.current, 0);
+    let obs = s.observation(0);
+    assert_eq!(obs.public_vp, [2; 4]);
+    // Brute force: the 25 unseen cards fill player 1's places 0..3, player 2's 3..6, player 3's
+    // 6 and the deck's 7..25; every placement of the 5 VP cards is equally likely. Keep those
+    // giving each opponent at most one, and tally (player 1's, player 2's) count and how many VP
+    // cards the deck holds.
+    let mut exact = [[0.0f64; 2]; 2];
+    let (mut kept, mut deck_vp) = (0.0f64, 0.0f64);
+    each_subset(25, 5, &mut |pos| {
+        let count = |r: std::ops::Range<usize>| pos.iter().filter(|p| r.contains(p)).count();
+        let (k1, k2, k3) = (count(0..3), count(3..6), count(6..7));
+        if k1 <= 1 && k2 <= 1 && k3 <= 1 {
+            exact[k1][k2] += 1.0;
+            kept += 1.0;
+            deck_vp += (5 - k1 - k2 - k3) as f64;
+        }
+    });
+    for row in &mut exact {
+        for x in row.iter_mut() {
+            *x /= kept;
+        }
+    }
+    let next_exact = deck_vp / kept / 18.0;
+
+    let b = Belief::from_observation(&obs, 16, 4);
+    let sampler = WorldSampler::new(&obs, &b).unwrap();
+    let mut rng = Rng::new(13);
+    let n = 40_000;
+    let mut seen = [[0u32; 2]; 2];
+    let mut next_is_vp = 0;
+    for _ in 0..n {
+        let w = sampler.sample(&b, &mut rng);
+        let vp = |q: usize| w.players[q].dev_hand[DevCard::VictoryPoint.index()] as usize;
+        assert!(
+            vp(1) <= 1 && vp(2) <= 1 && vp(3) <= 1,
+            "an opponent was dealt a win"
+        );
+        seen[vp(1)][vp(2)] += 1;
+        next_is_vp += (w.dev_deck[w.dev_deck_pos as usize] == DevCard::VictoryPoint) as u32;
+    }
+    for k1 in 0..2 {
+        for k2 in 0..2 {
+            let freq = seen[k1][k2] as f64 / n as f64;
+            assert!(
+                (freq - exact[k1][k2]).abs() < 0.01,
+                "VP cards ({k1}, {k2}): frequency {freq}, exact {}",
+                exact[k1][k2]
+            );
+        }
+    }
+    let next = next_is_vp as f64 / n as f64;
     assert!(
-        (p2 - exact).abs() < 0.03,
-        "player 2 holds VP {p2}, exact {exact}"
+        (next - next_exact).abs() < 0.01,
+        "next deck card is VP {next}, exact {next_exact}"
+    );
+}
+
+#[test]
+fn when_no_deal_keeps_everyone_below_the_win_the_off_turn_caps_are_dropped() {
+    // The viewer holds every non-VP card but one knight, leaving 6 unseen: 1 knight and 5 VP.
+    // With 3 VP to win, players 1 (on turn) and 2 (off turn) each hold one card and both would
+    // need the knight to stay below the target. Player 2 really holds a VP card (as after a
+    // longest road gained off turn): the off-turn cap is dropped, the on-turn one kept.
+    let cfg = GameConfig {
+        vp_to_win: 3,
+        ..no_trades()
+    };
+    let base = after_setup(12, cfg);
+    let s = edit(&base, cfg, |snap| {
+        give_dev(snap, 0, DevCard::Knight, 13);
+        give_dev(snap, 0, DevCard::Monopoly, 2);
+        give_dev(snap, 0, DevCard::YearOfPlenty, 2);
+        give_dev(snap, 0, DevCard::RoadBuilding, 2);
+        give_dev(snap, 1, DevCard::Knight, 1);
+        give_dev(snap, 2, DevCard::VictoryPoint, 1);
+        snap.current = 1;
+        snap.phase = Phase::PreRoll;
+    });
+    let obs = s.observation(0);
+    let b = Belief::from_observation(&obs, 16, 5);
+    let sampler = WorldSampler::new(&obs, &b).expect("an impossible cap is not an error");
+    let mut rng = Rng::new(17);
+    for _ in 0..500 {
+        let w = sampler.sample(&b, &mut rng);
+        w.check_invariants().unwrap();
+        assert_eq!(w.players[1].dev_hand[DevCard::Knight.index()], 1);
+        assert_eq!(w.players[2].dev_hand[DevCard::VictoryPoint.index()], 1);
+        assert_eq!(w.observation(0), obs);
+    }
+}
+
+#[test]
+fn no_opponent_is_dealt_a_win_in_random_games() {
+    // A low target makes the caps bind often.
+    let cfg = GameConfig {
+        vp_to_win: 5,
+        ..no_trades()
+    };
+    let (mut checked, mut capped) = (0, 0);
+    for seed in 0..12 {
+        let mut beliefs: Vec<Belief> = (0..4)
+            .map(|p| Belief::new(p, DEFAULT_MAX_STATES, seed))
+            .collect();
+        let mut seen = [0usize; 4];
+        let mut rng = Rng::new(seed);
+        random_game(seed, cfg, |g| {
+            for p in 0..4u8 {
+                let log = g.log_for(p);
+                beliefs[p as usize]
+                    .observe(&log[seen[p as usize]..])
+                    .unwrap();
+                seen[p as usize] = log.len();
+            }
+            if g.state().is_over() || trade_phase(g.state().phase) {
+                return;
+            }
+            for p in 0..4u8 {
+                let obs = g.observation(p);
+                let sampler = WorldSampler::new(&obs, &beliefs[p as usize]).unwrap();
+                let at_risk = (0..4).any(|q| {
+                    q != p as usize
+                        && obs.public_vp[q] < cfg.vp_to_win
+                        && obs.public_vp[q] + obs.dev_card_counts[q] >= cfg.vp_to_win
+                });
+                capped += at_risk as u32;
+                for _ in 0..2 {
+                    let w = sampler.sample(&beliefs[p as usize], &mut rng);
+                    for q in (0..4).filter(|&q| q != p as usize) {
+                        let public = obs.public_vp[q];
+                        assert!(
+                            public >= cfg.vp_to_win || w.total_vp(q) < cfg.vp_to_win,
+                            "seed {seed} viewer {p}: player {q} dealt {} VP",
+                            w.total_vp(q)
+                        );
+                    }
+                    checked += 1;
+                }
+            }
+        });
+    }
+    assert!(checked > 5_000, "checked {checked} worlds");
+    assert!(
+        capped > 100,
+        "only {capped} decisions where a cap could bind"
     );
 }
 

@@ -2,8 +2,9 @@
 //!
 //! Built once per decision: a template `State` (validated by `State::from_snapshot`) carries
 //! everything public plus the viewer's own cards. Each sample copies it and overwrites only what
-//! the viewer cannot see: opponents' hands (a belief particle), their dev cards and the deck
-//! order (a uniform deal of the unseen cards), and the random seed.
+//! the viewer cannot see: opponents' hands (drawn from the belief), their dev cards and the deck
+//! order (a uniform deal of the unseen cards, conditioned on no opponent holding enough VP cards
+//! to have won already), and the random seed.
 
 use crate::belief::Belief;
 use settler_engine::rng::Rng;
@@ -19,9 +20,10 @@ pub struct WorldSampler {
     /// Per player: dev cards held (0 for the viewer, whose cards are known) and how many are new.
     held: [u8; NUM_PLAYERS],
     new: [u8; NUM_PLAYERS],
-    /// Weights of how many VP cards the opponent on turn holds (index = count), when that opponent
-    /// is not the viewer: the hypergeometric weights cut off at the VP that would win the game.
-    on_turn_vp: Option<(usize, [f64; 6])>,
+    /// When some opponent must be kept below the win: every joint count of VP cards among the
+    /// players' hidden dev cards (indexed by player, 0 for the viewer) that the deal allows, with
+    /// its cumulative weight. `None` deals uniformly.
+    vp_cells: Option<Vec<([u8; NUM_PLAYERS], f64)>>,
 }
 
 struct Deal {
@@ -48,6 +50,43 @@ fn choose(n: usize, r: usize) -> f64 {
         return 0.0;
     }
     (0..r).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
+}
+
+/// The joint counts of VP cards in each player's `held` hidden dev cards under a uniform deal of
+/// `vp` VP cards among those cards and `deck` deck places (multivariate hypergeometric: weight
+/// `prod_q C(held_q, k_q) * C(deck, vp - sum k)`), keeping only counts within `caps`. Returns the
+/// cells of positive weight with cumulative weights; empty when none has any.
+fn vp_cells(
+    held: &[u8; NUM_PLAYERS],
+    vp: usize,
+    deck: usize,
+    caps: &[usize; NUM_PLAYERS],
+) -> Vec<([u8; NUM_PLAYERS], f64)> {
+    let top: [usize; NUM_PLAYERS] =
+        std::array::from_fn(|q| (held[q] as usize).min(vp).min(caps[q]));
+    let mut cells = Vec::new();
+    let mut total = 0.0;
+    let mut k = [0usize; NUM_PLAYERS];
+    loop {
+        let sum: usize = k.iter().sum();
+        if sum <= vp {
+            let w = (0..NUM_PLAYERS)
+                .map(|q| choose(held[q] as usize, k[q]))
+                .product::<f64>()
+                * choose(deck, vp - sum);
+            if w > 0.0 {
+                total += w;
+                cells.push((std::array::from_fn(|q| k[q] as u8), total));
+            }
+        }
+        // Odometer: bump the lowest count still below its top and reset the ones before it.
+        let Some(q) = (0..NUM_PLAYERS).find(|&q| k[q] < top[q]) else {
+            break;
+        };
+        k[q] += 1;
+        k[..q].fill(0);
+    }
+    cells
 }
 
 impl WorldSampler {
@@ -102,9 +141,7 @@ impl WorldSampler {
                 unseen_len += 1;
             }
         }
-        let on_turn_vp = if obs.current == obs.viewer {
-            None
-        } else {
+        if obs.current != obs.viewer {
             let public = obs.public_vp[obs.current as usize];
             if public >= obs.config.vp_to_win {
                 return Err(format!(
@@ -112,24 +149,41 @@ impl WorldSampler {
                     obs.current
                 ));
             }
-            let (n, v, h) = (
-                unseen_len,
-                unseen_counts[DevCard::VictoryPoint.index()] as usize,
-                held[obs.current as usize] as usize,
-            );
-            let most = ((obs.config.vp_to_win - public - 1) as usize).min(v).min(h);
-            let mut w = [0.0; 6];
-            for (k, wk) in w.iter_mut().enumerate().take(most + 1) {
-                *wk = choose(v, k) * choose(n - v, h - k);
+        }
+        // Nobody but the player on turn can win off their own turn, and hidden VP cards change
+        // only on their owner's turn, so no opponent holds enough VP cards to reach the target:
+        // each is capped one short of it. An opponent whose public VP already reaches the target
+        // (a longest road gained off turn) is left uncapped. The one case this gets wrong is an
+        // off-turn longest-road transfer that lifts public VP plus VP cards to the target; such a
+        // player is never dealt their winning holding.
+        let vp = unseen_counts[DevCard::VictoryPoint.index()] as usize;
+        let deck = obs.dev_deck_remaining as usize;
+        let caps: [usize; NUM_PLAYERS] = std::array::from_fn(|q| {
+            let public = obs.public_vp[q];
+            if q == me || public >= obs.config.vp_to_win {
+                usize::MAX
+            } else {
+                (obs.config.vp_to_win - 1 - public) as usize
             }
-            if w.iter().all(|&x| x == 0.0) {
-                return Err(format!(
-                    "no dev-card deal keeps player {} below {} VP",
-                    obs.current, obs.config.vp_to_win
-                ));
+        });
+        let on_turn_caps: [usize; NUM_PLAYERS] = std::array::from_fn(|q| {
+            if q == obs.current as usize {
+                caps[q]
+            } else {
+                usize::MAX
             }
-            Some((obs.current as usize, w))
+        });
+        let binds = |caps: &[usize; NUM_PLAYERS]| {
+            (0..NUM_PLAYERS).any(|q| (held[q] as usize).min(vp) > caps[q])
         };
+        // When no deal keeps every opponent below the target (only possible after such a
+        // transfer), drop the off-turn caps and keep the on-turn one, which the engine requires;
+        // if even that has no deal, deal uniformly. So this never fails.
+        let vp_cells = [caps, on_turn_caps]
+            .iter()
+            .filter(|c| binds(c))
+            .map(|c| vp_cells(&held, vp, deck, c))
+            .find(|cells| !cells.is_empty());
         let mut sampler = WorldSampler {
             template: State::new(0, obs.config),
             viewer: obs.viewer,
@@ -137,7 +191,7 @@ impl WorldSampler {
             unseen_len,
             held,
             new,
-            on_turn_vp,
+            vp_cells,
         };
         // The template's hidden parts come from one sample; `sample` overwrites them each time.
         let mut rng = Rng::new(0x7E4D);
@@ -180,11 +234,10 @@ impl WorldSampler {
         Ok(sampler)
     }
 
-    /// A uniform deal of the unseen dev cards to opponents (new cards first) and the deck, except that
-    /// an opponent on turn never holds enough VP cards to have already won. That is the uniform deal
-    /// conditioned on it, drawn exactly: first how many VP cards that opponent holds (truncated
-    /// hypergeometric), then their cards from the VP and other parts of the pool, then everything
-    /// left uniformly to the others and the deck.
+    /// A uniform deal of the unseen dev cards to opponents (new cards first) and the deck,
+    /// conditioned on every capped opponent holding at most their cap of VP cards (see `new`).
+    /// Drawn exactly: first the joint VP-card counts (truncated multivariate hypergeometric), then
+    /// each opponent's VP and other cards from those parts of the pool, then the rest as the deck.
     fn deal(&self, rng: &mut Rng) -> Deal {
         let mut pool = self.unseen;
         let pool = &mut pool[..self.unseen_len];
@@ -195,69 +248,67 @@ impl WorldSampler {
             deck: [DevCard::Knight; DEV_DECK_SIZE],
             deck_len: 0,
         };
-        let mut dealt = [false; NUM_PLAYERS];
-        let mut rest: &[DevCard] = pool;
-        let mut leftover = [DevCard::Knight; DEV_DECK_SIZE];
-        if let Some((cur, weights)) = self.on_turn_vp {
-            let total: f64 = weights.iter().sum();
-            let mut u = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64 * total;
-            let mut k = weights
-                .iter()
-                .rposition(|&w| w > 0.0)
-                .expect("`new` checked a deal exists");
-            for (i, &w) in weights.iter().enumerate() {
-                if u < w {
-                    k = i;
-                    break;
+        let Some(cells) = &self.vp_cells else {
+            let mut next = 0;
+            for q in 0..NUM_PLAYERS {
+                for i in 0..self.held[q] {
+                    let c = pool[next].index();
+                    next += 1;
+                    d.dev_hand[q][c] += 1;
+                    if i < self.new[q] {
+                        d.dev_new[q][c] += 1;
+                    }
                 }
-                u -= w;
             }
-            // The pool is in random order, so its first `k` VP cards and first `h - k` other cards are
-            // a uniform choice of each.
-            let (mut vp_left, mut other_left) = (k, self.held[cur] as usize - k);
-            let mut mine = [DevCard::Knight; DEV_DECK_SIZE];
-            let (mut taken, mut kept) = (0, 0);
-            for &c in pool.iter() {
-                let want = if c == DevCard::VictoryPoint {
-                    &mut vp_left
-                } else {
-                    &mut other_left
-                };
-                if *want > 0 {
-                    *want -= 1;
-                    mine[taken] = c;
-                    taken += 1;
-                } else {
-                    leftover[kept] = c;
+            d.deck_len = pool.len() - next;
+            d.deck[..d.deck_len].copy_from_slice(&pool[next..]);
+            return d;
+        };
+        let total = cells.last().expect("`new` keeps only non-empty cells").1;
+        let u = (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64 * total;
+        let i = cells
+            .partition_point(|&(_, cum)| cum <= u)
+            .min(cells.len() - 1);
+        let k = cells[i].0;
+        // The pool is in random order, so taking VP and other cards in pool order, each player in
+        // turn up to their counts, is a uniform choice of each player's cards of each part.
+        let mut vp_left: [u8; NUM_PLAYERS] = k;
+        let mut other_left: [u8; NUM_PLAYERS] = std::array::from_fn(|q| self.held[q] - k[q]);
+        let mut hands = [[DevCard::Knight; DEV_DECK_SIZE]; NUM_PLAYERS];
+        let mut taken = [0usize; NUM_PLAYERS];
+        let mut kept = 0;
+        for &c in pool.iter() {
+            let left = if c == DevCard::VictoryPoint {
+                &mut vp_left
+            } else {
+                &mut other_left
+            };
+            match left.iter().position(|&n| n > 0) {
+                Some(q) => {
+                    left[q] -= 1;
+                    hands[q][taken[q]] = c;
+                    taken[q] += 1;
+                }
+                None => {
+                    d.deck[kept] = c;
                     kept += 1;
                 }
             }
-            rng.shuffle(&mut mine[..taken]);
-            for (i, c) in mine[..taken].iter().enumerate() {
-                d.dev_hand[cur][c.index()] += 1;
-                if i < self.new[cur] as usize {
-                    d.dev_new[cur][c.index()] += 1;
-                }
-            }
-            dealt[cur] = true;
-            // Taking the first cards of each kind skews the order of what is left (it tends to start
-            // with whichever kind lost fewer cards), so shuffle it afresh.
-            rng.shuffle(&mut leftover[..kept]);
-            rest = &leftover[..kept];
         }
-        let mut next = 0;
-        for q in (0..NUM_PLAYERS).filter(|&q| !dealt[q]) {
-            for i in 0..self.held[q] {
-                let c = rest[next].index();
-                next += 1;
-                d.dev_hand[q][c] += 1;
-                if i < self.new[q] {
-                    d.dev_new[q][c] += 1;
+        for q in 0..NUM_PLAYERS {
+            let mine = &mut hands[q][..taken[q]];
+            rng.shuffle(mine);
+            for (i, c) in mine.iter().enumerate() {
+                d.dev_hand[q][c.index()] += 1;
+                if i < self.new[q] as usize {
+                    d.dev_new[q][c.index()] += 1;
                 }
             }
         }
-        d.deck_len = rest.len() - next;
-        d.deck[..d.deck_len].copy_from_slice(&rest[next..]);
+        // Taking the first cards of each kind skews the order of what is left (it tends to start
+        // with whichever kind lost fewer cards), so shuffle it afresh.
+        rng.shuffle(&mut d.deck[..kept]);
+        d.deck_len = kept;
         d
     }
 

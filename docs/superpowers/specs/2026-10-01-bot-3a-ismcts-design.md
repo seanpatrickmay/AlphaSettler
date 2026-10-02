@@ -118,8 +118,15 @@ weighted list of the distinct joint hands still possible.
 
 **Dev cards and the deck.** The unknown pool is the 25-card deck minus the viewer's own cards and
 every card played publicly. Opponents' held dev cards (only counts are visible) and the remaining
-deck order are a uniform random deal from that pool. That includes hidden VP cards, so a sampled
-world can let an opponent win before their public VP says so.
+deck order are a uniform random deal from that pool, conditioned on no opponent holding enough
+hidden VP cards to reach the target. A player can only win on their own turn and hidden VP cards
+change only on their owner's turn, so such a holding is impossible. Every opponent's VP-card count
+is capped at `vp_to_win - 1 - public VP`, except an opponent whose public VP already reaches the
+target. The opponents' joint VP-card counts are drawn exactly from the truncated multivariate
+hypergeometric, then their specific cards are dealt and the remaining deck is shuffled. If no deal
+satisfies every cap, the off-turn caps are dropped (the on-turn cap is an engine invariant). The one
+case this mishandles is an off-turn longest-road transfer that raises an opponent's public VP: that
+opponent is never dealt the holding that would put them at the target.
 
 **Sampling one world** (once per simulation): draw joint hands by probability, then deal the dev
 holdings and the deck order fresh.
