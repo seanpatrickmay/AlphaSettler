@@ -1,6 +1,6 @@
 mod common;
 
-use settler_bots::arena::{belief_resets, play_game, run_match};
+use settler_bots::arena::{belief_resets, play_game, run_match, GameRecord};
 use settler_bots::ismcts::{parse_name, IsmctsBot};
 use settler_bots::{make_bot, Bot, BOT_NAMES};
 use settler_engine::rng::Rng;
@@ -383,4 +383,37 @@ fn search_results_are_kept_for_self_play() {
     let r = bot.take_last_search().expect("the decision was searched");
     assert_eq!(r.simulations, 40);
     assert!(bot.take_last_search().is_none());
+}
+
+/// FNV-1a over (winner, final VP, turns, actions) of each record, in order.
+fn digest(records: &[GameRecord]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for r in records {
+        eat(&[r.winner.unwrap_or(u8::MAX)]);
+        eat(&r.vp);
+        eat(&r.turns.to_le_bytes());
+        eat(&r.actions.to_le_bytes());
+    }
+    h
+}
+
+/// The digests of 3a's `ismcts` games, computed at 9dc553a before IsmctsBot became generic over
+/// its evaluator: the refactor must not change a single game. On these seeds `ismcts@20` plays
+/// greedy's moves, so `ismcts@200` (whose games differ) is pinned too.
+#[test]
+fn the_generic_refactor_leaves_3a_ismcts_games_unchanged() {
+    let games = |name| digest(&run_match(name, "greedy", 0..2, no_trades(), 1).unwrap());
+    assert_eq!(games("ismcts@20"), 0x30461dca2efcbb79);
+    assert_eq!(games("ismcts@200"), 0xce9e1db7dc5ee013);
+    assert_ne!(
+        games("ismcts@200"),
+        games("greedy"),
+        "the pin sees the search"
+    );
 }

@@ -5,10 +5,9 @@ import pytest
 
 from alphasettler import Bot, Game
 from alphasettler._engine import DEFAULT_NETS_DIR, run_match, write_random_net
+from net_names import BAD_NET_NAMES
 
 CONFIG = {"max_offers_per_turn": 0}
-BAD = ["net:", "net:../x", "net:a/b", "net:a\\b", "net:.", "net:a b", "net:" + "a" * 65, "net:a@0",
-       "net:a@300+r0", "net:a@5@6"]
 
 
 def cli(*args):
@@ -43,7 +42,7 @@ def test_a_net_bot_plays_legal_moves_from_python(nets):
 
 
 def test_bad_names_missing_files_and_stale_hashes_are_errors(nets):
-    for bad in BAD:
+    for bad in BAD_NET_NAMES:
         with pytest.raises(ValueError, match="unknown bot"):
             Bot(bad, 0, nets_dir=str(nets))
     with pytest.raises(ValueError, match="cannot read"):
@@ -69,7 +68,7 @@ def test_cli_arena_and_compare_take_net_names(nets, tmp_path):
 
 
 def test_cli_rejects_bad_net_names_and_files_before_writing_anything(nets, tmp_path):
-    for bad, message in [*[(b, "unknown bot") for b in BAD], ("net:missing", "cannot read"),
+    for bad, message in [*[(b, "unknown bot") for b in BAD_NET_NAMES], ("net:missing", "cannot read"),
                          ("net:stale", "encoding hash")]:
         out = tmp_path / "never.jsonl"
         r = cli("arena", "--candidate", bad, "--baseline", "greedy", "--seeds", "1", "--no-trades",

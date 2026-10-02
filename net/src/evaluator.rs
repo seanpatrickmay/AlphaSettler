@@ -2,7 +2,7 @@
 //! encodes `world.observation(actor)` and the hidden block, runs the batch through one forward
 //! pass, masks and softmaxes the policy over `legal`, and rotates the value back to absolute seats.
 
-use crate::encode::{encode_state, HIDDEN_LEN, PUBLIC_LEN};
+use crate::encode::{encode_state, rel, HIDDEN_LEN, PUBLIC_LEN};
 use crate::forward::{softmax, Forward, Outputs};
 use crate::weights::Weights;
 use settler_engine::legal::legal_actions;
@@ -46,11 +46,16 @@ pub fn masked_prior(logits: &[f32], legal: &[Action]) -> Vec<f32> {
     p
 }
 
-/// Win probabilities by absolute seat from the value logits of `actor`'s seat-relative view.
+/// Win probabilities by absolute seat from the value logits of `actor`'s seat-relative view
+/// (rotated with the encoder's own `rel`). Logits with a NaN or no finite maximum give ¼ each.
 pub fn absolute_value(logits: &[f32], actor: PlayerId) -> [f32; NUM_PLAYERS] {
     let mut p = [logits[0], logits[1], logits[2], logits[3]];
+    let max = p.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    if !max.is_finite() || p.iter().any(|x| x.is_nan()) {
+        return [1.0 / NUM_PLAYERS as f32; NUM_PLAYERS];
+    }
     softmax(&mut p);
-    std::array::from_fn(|q| p[(q + NUM_PLAYERS - actor as usize) % NUM_PLAYERS])
+    std::array::from_fn(|q| p[rel(q as PlayerId, actor)])
 }
 
 pub struct NetEvaluator {

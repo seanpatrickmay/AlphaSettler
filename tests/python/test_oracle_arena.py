@@ -12,6 +12,8 @@ from alphasettler.stats import summarize  # noqa: E402
 from oracle.arena import AlphaSettlerPlayer, _force_seating, run_match  # noqa: E402
 from oracle.translate import Untranslatable, action_token  # noqa: E402
 
+from net_names import BAD_NET_NAMES  # noqa: E402
+
 
 def test_records_have_the_native_shape():
     recs = run_match("random", "random", seeds=2, workers=2)
@@ -130,7 +132,7 @@ def test_net_names_inside_catanatron(tmp_path):
     stale = bytearray((nets / "tiny.bin").read_bytes())
     stale[12] ^= 1
     (nets / "stale.bin").write_bytes(bytes(stale))
-    for bad in ["net:../x", "net:a/b", "net:", "net:a@0"]:
+    for bad in BAD_NET_NAMES:
         with pytest.raises(ValueError, match="unknown bot"):
             run_match(bad, "random", seeds=1, nets_dir=str(nets))
     with pytest.raises(ValueError, match="cannot read"):

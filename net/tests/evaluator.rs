@@ -3,6 +3,7 @@ mod common;
 use common::*;
 use settler_engine::rng::Rng;
 use settler_engine::*;
+use settler_net::encode::{abs, encode_state, HIDDEN_LEN, PUBLIC_LEN};
 use settler_net::evaluator::{absolute_value, masked_prior, NetEvaluator};
 use settler_net::weights::{Arch, Weights};
 use settler_search::{search_actions, Belief, Evaluator, Leaf, WorldSampler};
@@ -22,7 +23,9 @@ fn searchable(s: &State) -> Vec<Action> {
 fn the_prior_depends_only_on_what_the_actor_sees() {
     let mut eval = NetEvaluator::new(net());
     let mut rng = Rng::new(1);
-    let (mut checked, mut values_differ) = (0, 0);
+    let (mut checked, mut hidden_differ, mut values_differ) = (0, 0, 0);
+    let mut public = vec![0.0; PUBLIC_LEN];
+    let (mut h1, mut h2) = (vec![0.0; HIDDEN_LEN], vec![0.0; HIDDEN_LEN]);
     for (i, s) in random_positions(20..26, 11, no_trades()).iter().enumerate() {
         let actor = s.current_actor();
         let obs = s.observation(actor);
@@ -46,11 +49,22 @@ fn the_prior_depends_only_on_what_the_actor_sees() {
             },
         ]);
         assert_eq!(e[0].prior, e[1].prior, "position {i}");
+        encode_state(&w1, actor, &mut public, &mut h1);
+        encode_state(&w2, actor, &mut public, &mut h2);
+        hidden_differ += (h1 != h2) as u32;
         values_differ += (e[0].value != e[1].value) as u32;
         checked += 1;
     }
     assert!(checked > 100, "{checked}");
-    assert!(values_differ > 0, "the hidden block reaches the value head");
+    // Most pairs must really differ in hidden cards, or the prior check above proves little.
+    assert!(
+        hidden_differ * 2 > checked,
+        "{hidden_differ} of {checked} pairs differ"
+    );
+    assert_eq!(
+        values_differ, hidden_differ,
+        "the hidden block reaches the value head"
+    );
 }
 
 #[test]
@@ -120,13 +134,41 @@ fn a_prior_with_no_finite_logit_is_uniform_over_the_moves_it_may_play() {
 
 #[test]
 fn values_are_rotated_back_to_absolute_seats() {
-    let v = absolute_value(&[0.0, 1.0, 2.0, 3.0], 2);
-    let e: Vec<f32> = [0.0f32, 1.0, 2.0, 3.0].iter().map(|x| x.exp()).collect();
+    let logits = [0.0f32, 1.0, 2.0, 3.0];
+    let e: Vec<f32> = logits.iter().map(|x| x.exp()).collect();
     let z: f32 = e.iter().sum();
-    // relative seat r is absolute seat (2 + r) % 4
-    for (abs_seat, r) in [(2, 0), (3, 1), (0, 2), (1, 3)] {
-        assert!((v[abs_seat] - e[r] / z).abs() < 1e-6, "{v:?}");
+    for actor in 0..NUM_PLAYERS as PlayerId {
+        let v = absolute_value(&logits, actor);
+        // relative seat r (0 = the actor, then in turn order) is absolute seat abs(r, actor)
+        for r in 0..NUM_PLAYERS {
+            assert!(
+                (v[abs(r, actor)] - e[r] / z).abs() < 1e-6,
+                "actor {actor}, relative seat {r}: {v:?}"
+            );
+        }
     }
+    // spelled out for actor 1: the actor's own logit lands on seat 1, the next player's on seat 2
+    let v = absolute_value(&logits, 1);
+    assert!(
+        (v[1] - e[0] / z).abs() < 1e-6 && (v[2] - e[1] / z).abs() < 1e-6,
+        "{v:?}"
+    );
+}
+
+#[test]
+fn non_finite_value_logits_give_an_even_split() {
+    let even = [0.25f32; NUM_PLAYERS];
+    for bad in [
+        [f32::NEG_INFINITY; 4],
+        [0.0, f32::INFINITY, 1.0, 2.0],
+        [0.0, f32::NAN, 1.0, 2.0],
+    ] {
+        assert_eq!(absolute_value(&bad, 3), even, "{bad:?}");
+    }
+    // a single -inf seat is an ordinary softmax: that seat gets 0
+    let v = absolute_value(&[0.0, f32::NEG_INFINITY, 0.0, 0.0], 0);
+    assert_eq!(v[1], 0.0);
+    assert!((v.iter().sum::<f32>() - 1.0).abs() < 1e-6, "{v:?}");
 }
 
 #[test]
