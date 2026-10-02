@@ -205,44 +205,49 @@ fn robber_choice(obs: &Observation, legal: &[Action]) -> Option<Action> {
     })
 }
 
+/// GreedyBot's move for `obs.viewer` among `legal` (non-empty). Also the heuristic evaluator's prior.
+pub fn choose(obs: &Observation, legal: &[Action]) -> Action {
+    let pick = match obs.phase {
+        Phase::SetupSettlement => best_by(legal, |a| match a {
+            Action::BuildSettlement(n) => Some(node_value(obs, n)),
+            _ => None,
+        }),
+        Phase::SetupRoad { .. } | Phase::RoadBuilding { .. } => best_by(legal, |a| match a {
+            Action::BuildRoad(e) => Some(road_value(obs, e)),
+            _ => None,
+        }),
+        Phase::PreRoll => {
+            if legal.contains(&Action::PlayKnight) && robber_on_me(obs) {
+                Some(Action::PlayKnight)
+            } else {
+                Some(Action::Roll)
+            }
+        }
+        Phase::Discard => best_by(legal, |a| match a {
+            Action::Discard(r) => Some(obs.my_hand[r.index()] as u32),
+            _ => None,
+        }),
+        Phase::MoveRobber => robber_choice(obs, legal),
+        Phase::Steal => best_by(legal, |a| match a {
+            Action::StealFrom(p) => Some(
+                obs.public_vp[p as usize] as u32 * 100 + obs.hand_counts[p as usize] as u32,
+            ),
+            _ => None,
+        }),
+        Phase::Main => main_choice(obs, legal),
+        Phase::TradeResponse => Some(Action::RejectTrade),
+        Phase::TradeConfirm => Some(Action::CancelTrade),
+        Phase::GameOver { .. } => None,
+    };
+    pick.filter(|a| legal.contains(a)).unwrap_or(legal[0])
+}
+
 impl Bot for GreedyBot {
     fn name(&self) -> &'static str {
         "greedy"
     }
 
     fn act(&mut self, obs: &Observation, legal: &[Action]) -> Action {
-        let pick = match obs.phase {
-            Phase::SetupSettlement => best_by(legal, |a| match a {
-                Action::BuildSettlement(n) => Some(node_value(obs, n)),
-                _ => None,
-            }),
-            Phase::SetupRoad { .. } | Phase::RoadBuilding { .. } => best_by(legal, |a| match a {
-                Action::BuildRoad(e) => Some(road_value(obs, e)),
-                _ => None,
-            }),
-            Phase::PreRoll => {
-                if legal.contains(&Action::PlayKnight) && robber_on_me(obs) {
-                    Some(Action::PlayKnight)
-                } else {
-                    Some(Action::Roll)
-                }
-            }
-            Phase::Discard => best_by(legal, |a| match a {
-                Action::Discard(r) => Some(obs.my_hand[r.index()] as u32),
-                _ => None,
-            }),
-            Phase::MoveRobber => robber_choice(obs, legal),
-            Phase::Steal => best_by(legal, |a| match a {
-                Action::StealFrom(p) => Some(
-                    obs.public_vp[p as usize] as u32 * 100 + obs.hand_counts[p as usize] as u32,
-                ),
-                _ => None,
-            }),
-            Phase::Main => main_choice(obs, legal),
-            Phase::TradeResponse => Some(Action::RejectTrade),
-            Phase::TradeConfirm => Some(Action::CancelTrade),
-            Phase::GameOver { .. } => None,
-        };
-        pick.filter(|a| legal.contains(a)).unwrap_or(legal[0])
+        choose(obs, legal)
     }
 }

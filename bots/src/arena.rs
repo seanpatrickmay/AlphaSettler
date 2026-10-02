@@ -115,7 +115,9 @@ pub fn run_match(
 ) -> Result<Vec<GameRecord>, String> {
     for name in [candidate, baseline] {
         if make_bot(name, 0).is_none() {
-            return Err(format!("unknown bot {name:?}; known bots: {BOT_NAMES:?}"));
+            return Err(format!(
+                "unknown bot {name:?}; known bots: {BOT_NAMES:?} (ismcts@N for N simulations, ismcts@N+rD to add D greedy rollout moves)"
+            ));
         }
     }
     config.validate()?;

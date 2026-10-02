@@ -2,6 +2,8 @@
 
 pub mod arena;
 pub mod greedy;
+pub mod heuristic;
+pub mod ismcts;
 pub mod random;
 
 use settler_engine::{Action, Event, Observation, PlayerId};
@@ -22,13 +24,17 @@ pub trait Bot: Send {
     }
 }
 
-pub const BOT_NAMES: &[&str] = &["random", "greedy"];
+pub const BOT_NAMES: &[&str] = &["random", "greedy", "ismcts"];
 
-/// A fresh bot by name, with its own random stream seeded from `seed`.
+/// A fresh bot by name, with its own random stream seeded from `seed`. Besides `BOT_NAMES`,
+/// `ismcts@N` (N simulations) and `ismcts@N+rD` (plus D greedy rollout moves per leaf).
 pub fn make_bot(name: &str, seed: u64) -> Option<Box<dyn Bot>> {
     match name {
         "random" => Some(Box::new(random::RandomBot::new(seed))),
         "greedy" => Some(Box::new(greedy::GreedyBot::new(seed))),
-        _ => None,
+        _ => {
+            let (sims, rollout) = ismcts::parse_name(name)?;
+            Some(Box::new(ismcts::IsmctsBot::new(seed, sims, rollout)))
+        }
     }
 }

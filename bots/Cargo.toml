@@ -10,6 +10,7 @@ name = "settler_bots"
 
 [dependencies]
 settler-engine = { path = "../engine" }
+settler-search = { path = "../search" }
 
 [lints.clippy]
 needless_range_loop = "allow"
