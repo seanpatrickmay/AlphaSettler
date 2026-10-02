@@ -63,13 +63,15 @@ fn answers_offers_without_searching() {
         let s = *g.state();
         let legal = g.legal_actions();
         let actor = s.current_actor();
-        let mut bot = IsmctsBot::new(0, 1_000_000, 0); // a search this size would take minutes
+        let mut bot = IsmctsBot::new(0, 50, 0);
         if s.phase == Phase::TradeResponse {
             assert_eq!(bot.act(&s.observation(actor), &legal), Action::RejectTrade);
+            assert!(bot.take_last_search().is_none(), "answered an offer by searching");
             rejected = true;
         }
         if s.phase == Phase::TradeConfirm {
             assert_eq!(bot.act(&s.observation(actor), &legal), Action::CancelTrade);
+            assert!(bot.take_last_search().is_none(), "answered an offer by searching");
             cancelled = true;
         }
         let pick = if s.phase == Phase::TradeResponse && legal.contains(&Action::AcceptTrade) {
@@ -82,20 +84,129 @@ fn answers_offers_without_searching() {
     assert!(rejected && cancelled, "random play with trades reaches both trade phases");
 }
 
+fn resets(bot: &IsmctsBot) -> u64 {
+    let d: std::collections::HashMap<_, _> = bot.diagnostics().into_iter().collect();
+    d["belief_resets"]
+}
+
+/// Random moves from `g` until player 0, past setup and turn `min_turn`, must make a decision
+/// that is searched (`searched`: more than one searchable move, not a trade answer) or not.
+fn advance(g: &mut Game, rng: &mut Rng, min_turn: u32, searched: bool) {
+    let mut moves = Vec::new();
+    loop {
+        let s = *g.state();
+        assert!(!s.is_over(), "the game ended before the wanted decision");
+        let legal = g.legal_actions();
+        settler_search::search_actions(&legal, &mut moves);
+        let ready = s.turn >= min_turn
+            && s.current_actor() == 0
+            && !matches!(s.phase, Phase::SetupSettlement | Phase::SetupRoad { .. } | Phase::TradeResponse | Phase::TradeConfirm);
+        if ready && (moves.len() > 1) == searched {
+            return;
+        }
+        g.apply(legal[rng.below(legal.len() as u32) as usize]).unwrap();
+    }
+}
+
+/// Events no history can explain: player 0 discards one more wood than they hold.
+fn contradiction(obs: &Observation) -> Vec<Event> {
+    let wood = obs.my_hand[Resource::Wood.index()] as usize;
+    vec![Event::Discarded { player: 0, resource: Resource::Wood }; wood + 1]
+}
+
+/// Act for player 0 at `g`'s current decision, check the move is legal and apply it.
+fn act_and_apply(bot: &mut IsmctsBot, g: &mut Game) {
+    let legal = g.legal_actions();
+    let a = bot.act(&g.observation(0), &legal);
+    assert!(legal.contains(&a));
+    g.apply(a).unwrap();
+}
+
 #[test]
 fn a_contradictory_history_is_counted_and_recovered_from() {
-    // City cards, so the decision is searched (a single legal move would skip the belief).
-    let s = main_with(3, CITY_COST, no_trades());
-    let mut bot = IsmctsBot::new(1, 50, 0);
-    bot.observe(0, &[
-        Event::Produced { player: 1, resources: [1, 0, 0, 0, 0] },
-        Event::Discarded { player: 1, resource: Resource::Ore },
-    ]);
-    let legal = s.legal_actions();
-    let a = bot.act(&s.observation(0), &legal);
-    assert!(legal.contains(&a));
-    let d: std::collections::HashMap<_, _> = bot.diagnostics().into_iter().collect();
-    assert_eq!(d["belief_resets"], 1);
+    for (inject, expected) in [(false, 0), (true, 1)] {
+        let mut g = Game::new(7, no_trades());
+        let mut rng = Rng::new(7);
+        advance(&mut g, &mut rng, 8, true);
+        let mut bot = IsmctsBot::new(1, 50, 0);
+        let mut seen = g.log_for(0).len(); // like the arena: everything up to now, then each new event
+        bot.observe(0, &g.log_for(0));
+        if inject {
+            bot.observe(0, &contradiction(&g.observation(0)));
+        }
+        assert_eq!(resets(&bot), expected, "inject {inject}: counted at the error");
+        act_and_apply(&mut bot, &mut g);
+        assert!(bot.take_last_search().is_some());
+        assert_eq!(resets(&bot), expected, "inject {inject}: the rebuild is not counted again");
+        // The rebuilt belief keeps tracking the true history.
+        for _ in 0..3 {
+            advance(&mut g, &mut rng, 0, true);
+            let log = g.log_for(0);
+            bot.observe(0, &log[seen..]);
+            seen = log.len();
+            act_and_apply(&mut bot, &mut g);
+            assert!(bot.take_last_search().is_some());
+            assert_eq!(resets(&bot), expected, "inject {inject}: later decisions");
+        }
+    }
+}
+
+#[test]
+fn a_contradiction_before_an_unsearched_move_is_counted_once() {
+    let mut g = Game::new(8, no_trades());
+    let mut rng = Rng::new(8);
+    advance(&mut g, &mut rng, 8, false);
+    let mut bot = IsmctsBot::new(2, 50, 0);
+    let mut seen = g.log_for(0).len();
+    bot.observe(0, &g.log_for(0));
+    bot.observe(0, &contradiction(&g.observation(0)));
+    assert_eq!(resets(&bot), 1);
+    act_and_apply(&mut bot, &mut g);
+    assert!(bot.take_last_search().is_none(), "a single move is not searched");
+    assert_eq!(resets(&bot), 1);
+    // Events while the belief is dropped are skipped, then the next search rebuilds uncounted.
+    for _ in 0..3 {
+        advance(&mut g, &mut rng, 0, true);
+        let log = g.log_for(0);
+        bot.observe(0, &log[seen..]);
+        seen = log.len();
+        act_and_apply(&mut bot, &mut g);
+        assert!(bot.take_last_search().is_some());
+        assert_eq!(resets(&bot), 1);
+    }
+}
+
+#[test]
+fn acting_without_any_history_is_one_reset() {
+    let s = main_with(4, CITY_COST, no_trades());
+    let mut bot = IsmctsBot::new(4, 50, 0);
+    decide(&mut bot, &s);
+    assert_eq!(resets(&bot), 1);
+    decide(&mut bot, &s); // the belief rebuilt from this observation still matches it
+    assert_eq!(resets(&bot), 1);
+}
+
+#[test]
+fn a_new_seat_starts_a_new_game_without_a_reset() {
+    let mut bots: Vec<Box<dyn Bot>> = (0..4u64).map(|p| make_bot("greedy", p).unwrap()).collect();
+    bots[0] = Box::new(IsmctsBot::new(9, 20, 0));
+    play_game(0, no_trades(), &mut bots);
+    bots.swap(0, 2);
+    play_game(1, no_trades(), &mut bots);
+    let d: std::collections::HashMap<_, _> = bots[2].diagnostics().into_iter().collect();
+    assert_eq!(d["belief_resets"], 0);
+    assert!(d["searches"] > 0);
+}
+
+#[test]
+fn rollouts_play_whole_games() {
+    let mut bots: Vec<Box<dyn Bot>> = (0..4u64).map(|p| make_bot("greedy", p).unwrap()).collect();
+    bots[1] = make_bot("ismcts@20+r8", 1).unwrap();
+    let (_, _, turns, _) = play_game(3, no_trades(), &mut bots); // panics on an illegal move
+    assert!(turns > 0);
+    let d: std::collections::HashMap<_, _> = bots[1].diagnostics().into_iter().collect();
+    assert_eq!(d["belief_resets"], 0);
+    assert!(d["searches"] > 0);
 }
 
 /// Player 0 in Main right after setup with `cards` added.
