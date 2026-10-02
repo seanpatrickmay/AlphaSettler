@@ -5,6 +5,7 @@ pub mod greedy;
 pub mod heuristic;
 pub mod ismcts;
 pub mod random;
+pub mod selfplay;
 
 use settler_engine::{Action, Event, Observation, PlayerId};
 

@@ -127,3 +127,23 @@ def test_cli_surfaces_a_broken_catanatron_install(tmp_path):
     assert r.returncode != 0
     assert "not installed" not in r.stderr
     assert "No module named 'networkx_not_here'" in r.stderr
+
+
+def test_cli_selfplay_and_fit(tmp_path):
+    r = cli("selfplay", "--games", "3", "--simulations", "10", "--out-dir", str(tmp_path))
+    assert r.returncode == 0, r.stderr
+    files = list(tmp_path.glob("*-selfplay-s10.jsonl.gz"))
+    assert len(files) == 1
+    assert "3 games" in r.stdout
+    f = cli("fit-heuristic", str(files[0]))
+    assert f.returncode == 0, f.stderr
+    assert "pub const DEFAULT_WEIGHTS: [f32; NUM_FEATURES] = [" in f.stdout
+    assert "log-likelihood per sample" in f.stdout
+
+
+def test_cli_compare_accepts_ismcts_names(tmp_path):
+    r = cli("compare", "--a", "ismcts@5", "--b", "greedy", "--baseline", "random", "--seeds", "1",
+            "--no-trades", "--out-dir", str(tmp_path))
+    assert r.returncode == 0, r.stderr
+    bad = cli("compare", "--a", "ismcts@0", "--b", "greedy", "--baseline", "random", "--seeds", "1")
+    assert bad.returncode == 2 and "unknown bot" in bad.stderr

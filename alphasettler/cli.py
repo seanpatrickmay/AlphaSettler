@@ -1,15 +1,16 @@
-"""Command line: `alphasettler arena ...`, `alphasettler compare ...` and `alphasettler oracle-diff ...`."""
+"""Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay` and `fit-heuristic`."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 
-from alphasettler._engine import bot_names
+from alphasettler._engine import Bot, bot_names
 from alphasettler.arena import SEED_LIMIT, _write_records, check, format_summary, open_output, run
 from alphasettler.stats import paired, summarize
 
@@ -53,7 +54,70 @@ def _parser() -> argparse.ArgumentParser:
     o.add_argument("--seed-start", type=int, default=0)
     o.add_argument("--workers", type=_positive_int, default=None)
     o.add_argument("--out", default=None, help="JSONL path, one line per game")
+
+    s = sub.add_parser("selfplay", help="IsmctsBot self-play records for training and weight fits")
+    s.add_argument("--games", type=_positive_int, required=True)
+    s.add_argument("--simulations", type=_positive_int, required=True)
+    s.add_argument("--rollout", type=int, default=0)
+    s.add_argument("--seed-start", type=int, default=0)
+    s.add_argument("--threads", type=_positive_int, default=None)
+    s.add_argument("--out-dir", default="runs")
+    s.add_argument("--trades", action="store_true", help="allow domestic offers (ismcts never makes any)")
+
+    f = sub.add_parser("fit-heuristic", help="fit the heuristic evaluator's weights on self-play records")
+    f.add_argument("records", nargs="+")
+    f.add_argument("--iterations", type=_positive_int, default=25)
+    f.add_argument("--l2", type=float, default=0.001)
     return p
+
+
+def _check_bot_name(name: str) -> None:
+    """ValueError naming `name` if the native parser rejects it (accepts `ismcts@N[+rD]` too)."""
+    try:
+        Bot(name, 0)
+    except ValueError:
+        raise ValueError(
+            f"unknown bot {name!r}; known bots: {bot_names()} (or ismcts@N, ismcts@N+rD)"
+        ) from None
+
+
+SELFPLAY_BATCH = 100  # games per native call; Ctrl-C is handled between calls
+
+
+def _selfplay(args) -> int:
+    from alphasettler import records
+    from alphasettler._engine import selfplay
+
+    config = {} if args.trades else {"max_offers_per_turn": 0}
+    if args.seed_start < 0 or args.seed_start + args.games > SEED_LIMIT:
+        raise ValueError(f"seeds {args.seed_start}..{args.seed_start + args.games} are outside the u64 seed range")
+    out = Path(args.out_dir) / f"{_stamp()}-selfplay-s{args.simulations}.jsonl.gz"
+    threads = args.threads or os.cpu_count() or 1
+    games = []
+    end = args.seed_start + args.games
+    for lo in range(args.seed_start, end, SELFPLAY_BATCH):
+        games.extend(selfplay(lo, min(SELFPLAY_BATCH, end - lo), args.simulations, threads, config, args.rollout))
+    records.write(out, games, config)
+    decisions = sum(len(g["decisions"]) for g in games)
+    print(f"{len(games)} games, {decisions} searched decisions, wrote {out}")
+    return 0
+
+
+def _fit_heuristic(args) -> int:
+    from alphasettler import records
+    from alphasettler._engine import fit_heuristic
+
+    games = []
+    for path in args.records:
+        for g in records.read(path):
+            g["decisions"] = [{"index": d["index"]} for d in g["decisions"]]  # observations are not needed
+            games.append(g)
+    r = fit_heuristic(games, args.iterations, args.l2)
+    print(f"samples: {r['samples']} from {len(games)} games")
+    print(f"log-likelihood per sample: default {r['log_likelihood_before']:.4f}, fitted {r['log_likelihood_after']:.4f}")
+    weights = ", ".join(f"{w:.4f}" for w in r["weights"])
+    print(f"pub const DEFAULT_WEIGHTS: [f32; NUM_FEATURES] = [{weights}];")
+    return 0
 
 
 def _oracle_missing() -> int:
@@ -128,11 +192,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"wrote {out}")
         elif args.command == "oracle-diff":
             return _oracle_diff(args)
+        elif args.command == "selfplay":
+            return _selfplay(args)
+        elif args.command == "fit-heuristic":
+            return _fit_heuristic(args)
         else:
-            known = bot_names()
             for name in (args.a, args.b, args.baseline):
-                if name not in known:
-                    raise ValueError(f"unknown bot {name!r}; known bots: {known}")
+                _check_bot_name(name)
             sides = (("a", args.a), ("b", args.b))
             for _, name in sides:
                 check(name, args.baseline, args.seeds, args.seed_start, args.threads, config)
