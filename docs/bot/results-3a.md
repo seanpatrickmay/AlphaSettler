@@ -1,0 +1,131 @@
+# Sub-project 3a (ISMCTS search bot): results
+
+Date: 2026-10-02. Machine: Apple M1 Pro, 10 cores, macOS (Darwin 25.5.0). Python 3.12.6,
+rustc 1.98.1.
+
+AlphaSettler: 5b534c8, plus the commit that adds this file, `docs/perf/search.md` and
+`bots/examples/search_speed.rs`. None of those three changes the bot.
+Catanatron 3.3.0 at git commit ecf931181b9a65bb4116a2153fb78c16f1438e00.
+
+Spec: [`docs/superpowers/specs/2026-10-01-bot-3a-ismcts-design.md`](../superpowers/specs/2026-10-01-bot-3a-ismcts-design.md).
+
+## Search speed
+
+About 700k simulations/s on one core, or 1.4 ms per decision at 1,000 simulations (three runs:
+708,105, 696,050 and 699,229 simulations/s). The spec estimated 50k–100k. Details are in
+[`docs/perf/search.md`](../perf/search.md).
+
+## Configuration
+
+`ismcts` means 1,000 simulations, c_puct 1.5, batch 8, rollout 0. The belief is exact, with a cap
+of 65,536 states. The heuristic weights are the hand-set ones the bot was built with:
+
+```
+pub const DEFAULT_WEIGHTS: [f32; NUM_FEATURES] = [1.0, 0.08, 0.05, -0.1, 0.3, 0.05, 0.1, 0.2];
+```
+
+In feature order these are vp, production, hand, over_limit, dev_cards, road_length, knights and
+settlement_spots.
+
+## Round 0: the bot as built
+
+Round 0 met the headline, so no tuning round was run. The plan says to stop once the headline is
+met, and the spec allows tuning rounds only if it is missed. Weights, fit and rollout are therefore
+unchanged from the build.
+
+Each seed is 4 games, with the candidate rotated through every seat against three copies of the
+baseline. The null hypothesis is a 0.25 win rate. The native runs use `--no-trades`. The Catanatron
+runs use the arena's default config, which already has domestic trades off.
+
+| Command | Summary line | Wall time | Fallbacks | Belief resets |
+|---|---|---|---|---|
+| `arena --candidate ismcts@100 --baseline greedy --seeds 200 --no-trades` | win rate 0.331 [0.309, 0.353] over 200 seeds (800 games, 265 wins, 0 draws), z = 7.25, mean VP 7.13, mean turns 102.9 | 1.4 s | n/a | n/a |
+| `arena --candidate ismcts@300 --baseline greedy --seeds 200 --no-trades` | win rate 0.381 [0.355, 0.408] over 200 seeds (800 games, 305 wins, 0 draws), z = 9.73, mean VP 7.41, mean turns 101.6 | 3.7 s | n/a | n/a |
+| `arena --candidate ismcts@1000 --baseline greedy --seeds 200 --no-trades` | win rate 0.426 [0.396, 0.457] over 200 seeds (800 games, 341 wins, 0 draws), z = 11.35, mean VP 7.71, mean turns 100.3 | 11.8 s | n/a | n/a |
+| `arena --candidate ismcts@3000 --baseline greedy --seeds 200 --no-trades` | win rate 0.425 [0.393, 0.457] over 200 seeds (800 games, 340 wins, 0 draws), z = 10.77, mean VP 7.85, mean turns 101.5 | 37.0 s | n/a | n/a |
+| `arena --candidate ismcts --baseline catanatron:value --seeds 200` | win rate 0.458 [0.424, 0.491] over 200 seeds (800 games, 366 wins, 0 draws), z = 12.01, mean VP 7.70, mean turns 85.3 | 47.3 s | 0 | 0 |
+| `arena --candidate ismcts --baseline catanatron:alphabeta --seeds 200` | win rate 0.389 [0.353, 0.424] over 200 seeds (800 games, 311 wins, 0 draws), z = 7.65, mean VP 7.30, mean turns 82.3 | 20:43 | 0 | 0 |
+
+The records are in `runs/p4/r0-*.jsonl`, which are gitignored.
+
+## Strength curve against GreedyBot (final configuration)
+
+| Simulations | Win rate [95% CI] | z vs 0.25 |
+|---|---|---|
+| 100 | 0.331 [0.309, 0.353] | 7.25 |
+| 300 | 0.381 [0.355, 0.408] | 9.73 |
+| 1,000 | 0.426 [0.396, 0.457] | 11.35 |
+| 3,000 | 0.425 [0.393, 0.457] | 10.77 |
+
+Win rate goes up at each step to 1,000 simulations, but each step is small (unpaired z about 2,
+and no paired test was run). After that it stops rising: 3,000 is level with 1,000. That plateau is
+consistent with the hand-set heuristic evaluator being the limit. This was not tested, since no
+tuning round ran, and determinization effects or c_puct could also contribute. A learned value and
+prior are 3b's job.
+
+## Headline
+
+**Met.** At 1,000 simulations, IsmctsBot beats both of Catanatron's strongest bots by z > 3 over
+200 seeds:
+
+| Baseline | IsmctsBot | GreedyBot (for scale, [`docs/oracle/results.md`](../oracle/results.md)) |
+|---|---|---|
+| `catanatron:value` | 0.458, z = 12.01 | 0.185 (100 seeds) |
+| `catanatron:alphabeta` | 0.389, z = 7.65 | 0.102 (100 seeds) |
+
+AlphaBeta searches against a wall-clock limit, so its games are not guaranteed to be reproducible
+and depend on machine load. All runs above were sequential on an otherwise idle machine. An earlier
+20-seed reading on the same code (`runs/p4-early/`) gave 0.375, which agrees.
+
+## Spec Section 5 done criteria
+
+- [x] **1. All correctness tests pass, and the Catanatron arena records 0 fallbacks and 0 belief
+  resets.** Both Catanatron runs above print `fallbacks: 0` and `belief resets: 0`. Each spec test
+  maps to these tests:
+  - Belief, exact match against a brute-force posterior: `search/tests/belief.rs`
+    `hand_built_histories_match_the_exact_posterior` and
+    `random_histories_match_the_exact_posterior`. They are held to 1e-9, tighter than the spec's 0.02.
+  - Belief, the true hands never ruled out and every state matching `hand_counts`:
+    `the_full_log_reproduces_every_hand`, and
+    `every_state_matches_the_visible_counts_and_the_truth_stays_possible`.
+  - Sampled worlds: `search/tests/world.rs`
+    `sampled_worlds_are_valid_and_look_exactly_like_the_observation`.
+  - Search mechanics:
+    - `search/src/puct.rs` unit tests: `each_player_maximises_their_own_value` (max^n),
+      `exploration_grows_with_availability` and `children_not_allowed_in_this_world_are_skipped`
+      (availability), `pending_visits_lower_the_score` (virtual loss).
+    - `search/tests/search.rs`: `dice_branch_into_chance_outcomes` and
+      `which_chance_outcomes_the_viewer_sees` (public chance branches, hidden chance does not).
+  - Evaluator contract: `bots/tests/heuristic.rs` `the_prior_depends_only_on_what_the_actor_sees`.
+  - Tactics:
+    - `search/tests/search.rs` `takes_a_winning_build`.
+    - `bots/tests/ismcts.rs` `builds_an_affordable_city_rather_than_ending_the_turn` and
+      `never_robs_its_own_buildings_when_an_opponent_tile_is_free`.
+  - Determinism:
+    - `search/tests/search.rs` `the_same_seed_gives_the_same_search`.
+    - `bots/tests/ismcts.rs` `arena_results_do_not_depend_on_thread_count`.
+  - Catanatron event feed: `tests/python/test_oracle_events.py`
+    `test_translated_events_equal_our_log_in_clean_games`.
+- [x] **2. Search throughput is recorded in `docs/perf/`.** See
+  [`docs/perf/search.md`](../perf/search.md).
+- [x] **3. Strength curve at 100, 300, 1,000 and 3,000 simulations against GreedyBot, each z > 3.**
+  The lowest is z = 7.25, at 100 simulations.
+- [x] **4. Headline: `ismcts` (1,000 simulations) beats `catanatron:alphabeta` and
+  `catanatron:value` with z > 3 over 200 seeds.** The results are z = 7.65 and z = 12.01.
+- [x] **5. `alphasettler selfplay` writes records that load in Python, and seed plus actions
+  reproduce every stored observation exactly.** Tested by these:
+  - `tests/python/test_selfplay.py` `test_records_round_trip_and_replay_exactly`.
+  - `tests/python/test_cli.py` `test_cli_selfplay_streams_batches_and_replays`.
+  - `tests/python/test_selfplay.py` `test_replay_detects_a_tampered_record`, which shows the replay check is not vacuous.
+  - `bots/tests/selfplay.rs` `every_searched_decision_is_recorded_and_replays`.
+
+## Tests
+
+These ran on the final tree, after all the runs above:
+
+- `cargo test --workspace --release`: 243 passed, 0 failed, 0 ignored, across 33 test targets in
+  engine, search, bots and bindings.
+- `.venv/bin/maturin develop --release && .venv/bin/pytest -q`: 156 passed in 42 s.
+- The golden trace (`engine/tests/golden_trace.rs`) has been unchanged since its one re-pin in this
+  sub-project. That re-pin was for the per-victim `from` field on `MonopolyTaken`, which changes the
+  logged events but not the states: a states-only hash stayed identical.
