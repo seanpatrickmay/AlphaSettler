@@ -91,11 +91,19 @@ and depend on machine load. All runs above were sequential on an otherwise idle 
   - Sampled worlds: `search/tests/world.rs`
     `sampled_worlds_are_valid_and_look_exactly_like_the_observation`.
   - Search mechanics:
-    - `search/src/puct.rs` unit tests: `each_player_maximises_their_own_value` (max^n),
-      `exploration_grows_with_availability` and `children_not_allowed_in_this_world_are_skipped`
-      (availability), `pending_visits_lower_the_score` (virtual loss).
-    - `search/tests/search.rs`: `dice_branch_into_chance_outcomes` and
-      `which_chance_outcomes_the_viewer_sees` (public chance branches, hidden chance does not).
+    - Availability: `search/src/puct.rs` `exploration_grows_with_availability` and
+      `children_not_allowed_in_this_world_are_skipped`.
+    - Max^n backup: `search/src/puct.rs` `each_player_maximises_their_own_value` (selection), and
+      `search/tests/search.rs` `batched_search_leaves_no_virtual_loss_and_backs_up_whole_value_vectors`
+      (every child's 4-vector value sum equals its visits) and
+      `terminal_values_are_one_hot_for_a_winner_and_even_at_the_turn_cap`.
+    - Virtual loss: `search/src/puct.rs` `pending_visits_lower_the_score`, and
+      `batched_search_leaves_no_virtual_loss_and_backs_up_whole_value_vectors` (after a batch-8
+      search of 2,500 simulations no child keeps a pending visit and no node awaits evaluation).
+    - Public chance branches: `search/tests/search.rs` `dice_branch_into_chance_outcomes`.
+    - Hidden chance does not branch: `search/tests/search.rs` `hidden_chance_makes_no_chance_node`
+      (an opponent's dev-card purchase is a decision node, the viewer's own a chance node) and
+      `which_chance_outcomes_the_viewer_sees`.
   - Evaluator contract: `bots/tests/heuristic.rs` `the_prior_depends_only_on_what_the_actor_sees`.
   - Tactics:
     - `search/tests/search.rs` `takes_a_winning_build`.
