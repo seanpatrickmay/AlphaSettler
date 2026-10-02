@@ -32,6 +32,7 @@ fn every_searched_decision_is_recorded_and_replays() {
     assert!(decisions.next().is_none());
     assert_eq!(s.winner(), g.winner);
     assert_eq!(s.turn, g.turns);
+    assert_eq!(g.belief_resets, 0);
 }
 
 #[test]

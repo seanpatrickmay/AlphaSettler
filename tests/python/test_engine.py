@@ -202,7 +202,7 @@ def test_run_match_records():
     recs = run_match("greedy", "random", 0, 3, 2)
     assert len(recs) == 12
     assert [r["candidate_seat"] for r in recs[:4]] == [0, 1, 2, 3]
-    assert set(recs[0]) == {"seed", "candidate_seat", "winner", "vp", "turns", "actions"}
+    assert set(recs[0]) == {"seed", "candidate_seat", "winner", "vp", "turns", "actions", "belief_resets"}
     assert isinstance(recs[0]["vp"], list) and len(recs[0]["vp"]) == 4
 
 

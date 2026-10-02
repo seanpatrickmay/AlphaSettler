@@ -1,6 +1,6 @@
 mod common;
 
-use settler_bots::arena::{play_game, run_match};
+use settler_bots::arena::{belief_resets, play_game, run_match};
 use settler_bots::ismcts::{parse_name, IsmctsBot};
 use settler_bots::{make_bot, Bot, BOT_NAMES};
 use settler_engine::rng::Rng;
@@ -239,6 +239,24 @@ fn acting_without_any_history_is_one_reset() {
     assert_eq!(resets(&bot), 1);
     decide(&mut bot, &s); // the belief rebuilt from this observation still matches it
     assert_eq!(resets(&bot), 1);
+}
+
+#[test]
+fn native_arena_records_report_zero_belief_resets() {
+    let records = run_match("ismcts@20", "greedy", 0..2, no_trades(), 2).unwrap();
+    assert_eq!(records.len(), 8);
+    assert!(records.iter().all(|r| r.belief_resets == 0), "{records:?}");
+}
+
+#[test]
+fn belief_resets_sum_over_seats_that_report_them() {
+    let s = main_with(5, CITY_COST, no_trades());
+    let mut counted = IsmctsBot::new(5, 20, 0);
+    decide(&mut counted, &s); // no history: one reset
+    let greedy = make_bot("greedy", 0).unwrap();
+    let clean = IsmctsBot::new(6, 20, 0);
+    let seats: [&dyn Bot; 3] = [&counted, greedy.as_ref(), &clean];
+    assert_eq!(belief_resets(seats), 1);
 }
 
 #[test]

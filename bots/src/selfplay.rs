@@ -1,6 +1,6 @@
 //! Self-play: IsmctsBot in all four seats, recording every searched decision (spec Section 4).
 
-use crate::arena::{bot_seed, split_seeds, EventFeed, MAX_SEEDS};
+use crate::arena::{belief_resets, bot_seed, split_seeds, EventFeed, MAX_SEEDS};
 use crate::ismcts::IsmctsBot;
 use crate::Bot;
 use settler_engine::legal::legal_actions;
@@ -32,6 +32,8 @@ pub struct SelfPlayGame {
     pub winner: Option<PlayerId>,
     pub vp: [u8; NUM_PLAYERS],
     pub turns: u32,
+    /// Belief resets over all four bots at the game's end; must be 0 (spec Section 2).
+    pub belief_resets: u64,
 }
 
 pub fn play(seed: u64, config: GameConfig, simulations: u32, rollout: u32) -> SelfPlayGame {
@@ -72,6 +74,7 @@ pub fn play(seed: u64, config: GameConfig, simulations: u32, rollout: u32) -> Se
         winner: s.winner(),
         vp: std::array::from_fn(|p| s.total_vp(p)),
         turns: s.turn,
+        belief_resets: belief_resets(bots.iter().map(|b| b as &dyn Bot)),
     }
 }
 

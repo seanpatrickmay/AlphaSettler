@@ -16,6 +16,9 @@ pub struct GameRecord {
     pub vp: [u8; NUM_PLAYERS],
     pub turns: u32,
     pub actions: u32,
+    /// Belief resets over every seat at the game's end (bots that report none count 0); every
+    /// arena run must show 0 (spec Section 2).
+    pub belief_resets: u64,
 }
 
 /// Largest seed range one `run_match` call accepts.
@@ -65,6 +68,15 @@ pub fn split_seeds(seeds: Range<u64>, threads: usize) -> Vec<Range<u64>> {
         .take_while(|&off| off < n)
         .map(|off| seeds.start + off..seeds.start + off + chunk.min(n - off))
         .collect()
+}
+
+/// The `belief_resets` diagnostic summed over `bots`, 0 for a bot that does not report it.
+pub fn belief_resets<'a>(bots: impl IntoIterator<Item = &'a dyn Bot>) -> u64 {
+    bots.into_iter()
+        .flat_map(|b| b.diagnostics())
+        .filter(|&(name, _)| name == "belief_resets")
+        .map(|(_, n)| n)
+        .sum()
 }
 
 /// Play one game. Returns (winner, final VP, turns, actions). Panics if a bot picks an illegal action.
@@ -152,6 +164,7 @@ pub fn run_match(
                                 vp,
                                 turns,
                                 actions,
+                                belief_resets: belief_resets(bots.iter().map(|b| b.as_ref())),
                             });
                         }
                     }

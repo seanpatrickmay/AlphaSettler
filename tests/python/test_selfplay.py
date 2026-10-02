@@ -14,6 +14,7 @@ def test_selfplay_games_have_searched_decisions():
     assert [g["seed"] for g in games] == [0, 1]
     for g in games:
         assert g["decisions"]
+        assert g["belief_resets"] == 0
         for d in g["decisions"]:
             assert g["actions"][d["index"]] in d["legal"]
             assert len(d["visits"]) == len(d["legal"]) and sum(d["visits"]) == 9

@@ -82,6 +82,11 @@ def _check_bot_name(name: str) -> None:
         ) from None
 
 
+def _resets_line(records: list[dict]) -> str:
+    """The belief resets summed over `records` (spec: every arena run must report 0)."""
+    return f"belief resets: {sum(r['belief_resets'] for r in records)}"
+
+
 # Games per native call. Python only sees Ctrl-C between calls (the GIL is released while games
 # run), so this bounds how long an interrupt waits; every finished batch is already on disk.
 SELFPLAY_BATCH = 100
@@ -101,7 +106,7 @@ def _selfplay(args) -> int:
     config = {} if args.trades else {"max_offers_per_turn": 0}
     out = Path(args.out_dir) / f"{_stamp()}-selfplay-s{args.simulations}.jsonl.gz"
     threads = args.threads or os.cpu_count() or 1
-    games = decisions = 0
+    games = decisions = resets = 0
     end = args.seed_start + args.games
     # Open the output before the run, so a bad path fails before any game is played.
     with records.open_writer(out) as w:
@@ -112,11 +117,14 @@ def _selfplay(args) -> int:
                     w.write_game(g, config)
                     games += 1
                     decisions += len(g["decisions"])
+                    resets += g["belief_resets"]
                 w.flush()
         except KeyboardInterrupt:
             print(f"interrupted: kept {games} games, {decisions} searched decisions in {out}", file=sys.stderr)
+            print(f"belief resets: {resets}", file=sys.stderr)
             return 130
     print(f"{games} games, {decisions} searched decisions, wrote {out}")
+    print(f"belief resets: {resets}")
     return 0
 
 
@@ -193,7 +201,7 @@ def _catanatron_arena(args, out: Path) -> int:
         _write_records(f, args.candidate, args.baseline, records)
     print(format_summary(f"{args.candidate} vs {args.baseline}", summarize(records)))
     print(f"fallbacks: {sum(r['fallbacks'] for r in records)}")
-    print(f"belief resets: {sum(r['belief_resets'] for r in records)}")
+    print(_resets_line(records))
     print(f"wrote {out}")
     return 0
 
@@ -207,8 +215,9 @@ def main(argv: list[str] | None = None) -> int:
             out = Path(args.out or f"runs/{_stamp()}-{args.candidate}-vs-{name}.jsonl")
             if args.baseline.startswith("catanatron:"):
                 return _catanatron_arena(args, out)
-            _, summary = run(args.candidate, args.baseline, args.seeds, args.seed_start, args.threads, config, out)
+            records, summary = run(args.candidate, args.baseline, args.seeds, args.seed_start, args.threads, config, out)
             print(format_summary(f"{args.candidate} vs {args.baseline}", summary))
+            print(_resets_line(records))
             print(f"wrote {out}")
         elif args.command == "oracle-diff":
             return _oracle_diff(args)
@@ -231,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
                     records, summary = run(name, args.baseline, args.seeds, args.seed_start, args.threads, config, f)
                     results[side] = records
                     print(format_summary(f"{name} vs {args.baseline}", summary))
+                    print(_resets_line(records))
                     print(f"wrote {out}")
             pr = paired(results["a"], results["b"])
             print(

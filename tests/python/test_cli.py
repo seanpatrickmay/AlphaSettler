@@ -1,3 +1,4 @@
+import json
 import re
 import subprocess
 import sys
@@ -16,6 +17,17 @@ def test_cli_arena(tmp_path):
     assert "greedy vs random: win rate" in r.stdout
     assert f"wrote {out}" in r.stdout
     assert len(out.read_text().splitlines()) == 16
+
+
+def test_cli_native_arena_reports_zero_belief_resets(tmp_path):
+    out = tmp_path / "i.jsonl"
+    r = cli("arena", "--candidate", "ismcts@10", "--baseline", "greedy", "--seeds", "1", "--no-trades",
+            "--out", str(out))
+    assert r.returncode == 0, r.stderr
+    assert "belief resets: 0" in r.stdout
+    recs = [json.loads(line) for line in out.read_text().splitlines()]
+    assert len(recs) == 4
+    assert all(rec["belief_resets"] == 0 for rec in recs)
 
 
 def test_cli_arena_default_output_goes_to_runs(tmp_path):
@@ -135,6 +147,7 @@ def test_cli_selfplay_and_fit(tmp_path):
     files = list(tmp_path.glob("*-selfplay-s10.jsonl.gz"))
     assert len(files) == 1
     assert "3 games" in r.stdout
+    assert "belief resets: 0" in r.stdout
     f = cli("fit-heuristic", str(files[0]))
     assert f.returncode == 0, f.stderr
     assert "pub const DEFAULT_WEIGHTS: [f32; NUM_FEATURES] = [" in f.stdout
@@ -145,6 +158,7 @@ def test_cli_compare_accepts_ismcts_names(tmp_path):
     r = cli("compare", "--a", "ismcts@5", "--b", "greedy", "--baseline", "random", "--seeds", "1",
             "--no-trades", "--out-dir", str(tmp_path))
     assert r.returncode == 0, r.stderr
+    assert r.stdout.count("belief resets: 0") == 2
     bad = cli("compare", "--a", "ismcts@0", "--b", "greedy", "--baseline", "random", "--seeds", "1")
     assert bad.returncode == 2 and "unknown bot" in bad.stderr
 

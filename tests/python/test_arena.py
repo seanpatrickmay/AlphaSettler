@@ -22,6 +22,7 @@ def test_run_writes_jsonl_and_summarizes(tmp_path):
     first = json.loads(lines[0])
     assert first["candidate"] == "greedy" and first["baseline"] == "random"
     assert first["seed"] == 100 and first["candidate_seat"] == 0
+    assert first["belief_resets"] == 0  # neither bot reports any
     assert summary.seeds == 5 and summary.games == 20
     text = format_summary("greedy vs random", summary)
     assert "win rate" in text and "z vs 0.25" in text

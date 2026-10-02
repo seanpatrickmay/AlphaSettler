@@ -293,6 +293,7 @@ fn run_match<'py>(
         d.set_item("vp", counts(&r.vp))?;
         d.set_item("turns", r.turns)?;
         d.set_item("actions", r.actions)?;
+        d.set_item("belief_resets", r.belief_resets)?;
         out.append(d)?;
     }
     Ok(out)
@@ -357,6 +358,7 @@ fn selfplay<'py>(
         d.set_item("winner", g.winner)?;
         d.set_item("vp", counts(&g.vp))?;
         d.set_item("turns", g.turns)?;
+        d.set_item("belief_resets", g.belief_resets)?;
         // Replay to attach each decision's observation.
         let mut s = settler_engine::State::new(g.seed, config);
         let decisions = PyList::empty(py);
