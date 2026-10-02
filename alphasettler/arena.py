@@ -38,6 +38,7 @@ def check(
     seed_start: int = 0,
     threads: int | None = None,
     config: dict | None = None,
+    nets_dir: str | Path | None = None,
 ) -> None:
     """Raise ValueError for anything `run` would reject, without playing a game."""
     if seeds <= 0:
@@ -46,8 +47,9 @@ def check(
         raise ValueError(f"at most {MAX_SEEDS} seeds per match, got {seeds}")
     if seed_start + seeds > SEED_LIMIT:
         raise ValueError(f"seed_start {seed_start} + seeds {seeds} exceeds the u64 seed range")
-    # A zero-seed native call checks bot names, config and integer ranges and plays nothing.
-    run_match(candidate, baseline, seed_start, 0, threads or os.cpu_count() or 1, config)
+    # A zero-seed native call checks bot names, nets, config and integer ranges and plays nothing.
+    run_match(candidate, baseline, seed_start, 0, threads or os.cpu_count() or 1, config,
+              None if nets_dir is None else str(nets_dir))
 
 
 def run(
@@ -58,19 +60,22 @@ def run(
     threads: int | None = None,
     config: dict | None = None,
     out: str | Path | TextIO | None = None,
+    nets_dir: str | Path | None = None,
 ) -> tuple[list[dict], Summary]:
     """Play `seeds` seeds from `seed_start` in batches of `BATCH_SEEDS`, appending each batch to
     `out` (a path, opened exclusively, or an open file the caller owns). Inputs are checked and a
-    path is opened before any game is played, so a bad argument or path costs nothing."""
-    check(candidate, baseline, seeds, seed_start, threads, config)
+    path is opened before any game is played, so a bad argument or path costs nothing. `net:`
+    names load from `nets_dir` (default `runs/3b/nets`)."""
+    check(candidate, baseline, seeds, seed_start, threads, config, nets_dir)
     threads = threads or os.cpu_count() or 1
+    dir_arg = None if nets_dir is None else str(nets_dir)
     owned = isinstance(out, (str, os.PathLike))
     f = open_output(out) if owned else out
     records: list[dict] = []
     try:
         end = seed_start + seeds
         for lo in range(seed_start, end, BATCH_SEEDS):
-            batch = run_match(candidate, baseline, lo, min(BATCH_SEEDS, end - lo), threads, config)
+            batch = run_match(candidate, baseline, lo, min(BATCH_SEEDS, end - lo), threads, config, dir_arg)
             if f is not None:
                 _write_records(f, candidate, baseline, batch)
             records.extend(batch)

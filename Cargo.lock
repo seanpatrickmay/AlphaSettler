@@ -664,6 +664,8 @@ dependencies = [
  "pyo3",
  "settler-bots",
  "settler-engine",
+ "settler-net",
+ "settler-search",
 ]
 
 [[package]]
@@ -671,6 +673,7 @@ name = "settler-bots"
 version = "0.1.0"
 dependencies = [
  "settler-engine",
+ "settler-net",
  "settler-search",
 ]
 

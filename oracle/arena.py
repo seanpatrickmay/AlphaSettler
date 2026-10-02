@@ -40,9 +40,9 @@ class AlphaSettlerPlayer(Player):
     Catanatron does not offer, or a position that will not import, falls back to Catanatron's
     first playable action and is counted in ``fallbacks``."""
 
-    def __init__(self, color, bot_name: str, seed: int):
+    def __init__(self, color, bot_name: str, seed: int, nets_dir: str | None = None):
         super().__init__(color)
-        self.bot = Bot(bot_name, seed)
+        self.bot = Bot(bot_name, seed, nets_dir)
         self.seed = seed
         self.fallbacks = 0
 
@@ -89,9 +89,9 @@ def _force_seating(game, players) -> None:
     game.playable_actions = generate_playable_actions(st)
 
 
-def play_game(seed: int, candidate: str, baseline: str, candidate_seat: int) -> dict:
+def play_game(seed: int, candidate: str, baseline: str, candidate_seat: int, nets_dir: str | None = None) -> dict:
     players = [
-        AlphaSettlerPlayer(COLORS[i], candidate, seed * 4 + i) if i == candidate_seat else BASELINES[baseline](COLORS[i])
+        AlphaSettlerPlayer(COLORS[i], candidate, seed * 4 + i, nets_dir) if i == candidate_seat else BASELINES[baseline](COLORS[i])
         for i in range(4)
     ]
     game = CatanGame(players, seed=seed)
@@ -124,20 +124,21 @@ def play_game(seed: int, candidate: str, baseline: str, candidate_seat: int) -> 
     }
 
 
-def check(candidate: str, baseline: str, seeds: int, seed_start: int = 0) -> None:
+def check(candidate: str, baseline: str, seeds: int, seed_start: int = 0, nets_dir: str | None = None) -> None:
     """Raise ValueError for anything `run_match` would reject, without playing a game."""
     if baseline not in BASELINES:
         raise ValueError(f"unknown Catanatron bot {baseline!r}; known: {sorted(BASELINES)}")
-    Bot(candidate, 0)  # raises ValueError("unknown bot ...") for a bad name
+    Bot(candidate, 0, nets_dir)  # raises ValueError for a bad name, a missing or invalid net
     if seeds <= 0:
         raise ValueError("seeds must be positive")
     if seed_start < 0 or (seed_start + seeds) * 4 > 2**64:  # bot seeds are seed * 4 + seat, a u64
         raise ValueError(f"seeds {seed_start}..{seed_start + seeds} are outside the bot seed range")
 
 
-def run_match(candidate: str, baseline: str, seeds: int, seed_start: int = 0, workers: int | None = None) -> list[dict]:
-    check(candidate, baseline, seeds, seed_start)
-    jobs = [(s, candidate, baseline, k) for s in range(seed_start, seed_start + seeds) for k in range(4)]
+def run_match(candidate: str, baseline: str, seeds: int, seed_start: int = 0, workers: int | None = None,
+              nets_dir: str | None = None) -> list[dict]:
+    check(candidate, baseline, seeds, seed_start, nets_dir)
+    jobs = [(s, candidate, baseline, k, nets_dir) for s in range(seed_start, seed_start + seeds) for k in range(4)]
     with hash_seed_zero():
         pool = mp.get_context("spawn").Pool(min(workers or os.cpu_count() or 1, len(jobs)))
     with pool:

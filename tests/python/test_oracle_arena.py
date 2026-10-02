@@ -119,3 +119,27 @@ def test_cli_catanatron_baseline(tmp_path):
     r = subprocess.run([sys.executable, "-m", "alphasettler", "arena", "--candidate", "greedy",
                         "--baseline", "catanatron:nope", "--seeds", "1"], capture_output=True, text=True)
     assert r.returncode == 2 and "unknown Catanatron bot" in r.stderr
+
+
+def test_net_names_inside_catanatron(tmp_path):
+    from alphasettler._engine import write_random_net
+
+    nets = tmp_path / "nets"
+    nets.mkdir()
+    write_random_net(str(nets / "tiny.bin"), 1, 16, 8)
+    stale = bytearray((nets / "tiny.bin").read_bytes())
+    stale[12] ^= 1
+    (nets / "stale.bin").write_bytes(bytes(stale))
+    for bad in ["net:../x", "net:a/b", "net:", "net:a@0"]:
+        with pytest.raises(ValueError, match="unknown bot"):
+            run_match(bad, "random", seeds=1, nets_dir=str(nets))
+    with pytest.raises(ValueError, match="cannot read"):
+        run_match("net:missing", "random", seeds=1, nets_dir=str(nets))
+    with pytest.raises(ValueError, match="encoding hash"):
+        run_match("net:stale", "random", seeds=1, nets_dir=str(nets))
+    recs = run_match("net:tiny@5", "random", seeds=1, workers=2, nets_dir=str(nets))
+    assert len(recs) == 4
+    assert all(r["fallbacks"] == 0 and r["belief_resets"] == 0 for r in recs)
+    r = subprocess.run([sys.executable, "-m", "alphasettler", "arena", "--candidate", "net:../x",
+                        "--baseline", "catanatron:random", "--seeds", "1"], capture_output=True, text=True)
+    assert r.returncode == 2 and "unknown bot" in r.stderr

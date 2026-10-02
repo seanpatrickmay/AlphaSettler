@@ -1,5 +1,6 @@
 //! IsmctsBot: tracks hidden cards from the event log and searches each real decision with
-//! single-observer ISMCTS (spec Sections 2-3). Never trades.
+//! single-observer ISMCTS (spec Sections 2-3). Never trades. Generic over the evaluator: the
+//! heuristic for `ismcts` names, the network for `net:` names (`crate::netbot`).
 
 use crate::greedy;
 use crate::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
@@ -7,7 +8,7 @@ use crate::Bot;
 use settler_engine::rng::{mix, Rng};
 use settler_engine::{Action, Event, Observation, Phase, PlayerId};
 use settler_search::{
-    search, search_actions, Belief, SearchConfig, SearchResult, DEFAULT_MAX_STATES,
+    search, search_actions, Belief, Evaluator, SearchConfig, SearchResult, DEFAULT_MAX_STATES,
 };
 
 pub const DEFAULT_SIMULATIONS: u32 = 1000;
@@ -48,11 +49,12 @@ enum Tracked {
     Dropped(PlayerId),
 }
 
-pub struct IsmctsBot {
+pub struct IsmctsBot<E = HeuristicEvaluator> {
+    name: &'static str,
     seed: u64,
     rng: Rng,
     cfg: SearchConfig,
-    eval: HeuristicEvaluator,
+    eval: E,
     tracked: Tracked,
     last: Option<SearchResult>,
     resets: u64,
@@ -64,16 +66,35 @@ pub struct IsmctsBot {
     buf: Vec<Action>,
 }
 
-impl IsmctsBot {
+impl IsmctsBot<HeuristicEvaluator> {
+    /// 3a's bot: the heuristic evaluator with `rollout` greedy moves per leaf.
     pub fn new(seed: u64, simulations: u32, rollout: u32) -> IsmctsBot {
-        IsmctsBot {
+        IsmctsBot::with_evaluator(
+            "ismcts",
             seed,
-            rng: Rng::new(seed),
-            cfg: SearchConfig {
+            SearchConfig {
                 simulations,
                 ..SearchConfig::default()
             },
-            eval: HeuristicEvaluator::new(DEFAULT_WEIGHTS, rollout),
+            HeuristicEvaluator::new(DEFAULT_WEIGHTS, rollout),
+        )
+    }
+}
+
+impl<E: Evaluator> IsmctsBot<E> {
+    /// A bot reporting `name` that searches with `eval` under `cfg`.
+    pub fn with_evaluator(
+        name: &'static str,
+        seed: u64,
+        cfg: SearchConfig,
+        eval: E,
+    ) -> IsmctsBot<E> {
+        IsmctsBot {
+            name,
+            seed,
+            rng: Rng::new(seed),
+            cfg,
+            eval,
             tracked: Tracked::Unseen,
             last: None,
             resets: 0,
@@ -89,6 +110,14 @@ impl IsmctsBot {
         self.last.take()
     }
 
+    pub fn evaluator(&self) -> &E {
+        &self.eval
+    }
+
+    pub fn config(&self) -> &SearchConfig {
+        &self.cfg
+    }
+
     /// Replace the tracked state, keeping the old belief's truncation count.
     fn set_tracked(&mut self, t: Tracked) {
         if let Tracked::Live(b) = std::mem::replace(&mut self.tracked, t) {
@@ -97,9 +126,9 @@ impl IsmctsBot {
     }
 }
 
-impl Bot for IsmctsBot {
+impl<E: Evaluator + Send> Bot for IsmctsBot<E> {
     fn name(&self) -> &'static str {
-        "ismcts"
+        self.name
     }
 
     /// The first events a bot sees as `viewer` start a game: the belief begins from empty hands.

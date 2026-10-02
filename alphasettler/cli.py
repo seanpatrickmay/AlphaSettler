@@ -11,7 +11,7 @@ from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 
-from alphasettler._engine import Bot, bot_names
+from alphasettler._engine import DEFAULT_NETS_DIR, Bot, bot_names
 from alphasettler.arena import SEED_LIMIT, _write_records, check, format_summary, open_output, run
 from alphasettler.stats import paired, summarize
 
@@ -39,6 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     a.add_argument("--threads", type=_positive_int, default=None)
     a.add_argument("--out", default=None, help="JSONL path (default: runs/<time>-<candidate>-vs-<baseline>.jsonl)")
     a.add_argument("--no-trades", action="store_true", help="disable domestic trade offers")
+    a.add_argument("--nets-dir", default=DEFAULT_NETS_DIR, help="where net:NAME bots find NAME.bin")
 
     c = sub.add_parser("compare", help="two candidates against the same baseline on the same seeds")
     c.add_argument("--a", required=True)
@@ -49,6 +50,7 @@ def _parser() -> argparse.ArgumentParser:
     c.add_argument("--threads", type=_positive_int, default=None)
     c.add_argument("--out-dir", default="runs", help="writes <time>-a-<a>-vs-<baseline>.jsonl and <time>-b-...")
     c.add_argument("--no-trades", action="store_true")
+    c.add_argument("--nets-dir", default=DEFAULT_NETS_DIR, help="where net:NAME bots find NAME.bin")
 
     o = sub.add_parser("oracle-diff", help="differential test against Catanatron (needs the oracle extra)")
     o.add_argument("--games", type=_positive_int, required=True)
@@ -72,13 +74,16 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
-def _check_bot_name(name: str) -> None:
-    """ValueError naming `name` if the native parser rejects it (accepts `ismcts@N[+rD]` too)."""
+def _check_bot_name(name: str, nets_dir: str) -> None:
+    """ValueError naming `name` if no bot answers to it (`ismcts@N[+rD]` and `net:NAME[@N[+rD]]`
+    included). A well-formed `net:` name whose file is missing or invalid raises that error."""
     try:
-        Bot(name, 0)
-    except ValueError:
+        Bot(name, 0, nets_dir)
+    except ValueError as e:
+        if not str(e).startswith("unknown bot"):
+            raise
         raise ValueError(
-            f"unknown bot {name!r}; known bots: {bot_names()} (or ismcts@N, ismcts@N+rD)"
+            f"unknown bot {name!r}; known bots: {bot_names()} (or ismcts@N, ismcts@N+rD, net:NAME[@N[+rD]])"
         ) from None
 
 
@@ -194,10 +199,11 @@ def _catanatron_arena(args, out: Path) -> int:
     import oracle.arena  # other import errors surface as themselves
 
     baseline = args.baseline.split(":", 1)[1]
-    oracle.arena.check(args.candidate, baseline, args.seeds, args.seed_start)
+    nets_dir = str(Path(args.nets_dir).resolve())
+    oracle.arena.check(args.candidate, baseline, args.seeds, args.seed_start, nets_dir)
     # Open the output before the run, so a bad path fails before any game is played.
     with open_output(out) as f:
-        records = oracle.arena.run_match(args.candidate, baseline, args.seeds, args.seed_start, args.threads)
+        records = oracle.arena.run_match(args.candidate, baseline, args.seeds, args.seed_start, args.threads, nets_dir)
         _write_records(f, args.candidate, args.baseline, records)
     print(format_summary(f"{args.candidate} vs {args.baseline}", summarize(records)))
     print(f"fallbacks: {sum(r['fallbacks'] for r in records)}")
@@ -215,7 +221,8 @@ def main(argv: list[str] | None = None) -> int:
             out = Path(args.out or f"runs/{_stamp()}-{args.candidate}-vs-{name}.jsonl")
             if args.baseline.startswith("catanatron:"):
                 return _catanatron_arena(args, out)
-            records, summary = run(args.candidate, args.baseline, args.seeds, args.seed_start, args.threads, config, out)
+            records, summary = run(args.candidate, args.baseline, args.seeds, args.seed_start, args.threads, config, out,
+                                   args.nets_dir)
             print(format_summary(f"{args.candidate} vs {args.baseline}", summary))
             print(_resets_line(records))
             print(f"wrote {out}")
@@ -227,17 +234,18 @@ def main(argv: list[str] | None = None) -> int:
             return _fit_heuristic(args)
         else:
             for name in (args.a, args.b, args.baseline):
-                _check_bot_name(name)
+                _check_bot_name(name, args.nets_dir)
             sides = (("a", args.a), ("b", args.b))
             for _, name in sides:
-                check(name, args.baseline, args.seeds, args.seed_start, args.threads, config)
+                check(name, args.baseline, args.seeds, args.seed_start, args.threads, config, args.nets_dir)
             stamp = _stamp()
             outs = [Path(args.out_dir) / f"{stamp}-{side}-{name}-vs-{args.baseline}.jsonl" for side, name in sides]
             with ExitStack() as stack:
                 files = [stack.enter_context(open_output(out)) for out in outs]
                 results = {}
                 for (side, name), out, f in zip(sides, outs, files):
-                    records, summary = run(name, args.baseline, args.seeds, args.seed_start, args.threads, config, f)
+                    records, summary = run(name, args.baseline, args.seeds, args.seed_start, args.threads, config, f,
+                                           args.nets_dir)
                     results[side] = records
                     print(format_summary(f"{name} vs {args.baseline}", summary))
                     print(_resets_line(records))

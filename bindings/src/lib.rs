@@ -2,11 +2,13 @@
 //! in `settler-engine`, bots and the arena in `settler-bots`.
 
 mod convert;
+mod train;
 
 use convert::*;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use settler_engine::{ACTION_SPACE_SIZE, NUM_PLAYERS};
+use std::path::PathBuf;
 
 #[pyclass(name = "Game", module = "alphasettler._engine")]
 struct PyGame {
@@ -167,14 +169,12 @@ struct PyBot {
 #[pymethods]
 impl PyBot {
     #[new]
-    fn new(name: &str, seed: &Bound<'_, PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (name, seed, nets_dir=None))]
+    fn new(name: &str, seed: &Bound<'_, PyAny>, nets_dir: Option<PathBuf>) -> PyResult<Self> {
         let seed = int_arg::<u64>(seed, "seed")?;
-        let bot = settler_bots::make_bot(name, seed).ok_or_else(|| {
-            value_error(format!(
-                "unknown bot {name:?}; known bots: {:?}",
-                settler_bots::BOT_NAMES
-            ))
-        })?;
+        let dir = nets_dir.unwrap_or_else(|| PathBuf::from(settler_bots::netbot::DEFAULT_NETS_DIR));
+        let roster = settler_bots::Roster::new(&[name], &dir).map_err(value_error)?;
+        let bot = roster.make(name, seed).expect("checked by Roster::new");
         Ok(PyBot {
             name: bot.name(),
             inner: std::sync::Mutex::new(bot),
@@ -264,7 +264,8 @@ fn resolve_config<'py>(
 /// candidate rotated through every seat, at most `MAX_SEEDS` seeds per call. Releases the GIL
 /// while games run.
 #[pyfunction]
-#[pyo3(signature = (candidate, baseline, seed_start, seeds, threads, config=None))]
+#[pyo3(signature = (candidate, baseline, seed_start, seeds, threads, config=None, nets_dir=None))]
+#[allow(clippy::too_many_arguments)]
 fn run_match<'py>(
     py: Python<'py>,
     candidate: &str,
@@ -273,6 +274,7 @@ fn run_match<'py>(
     seeds: &Bound<'py, PyAny>,
     threads: &Bound<'py, PyAny>,
     config: Option<&Bound<'py, PyDict>>,
+    nets_dir: Option<PathBuf>,
 ) -> PyResult<Bound<'py, PyList>> {
     let seed_start: u64 = int_arg(seed_start, "seed_start")?;
     let seeds: u64 = int_arg(seeds, "seeds")?;
@@ -284,14 +286,16 @@ fn run_match<'py>(
     })?;
     let config = parse_config(config)?;
     let (candidate, baseline) = (candidate.to_owned(), baseline.to_owned());
+    let dir = nets_dir.unwrap_or_else(|| PathBuf::from(settler_bots::netbot::DEFAULT_NETS_DIR));
     let records = py
         .detach(|| {
-            settler_bots::arena::run_match(
+            settler_bots::arena::run_match_in(
                 &candidate,
                 &baseline,
                 seed_start..seed_end,
                 config,
                 threads,
+                &dir,
             )
         })
         .map_err(value_error)?;
@@ -500,5 +504,7 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     m.add("MAX_SIMULATIONS", settler_bots::ismcts::MAX_SIMULATIONS)?;
     m.add("MAX_ROLLOUT", settler_bots::ismcts::MAX_ROLLOUT)?;
+    m.add("DEFAULT_NETS_DIR", settler_bots::netbot::DEFAULT_NETS_DIR)?;
+    train::register(m)?;
     Ok(())
 }

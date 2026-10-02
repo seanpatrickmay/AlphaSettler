@@ -11,6 +11,7 @@ name = "settler_bots"
 [dependencies]
 settler-engine = { path = "../engine" }
 settler-search = { path = "../search" }
+settler-net = { path = "../net" }
 
 [lints.clippy]
 needless_range_loop = "allow"

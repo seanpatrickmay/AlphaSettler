@@ -44,9 +44,11 @@ pub fn dot(x: &[f32], y: &[f32]) -> f32 {
     ((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7])) + tail
 }
 
-/// In place, numerically stable; entries of -inf become 0.
+/// In place, numerically stable; entries of -inf become 0. Requires at least one finite entry and
+/// none of +inf: otherwise the result is NaN (`evaluator::masked_prior` handles that case itself).
 pub fn softmax(x: &mut [f32]) {
     let m = x.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    debug_assert!(m.is_finite(), "softmax needs a finite maximum, got {m}");
     let mut total = 0.0;
     for v in x.iter_mut() {
         *v = (*v - m).exp();
@@ -87,7 +89,7 @@ impl Forward {
     ) {
         assert_eq!(public.len(), n * PUBLIC_LEN, "public block length");
         assert_eq!(hidden.len(), n * HIDDEN_LEN, "hidden block length");
-        let t = w.arch.trunk;
+        let t = w.layers[TRUNK2].rows;
         dense(&w.layers[TRUNK0], public, n, true, &mut self.a);
         dense(&w.layers[TRUNK1], &self.a, n, true, &mut self.b);
         dense(&w.layers[TRUNK2], &self.b, n, true, &mut self.a);

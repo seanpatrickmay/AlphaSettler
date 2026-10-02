@@ -3,5 +3,6 @@
 //! file, the forward pass, `NetEvaluator` and the training-data sampler.
 
 pub mod encode;
+pub mod evaluator;
 pub mod forward;
 pub mod weights;

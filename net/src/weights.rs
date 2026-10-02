@@ -1,6 +1,9 @@
-//! The weights file (spec Section 2). Little-endian: an 80-byte header (magic, format version,
-//! `ENCODING_HASH`, layer count, each layer's rows and columns), then each layer's f32 weights
-//! (row-major, rows = outputs) and biases, in layer order.
+//! The weights file (spec Section 2): an 80-byte header, then the parameters. The file layout:
+//! bytes 0..8 magic; 8..12 format version; 12..20 `ENCODING_HASH`; 20..24 layer count; then for
+//! layer i, rows at `24 + 8i` and cols at `28 + 8i`; from byte 80, each layer's `rows × cols`
+//! weights (row-major, rows = outputs) then its `rows` biases, all f32 little-endian. A file may
+//! declare any trunk width and value width from 1 to `MAX_WIDTH` (tests use small ones); every
+//! other dimension is fixed by the encoder and the action space.
 
 use crate::encode::{ENCODING_HASH, HIDDEN_LEN, PUBLIC_LEN};
 use settler_engine::rng::Rng;

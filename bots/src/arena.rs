@@ -1,11 +1,13 @@
 //! Native arena: one candidate against three copies of a baseline, each seed played four
 //! times with the candidate rotated through every seat.
 
-use crate::{make_bot, Bot, BOT_NAMES};
+use crate::netbot::DEFAULT_NETS_DIR;
+use crate::{Bot, Roster};
 use settler_engine::legal::legal_actions;
 use settler_engine::rng::mix;
 use settler_engine::{Event, GameConfig, PlayerId, State, NUM_PLAYERS};
 use std::ops::Range;
+use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GameRecord {
@@ -118,6 +120,7 @@ pub fn play_game(
 /// Every seed in `seeds`, four games each (candidate in seat 0..4), spread over `threads`
 /// (capped at the seed count and at 4x the available cores). Records are sorted by
 /// (seed, candidate seat) and independent of `threads`. At most `MAX_SEEDS` seeds per call.
+/// `net:` names load from `DEFAULT_NETS_DIR`.
 pub fn run_match(
     candidate: &str,
     baseline: &str,
@@ -125,13 +128,41 @@ pub fn run_match(
     config: GameConfig,
     threads: usize,
 ) -> Result<Vec<GameRecord>, String> {
-    for name in [candidate, baseline] {
-        if make_bot(name, 0).is_none() {
-            return Err(format!(
-                "unknown bot {name:?}; known bots: {BOT_NAMES:?} (ismcts@N for N simulations, ismcts@N+rD to add D greedy rollout moves)"
-            ));
-        }
-    }
+    run_match_in(
+        candidate,
+        baseline,
+        seeds,
+        config,
+        threads,
+        Path::new(DEFAULT_NETS_DIR),
+    )
+}
+
+/// `run_match` with `net:` names loaded from `nets_dir`; names and networks are checked before
+/// any game starts.
+pub fn run_match_in(
+    candidate: &str,
+    baseline: &str,
+    seeds: Range<u64>,
+    config: GameConfig,
+    threads: usize,
+    nets_dir: &Path,
+) -> Result<Vec<GameRecord>, String> {
+    let roster = Roster::new(&[candidate, baseline], nets_dir)?;
+    run_match_by(seeds, config, threads, &|is_candidate, seed| {
+        let name = if is_candidate { candidate } else { baseline };
+        roster.make(name, seed).expect("checked by Roster::new")
+    })
+}
+
+/// The match loop with bots from `make(is_candidate, bot_seed)`, for tools that build bots
+/// directly (for example with a non-default leaf batch).
+pub fn run_match_by(
+    seeds: Range<u64>,
+    config: GameConfig,
+    threads: usize,
+    make: &(dyn Fn(bool, u64) -> Box<dyn Bot> + Sync),
+) -> Result<Vec<GameRecord>, String> {
     config.validate()?;
     let n = seeds.end.saturating_sub(seeds.start);
     if n > MAX_SEEDS {
@@ -151,10 +182,7 @@ pub fn run_match(
                     for seed in part {
                         for cand in 0..NUM_PLAYERS {
                             let mut bots: Vec<Box<dyn Bot>> = (0..NUM_PLAYERS)
-                                .map(|seat| {
-                                    let name = if seat == cand { candidate } else { baseline };
-                                    make_bot(name, bot_seed(seed, seat)).expect("validated above")
-                                })
+                                .map(|seat| make(seat == cand, bot_seed(seed, seat)))
                                 .collect();
                             let (winner, vp, turns, actions) = play_game(seed, config, &mut bots);
                             out.push(GameRecord {

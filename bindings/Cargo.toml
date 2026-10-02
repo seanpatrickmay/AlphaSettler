@@ -12,3 +12,5 @@ crate-type = ["cdylib"]
 pyo3 = "=0.29.3"
 settler-engine = { path = "../engine" }
 settler-bots = { path = "../bots" }
+settler-net = { path = "../net" }
+settler-search = { path = "../search" }

@@ -3,7 +3,7 @@ mod common;
 use common::*;
 use settler_engine::{GameConfig, ACTION_SPACE_SIZE, NUM_PLAYERS};
 use settler_net::encode::{encode_state, ENCODING_HASH, HIDDEN_LEN, PUBLIC_LEN};
-use settler_net::forward::{Forward, Outputs};
+use settler_net::forward::{softmax, Forward, Outputs};
 use settler_net::weights::*;
 
 const SMALL: Arch = Arch { trunk: 8, value: 4 };
@@ -86,6 +86,10 @@ fn a_bad_file_is_an_error_naming_what_is_wrong() {
     let mut nan = good.clone();
     nan[HEADER_LEN..HEADER_LEN + 4].copy_from_slice(&f32::NAN.to_le_bytes());
     assert!(err(&nan).contains("NaN"), "{}", err(&nan));
+    let mut inf = good.clone();
+    let last = inf.len() - 4; // the aux head's last bias
+    inf[last..].copy_from_slice(&f32::INFINITY.to_le_bytes());
+    assert!(err(&inf).contains("infinite"), "{}", err(&inf));
     let missing = Weights::load(&temp_file("no-such.bin")).unwrap_err();
     assert!(
         missing.contains("cannot read") && missing.contains("no-such.bin"),
@@ -209,4 +213,21 @@ fn each_row_is_independent_of_the_rest_of_the_batch() {
         );
         assert_eq!(one.aux[..], all.aux[i * NUM_PLAYERS..(i + 1) * NUM_PLAYERS]);
     }
+}
+
+#[test]
+fn softmax_sums_to_one_and_sends_minus_infinity_to_zero() {
+    let mut x = [1.0f32, f32::NEG_INFINITY, 3.0, -2.0, f32::NEG_INFINITY];
+    softmax(&mut x);
+    assert!((x.iter().sum::<f32>() - 1.0).abs() < 1e-6, "{x:?}");
+    assert_eq!((x[1], x[4]), (0.0, 0.0));
+    let z = 1f32.exp() + 3f32.exp() + (-2f32).exp();
+    assert!((x[2] - 3f32.exp() / z).abs() < 1e-6, "{x:?}");
+    let mut big = [1000.0f32, 999.0];
+    softmax(&mut big);
+    assert!(
+        big.iter().all(|v| v.is_finite()),
+        "stable for large logits: {big:?}"
+    );
+    assert!((big[0] - 1.0 / (1.0 + (-1f32).exp())).abs() < 1e-6);
 }
