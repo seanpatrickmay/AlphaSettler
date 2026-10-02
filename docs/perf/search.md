@@ -25,3 +25,17 @@ estimate must have budgeted roughly 10 µs for the sample and the evaluation tog
 1.4 µs per simulation means those two are far cheaper than that. No per-step profile was taken, so
 how the 1.4 µs splits between replay, sampling and evaluation is not known. With rollout 0, each
 leaf costs one heuristic evaluation.
+
+## Updates
+
+- 2026-10-02, after the final-review fixes (every opponent's hidden VP conditioned below the win),
+  at 33785ba with the same machine, config and command:
+
+  | Run | Output |
+  |---|---|
+  | 1 | 2049 searched decisions over 34 games at 1000 simulations: 701403 simulations/s, 1.43 ms/decision, 1112 nodes/decision |
+  | 2 | 2049 searched decisions over 34 games at 1000 simulations: 690690 simulations/s, 1.45 ms/decision, 1112 nodes/decision |
+  | 3 | 2049 searched decisions over 34 games at 1000 simulations: 702146 simulations/s, 1.42 ms/decision, 1112 nodes/decision |
+
+  That is unchanged from before. The joint VP table is built once per decision, and its cost does
+  not show.
