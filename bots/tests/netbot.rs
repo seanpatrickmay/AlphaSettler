@@ -115,3 +115,30 @@ fn net_bots_search_with_the_given_leaf_batch() {
     assert_eq!(bot.config().simulations, 20);
     assert!(std::sync::Arc::ptr_eq(bot.evaluator().weights(), &w));
 }
+
+#[test]
+fn net_self_play_explores_deterministically() {
+    use settler_bots::selfplay::{run_with, Exploration};
+    use settler_net::evaluator::NetEvaluator;
+    use std::sync::Arc;
+    let w = Arc::new(Weights::random(
+        Arch {
+            trunk: 16,
+            value: 8,
+        },
+        3,
+    ));
+    let make = || NetEvaluator::new(w.clone());
+    let ex = Exploration {
+        full_simulations: 6,
+        fast_simulations: 3,
+        ..Exploration::standard()
+    };
+    let a = run_with(0..2, no_trades(), &ex, NET_BATCH, &make, 1).unwrap();
+    let b = run_with(0..2, no_trades(), &ex, NET_BATCH, &make, 2).unwrap();
+    assert_eq!(a, b);
+    assert!(a
+        .iter()
+        .all(|g| g.belief_resets == 0 && !g.decisions.is_empty()));
+    assert!(a.iter().flat_map(|g| &g.decisions).any(|d| !d.full_search));
+}

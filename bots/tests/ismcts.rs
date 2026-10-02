@@ -417,3 +417,53 @@ fn the_generic_refactor_leaves_3a_ismcts_games_unchanged() {
         "the pin sees the search"
     );
 }
+
+#[test]
+fn a_sampled_move_was_visited_and_is_the_recorded_action() {
+    use settler_bots::ismcts::{sample_by_visits, MoveOptions};
+    let s = main_with(5, CITY_COST, no_trades());
+    let obs = s.observation(0);
+    let legal = s.legal_actions();
+    let plain = MoveOptions {
+        simulations: 40,
+        noise: None,
+        sample: None,
+    };
+    for seed in 0..20 {
+        let mut c = IsmctsBot::new(5, 40, 0);
+        let x = c.act_with(
+            &obs,
+            &legal,
+            &MoveOptions {
+                sample: Some(seed),
+                ..plain
+            },
+        );
+        let r = c.take_last_search().unwrap();
+        assert_eq!(r.action, x, "the recorded action is the move played");
+        assert!(r.visits[legal.iter().position(|&l| l == x).unwrap()] > 0);
+    }
+    assert_eq!(sample_by_visits(&legal, &vec![0; legal.len()], 1), None);
+    let only = legal.len() - 1;
+    let mut visits = vec![0; legal.len()];
+    visits[only] = 3;
+    assert_eq!(sample_by_visits(&legal, &visits, 7), Some(legal[only]));
+}
+
+#[test]
+fn moves_are_sampled_in_proportion_to_visits() {
+    use settler_bots::ismcts::sample_by_visits;
+    let legal = [Action::EndTurn, Action::BuyDev, Action::Roll];
+    let visits = [6, 3, 1];
+    let n = 20_000;
+    let mut count = [0u32; 3];
+    for seed in 0..n {
+        let a = sample_by_visits(&legal, &visits, seed).unwrap();
+        count[legal.iter().position(|&l| l == a).unwrap()] += 1;
+    }
+    for (c, v) in count.iter().zip(visits) {
+        let p = v as f64 / 10.0;
+        let se = (p * (1.0 - p) / n as f64).sqrt();
+        assert!((*c as f64 / n as f64 - p).abs() < 4.0 * se, "{count:?}");
+    }
+}
