@@ -47,8 +47,36 @@ def test_fit_heuristic_reports_weights_and_likelihoods():
     assert r["log_likelihood_after"] >= r["log_likelihood_before"]
 
 
+def test_fit_heuristic_arguments_are_checked():
+    games = [{"config": CONFIG, **g} for g in selfplay(0, 1, 10, 1, CONFIG)]
+    for bad in [dict(l2=-0.1), dict(l2=float("nan")), dict(l2=float("inf")), dict(iterations=-1),
+                dict(iterations=2**40)]:
+        with pytest.raises(ValueError):
+            fit_heuristic(games, **bad)
+    with pytest.raises(ValueError, match="no samples"):
+        fit_heuristic([{**games[0], "winner": None}])
+    with pytest.raises(ValueError, match="no samples"):
+        fit_heuristic([])
+
+
+def test_records_writer_streams_games(tmp_path):
+    path = tmp_path / "w.jsonl.gz"
+    games = selfplay(0, 2, 10, 2, CONFIG)
+    with records.open_writer(path) as w:
+        w.write_game(games[0], CONFIG)
+        w.flush()
+        w.write_game(games[1], CONFIG)
+    back = list(records.read(path))
+    assert [g["seed"] for g in back] == [0, 1]
+    assert all(records.replay_mismatches(g) == [] for g in back)
+    with pytest.raises(FileExistsError):
+        with records.open_writer(path):
+            pass
+
+
 def test_selfplay_arguments_are_checked():
-    for bad in [dict(simulations=0), dict(simulations=1_000_001), dict(rollout=201), dict(games=0)]:
+    for bad in [dict(simulations=0), dict(simulations=1), dict(simulations=1_000_001), dict(rollout=201),
+                dict(games=0)]:
         args = {"seed_start": 0, "games": 1, "simulations": 5, "threads": 1, "config": CONFIG, "rollout": 0, **bad}
         with pytest.raises(ValueError):
             selfplay(**args)

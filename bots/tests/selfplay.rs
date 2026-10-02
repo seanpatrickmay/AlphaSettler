@@ -1,5 +1,5 @@
 use settler_bots::heuristic::{fit, log_likelihood, samples_from_games, ReplayGame, Sample, DEFAULT_WEIGHTS, NUM_FEATURES};
-use settler_bots::selfplay::{play, run};
+use settler_bots::selfplay::{play, run, MIN_SIMULATIONS};
 use settler_engine::rng::Rng;
 use settler_engine::*;
 
@@ -32,6 +32,14 @@ fn every_searched_decision_is_recorded_and_replays() {
 #[test]
 fn self_play_does_not_depend_on_thread_count() {
     assert_eq!(run(0..4, no_trades(), 10, 0, 1).unwrap(), run(0..4, no_trades(), 10, 0, 3).unwrap());
+}
+
+#[test]
+fn self_play_refuses_searches_too_small_to_record_visits() {
+    assert_eq!(MIN_SIMULATIONS, 2);
+    let e = run(0..1, no_trades(), 1, 0, 1).unwrap_err();
+    assert!(e.contains("at least 2 simulations"), "{e}");
+    assert!(run(0..1, no_trades(), 2, 0, 1).unwrap()[0].decisions.iter().all(|d| d.visits.iter().sum::<u32>() == 1));
 }
 
 #[test]

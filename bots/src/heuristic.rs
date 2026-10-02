@@ -285,14 +285,20 @@ pub fn fit(samples: &[Sample], start: [f32; NUM_FEATURES], iterations: u32, l2: 
         }
         let Some(step) = solve(h, g) else { break };
         let base = objective(&w);
+        // Halve the step until the objective does not fall; if even a tiny step lowers it,
+        // stop with `w` as it is rather than accept a worse point.
         let mut t = 1.0;
         let next = loop {
             let cand: [f64; NUM_FEATURES] = std::array::from_fn(|i| w[i] - t * step[i]);
-            if objective(&cand) >= base || t < 1e-6 {
-                break cand;
+            if objective(&cand) >= base {
+                break Some(cand);
             }
             t /= 2.0;
+            if t < 1e-6 {
+                break None;
+            }
         };
+        let Some(next) = next else { break };
         let moved: f64 = (0..NUM_FEATURES).map(|i| (next[i] - w[i]).abs()).sum();
         w = next;
         if moved < 1e-9 {

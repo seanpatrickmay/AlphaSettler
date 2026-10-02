@@ -303,6 +303,7 @@ fn selfplay<'py>(
     rollout: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyList>> {
     use settler_bots::ismcts::{MAX_ROLLOUT, MAX_SIMULATIONS};
+    use settler_bots::selfplay::MIN_SIMULATIONS;
     let seed_start: u64 = int_arg(seed_start, "seed_start")?;
     let games: u64 = int_arg(games, "games")?;
     let simulations: u32 = int_arg(simulations, "simulations")?;
@@ -314,8 +315,10 @@ fn selfplay<'py>(
     if games == 0 {
         return Err(value_error("games must be positive"));
     }
-    if !(1..=MAX_SIMULATIONS).contains(&simulations) {
-        return Err(value_error(format!("simulations must be 1..={MAX_SIMULATIONS}, got {simulations}")));
+    if !(MIN_SIMULATIONS..=MAX_SIMULATIONS).contains(&simulations) {
+        return Err(value_error(format!(
+            "simulations must be {MIN_SIMULATIONS}..={MAX_SIMULATIONS}, got {simulations}"
+        )));
     }
     if rollout > MAX_ROLLOUT {
         return Err(value_error(format!("rollout must be 0..={MAX_ROLLOUT}, got {rollout}")));
@@ -360,11 +363,24 @@ fn selfplay<'py>(
 
 /// Fit the heuristic's weights on recorded games (dicts with `seed`, `config`, `actions`,
 /// `winner` and `decisions[].index`). Returns the weights, the sample count and the mean
-/// log-likelihood under the default and the fitted weights.
+/// log-likelihood under the default and the fitted weights. `iterations` defaults to 25; `l2`
+/// must be finite and non-negative. Records with no samples (none, or only draws) are an error.
 #[pyfunction]
-#[pyo3(signature = (games, iterations=25, l2=0.001))]
-fn fit_heuristic<'py>(py: Python<'py>, games: &Bound<'py, PyList>, iterations: u32, l2: f64) -> PyResult<Bound<'py, PyDict>> {
+#[pyo3(signature = (games, iterations=None, l2=0.001))]
+fn fit_heuristic<'py>(
+    py: Python<'py>,
+    games: &Bound<'py, PyList>,
+    iterations: Option<&Bound<'py, PyAny>>,
+    l2: f64,
+) -> PyResult<Bound<'py, PyDict>> {
     use settler_bots::heuristic::{fit, log_likelihood, samples_from_games, ReplayGame, DEFAULT_WEIGHTS};
+    let iterations: u32 = match iterations {
+        Some(n) => int_arg(n, "iterations")?,
+        None => 25,
+    };
+    if !(l2.is_finite() && l2 >= 0.0) {
+        return Err(value_error(format!("l2 must be finite and non-negative, got {l2}")));
+    }
     let mut replay = Vec::new();
     for g in games.iter() {
         let g = g.cast::<PyDict>()?;
@@ -387,6 +403,9 @@ fn fit_heuristic<'py>(py: Python<'py>, games: &Bound<'py, PyList>, iterations: u
     let (samples, weights) = py
         .detach(|| {
             let samples = samples_from_games(&replay)?;
+            if samples.is_empty() {
+                return Err("no samples to fit: the records hold no decided game with a recorded decision".to_owned());
+            }
             let weights = fit(&samples, DEFAULT_WEIGHTS, iterations, l2);
             Ok::<_, String>((samples, weights))
         })
@@ -410,5 +429,8 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(selfplay, m)?)?;
     m.add_function(wrap_pyfunction!(fit_heuristic, m)?)?;
     m.add("MAX_SEEDS", settler_bots::arena::MAX_SEEDS)?;
+    m.add("SELFPLAY_MIN_SIMULATIONS", settler_bots::selfplay::MIN_SIMULATIONS)?;
+    m.add("MAX_SIMULATIONS", settler_bots::ismcts::MAX_SIMULATIONS)?;
+    m.add("MAX_ROLLOUT", settler_bots::ismcts::MAX_ROLLOUT)?;
     Ok(())
 }

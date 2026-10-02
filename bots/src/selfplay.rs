@@ -7,6 +7,10 @@ use settler_engine::legal::legal_actions;
 use settler_engine::{Action, GameConfig, PlayerId, State, NUM_PLAYERS};
 use std::ops::Range;
 
+/// Fewest simulations self-play accepts: the first simulation only evaluates the root, so with
+/// one simulation every recorded visit count would be zero.
+pub const MIN_SIMULATIONS: u32 = 2;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Decision {
     /// Index into the game's `actions` of the move this search chose.
@@ -62,6 +66,9 @@ pub fn play(seed: u64, config: GameConfig, simulations: u32, rollout: u32) -> Se
 /// Every seed in `seeds`, spread over `threads`; sorted by seed and independent of `threads`.
 pub fn run(seeds: Range<u64>, config: GameConfig, simulations: u32, rollout: u32, threads: usize) -> Result<Vec<SelfPlayGame>, String> {
     config.validate()?;
+    if simulations < MIN_SIMULATIONS {
+        return Err(format!("self-play needs at least {MIN_SIMULATIONS} simulations per search, got {simulations}"));
+    }
     let n = seeds.end.saturating_sub(seeds.start);
     if n > MAX_SEEDS {
         return Err(format!("at most {MAX_SEEDS} games per call, got {n}"));

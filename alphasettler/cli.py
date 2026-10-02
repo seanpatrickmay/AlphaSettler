@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from contextlib import ExitStack
@@ -81,25 +82,41 @@ def _check_bot_name(name: str) -> None:
         ) from None
 
 
-SELFPLAY_BATCH = 100  # games per native call; Ctrl-C is handled between calls
+# Games per native call. Python only sees Ctrl-C between calls (the GIL is released while games
+# run), so this bounds how long an interrupt waits; every finished batch is already on disk.
+SELFPLAY_BATCH = 100
 
 
 def _selfplay(args) -> int:
     from alphasettler import records
-    from alphasettler._engine import selfplay
+    from alphasettler._engine import MAX_ROLLOUT, MAX_SIMULATIONS, SELFPLAY_MIN_SIMULATIONS, selfplay
 
-    config = {} if args.trades else {"max_offers_per_turn": 0}
+    # Check everything the native call would reject before creating the output file.
+    if not SELFPLAY_MIN_SIMULATIONS <= args.simulations <= MAX_SIMULATIONS:
+        raise ValueError(f"--simulations must be {SELFPLAY_MIN_SIMULATIONS}..={MAX_SIMULATIONS}, got {args.simulations}")
+    if not 0 <= args.rollout <= MAX_ROLLOUT:
+        raise ValueError(f"--rollout must be 0..={MAX_ROLLOUT}, got {args.rollout}")
     if args.seed_start < 0 or args.seed_start + args.games > SEED_LIMIT:
         raise ValueError(f"seeds {args.seed_start}..{args.seed_start + args.games} are outside the u64 seed range")
+    config = {} if args.trades else {"max_offers_per_turn": 0}
     out = Path(args.out_dir) / f"{_stamp()}-selfplay-s{args.simulations}.jsonl.gz"
     threads = args.threads or os.cpu_count() or 1
-    games = []
+    games = decisions = 0
     end = args.seed_start + args.games
-    for lo in range(args.seed_start, end, SELFPLAY_BATCH):
-        games.extend(selfplay(lo, min(SELFPLAY_BATCH, end - lo), args.simulations, threads, config, args.rollout))
-    records.write(out, games, config)
-    decisions = sum(len(g["decisions"]) for g in games)
-    print(f"{len(games)} games, {decisions} searched decisions, wrote {out}")
+    # Open the output before the run, so a bad path fails before any game is played.
+    with records.open_writer(out) as w:
+        try:
+            for lo in range(args.seed_start, end, SELFPLAY_BATCH):
+                batch = selfplay(lo, min(SELFPLAY_BATCH, end - lo), args.simulations, threads, config, args.rollout)
+                for g in batch:
+                    w.write_game(g, config)
+                    games += 1
+                    decisions += len(g["decisions"])
+                w.flush()
+        except KeyboardInterrupt:
+            print(f"interrupted: kept {games} games, {decisions} searched decisions in {out}", file=sys.stderr)
+            return 130
+    print(f"{games} games, {decisions} searched decisions, wrote {out}")
     return 0
 
 
@@ -107,6 +124,8 @@ def _fit_heuristic(args) -> int:
     from alphasettler import records
     from alphasettler._engine import fit_heuristic
 
+    if not (math.isfinite(args.l2) and args.l2 >= 0):
+        raise ValueError(f"--l2 must be finite and non-negative, got {args.l2}")
     games = []
     for path in args.records:
         for g in records.read(path):
