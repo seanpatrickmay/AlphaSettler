@@ -11,6 +11,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["maturin==1.15.0", "pytest==9.1.1"]
 oracle = ["catanatron @ git+https://github.com/bcollazo/catanatron.git@ecf931181b9a65bb4116a2153fb78c16f1438e00"]
+train = ["torch==2.14.1"]
 
 [project.scripts]
 alphasettler = "alphasettler.cli:main"
@@ -24,3 +25,5 @@ python-packages = ["oracle"]
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
 markers = ["slow: long-running (AlphaBeta, thousands of games)"]
+# torch warns at import that numpy is missing; the project uses no numpy (frombuffer instead).
+filterwarnings = ["ignore:Failed to initialize NumPy:UserWarning"]

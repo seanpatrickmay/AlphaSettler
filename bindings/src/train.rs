@@ -334,5 +334,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("NET_ENCODING_HASH", ENCODING_HASH)?;
     m.add("NET_FORMAT_VERSION", FORMAT_VERSION)?;
     m.add("NET_MAX_SAMPLE", settler_net::data::MAX_SAMPLE)?;
+    m.add("NET_MAX_WIDTH", MAX_WIDTH)?;
     Ok(())
 }

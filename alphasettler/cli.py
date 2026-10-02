@@ -1,6 +1,6 @@
-"""Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay` and `fit-heuristic`.
-`selfplay --simulations S` writes 3a records; `selfplay --pcr` and `selfplay --net NAME` write 3b
-exploration records."""
+"""Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic` and
+`train`. `selfplay --simulations S` writes 3a records; `selfplay --pcr` and `selfplay --net NAME`
+write 3b exploration records; `train` (the train extra) trains a network on them."""
 
 from __future__ import annotations
 
@@ -81,6 +81,19 @@ def _parser() -> argparse.ArgumentParser:
     f.add_argument("records", nargs="+")
     f.add_argument("--iterations", type=_positive_int, default=25)
     f.add_argument("--l2", type=float, default=0.001)
+
+    t = sub.add_parser("train", help="train a network on self-play records (needs the train extra)")
+    t.add_argument("records", nargs="+", help="generation directories, oldest first; the last is the newest")
+    t.add_argument("--out", required=True, help="weights file to write")
+    t.add_argument("--init", default=None, help="weights file to start from (default: from scratch)")
+    t.add_argument("--lr", type=float, default=3e-4)
+    t.add_argument("--steps", type=_positive_int, default=None, help="default: 2 x new positions / batch")
+    t.add_argument("--batch", type=_positive_int, default=1024)
+    t.add_argument("--seed", type=int, default=0)
+    t.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
+    t.add_argument("--threads", type=_positive_int, default=None)
+    t.add_argument("--trunk", type=_positive_int, default=512)
+    t.add_argument("--value-width", type=_positive_int, default=256)
     return p
 
 
@@ -216,6 +229,35 @@ def _fit_heuristic(args) -> int:
     return 0
 
 
+def _train(args) -> int:
+    from alphasettler.train.data import load_window
+    from alphasettler.train.train import TrainConfig, train
+
+    dirs = [Path(d).resolve() for d in args.records]
+    # Relative to the generations' common parent, so each file keeps its generation's name.
+    root = Path(os.path.commonpath([str(d.parent) for d in dirs]))
+    cfg = TrainConfig(lr=args.lr, steps=args.steps, batch=args.batch, seed=args.seed, device=args.device,
+                      threads=args.threads, trunk=args.trunk, value=args.value_width)
+    cfg.check()
+    window = load_window(root, dirs)
+    for line in window.notices:
+        print(f"notice: {line}")
+    print(f"window: {window.data.games} games, {window.data.decisions} positions "
+          f"({window.data.full_decisions} full searches), {window.new_positions} new")
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        s = train(window, out, cfg, Path(args.init) if args.init else None)
+    except KeyboardInterrupt:
+        print("interrupted: nothing written", file=sys.stderr)
+        return 130
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"trained {s['steps']} steps on {s['device']}; parity max error {s['parity_max_error']:.2e}; wrote {out}")
+    return 0
+
+
 def _oracle_missing() -> int:
     from oracle import CATANATRON_REQUIREMENT
 
@@ -296,6 +338,8 @@ def main(argv: list[str] | None = None) -> int:
             return _selfplay(args)
         elif args.command == "fit-heuristic":
             return _fit_heuristic(args)
+        elif args.command == "train":
+            return _train(args)
         else:
             for name in (args.a, args.b, args.baseline):
                 _check_bot_name(name, args.nets_dir)
