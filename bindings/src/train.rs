@@ -8,6 +8,7 @@
 
 use crate::convert::*;
 use crate::PyGame;
+use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use settler_bots::netbot::{load_net, net_path, DEFAULT_NETS_DIR};
@@ -112,12 +113,23 @@ fn recorded_game(g: &Bound<'_, PyAny>) -> PyResult<RecordedGame> {
     })
 }
 
-/// Every game of the iterable `games`, parsed; an error names the game's index in the whole set.
+/// Every game of the iterable `games`, parsed. An `Exception` (a malformed record, or a reader
+/// error such as a truncated file's EOFError) becomes a ValueError naming the game's index in the
+/// whole set, with the original as its `__cause__`; anything else (KeyboardInterrupt,
+/// SystemExit) propagates unchanged so Ctrl-C handlers still fire.
 fn recorded_games(games: &Bound<'_, PyAny>, first: usize) -> PyResult<Vec<RecordedGame>> {
+    let py = games.py();
     let mut parsed = Vec::new();
     for (i, g) in games.try_iter()?.enumerate() {
-        let game = g.and_then(|g| recorded_game(&g));
-        parsed.push(game.map_err(|e| value_error(format!("game {}: {e}", first + i)))?);
+        match g.and_then(|g| recorded_game(&g)) {
+            Ok(game) => parsed.push(game),
+            Err(e) if e.is_instance_of::<PyException>(py) => {
+                let wrapped = value_error(format!("game {}: {e}", first + i));
+                wrapped.set_cause(py, Some(e));
+                return Err(wrapped);
+            }
+            Err(e) => return Err(e),
+        }
     }
     Ok(parsed)
 }

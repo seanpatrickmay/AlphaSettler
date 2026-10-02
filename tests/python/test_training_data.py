@@ -304,3 +304,32 @@ def test_cli_selfplay_publishes_its_file_only_when_complete(tmp_path, monkeypatc
     monkeypatch.setattr(selfplay, "write_explore", failed)
     assert cli.main(_selfplay_args(out)) == 2
     assert sorted(p.name for p in out.iterdir()) == names
+
+
+def test_an_interrupt_while_reading_records_is_not_a_value_error(tmp_path):
+    """Ctrl-C during `extend(records.read(path))` reaches the caller's handler unchanged."""
+    games = explore_games(tmp_path, 2)
+
+    def interrupted():
+        yield games[0]
+        raise KeyboardInterrupt
+
+    ts = TrainingSet()
+    with pytest.raises(KeyboardInterrupt):
+        ts.extend(interrupted())
+    assert ts.games == 0
+    with pytest.raises(ValueError, match="game 0: .*missing") as e:
+        ts.extend([{"seed": 0}])
+    assert isinstance(e.value.__cause__, ValueError), "the original error is the cause"
+
+
+def test_a_truncated_record_file_is_an_error_and_adds_nothing(tmp_path):
+    explore_games(tmp_path, 3)
+    whole = (tmp_path / "x.jsonl.gz").read_bytes()
+    cut = tmp_path / "cut.jsonl.gz"
+    cut.write_bytes(whole[: 2 * len(whole) // 3])
+    ts = TrainingSet()
+    with pytest.raises(ValueError, match="EOFError") as e:
+        ts.extend(records.read(cut))
+    assert isinstance(e.value.__cause__, EOFError)
+    assert ts.games == 0
