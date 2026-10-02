@@ -186,7 +186,9 @@ impl WorldSampler {
                 }
             }
             dealt[cur] = true;
-            // `leftover` keeps the pool's random order.
+            // Taking the first cards of each kind skews the order of what is left (it tends to start
+            // with whichever kind lost fewer cards), so shuffle it afresh.
+            rng.shuffle(&mut leftover[..kept]);
             rest = &leftover[..kept];
         }
         let mut next = 0;

@@ -85,6 +85,7 @@ fn the_opponent_on_turn_is_never_dealt_a_win() {
     let s = edit(&base, cfg, |snap| {
         give_dev(snap, 1, DevCard::Knight, 1);
         give_dev(snap, 1, DevCard::Monopoly, 1);
+        give_dev(snap, 2, DevCard::YearOfPlenty, 1);
         snap.current = 1;
         snap.phase = Phase::PreRoll;
     });
@@ -93,17 +94,28 @@ fn the_opponent_on_turn_is_never_dealt_a_win() {
     let sampler = WorldSampler::new(&obs, &b).unwrap();
     let mut rng = Rng::new(7);
     let n = 10_000;
-    let mut knights = 0;
+    let (mut knights, mut next_is_vp, mut p2_vp) = (0, 0, 0);
     for _ in 0..n {
         let w = sampler.sample(&b, &mut rng);
         assert_eq!(w.players[1].dev_hand[DevCard::VictoryPoint.index()], 0);
         w.check_invariants().unwrap();
-        assert_eq!(in_deck(&w, DevCard::VictoryPoint), 5, "the VP cards are all in the deck");
+        // Player 1 holds none of the 5 VP cards: they are in the deck or with player 2.
+        let p2_cards = w.players[2].dev_hand[DevCard::VictoryPoint.index()] as usize;
+        assert_eq!(in_deck(&w, DevCard::VictoryPoint) + p2_cards, 5, "the VP cards are not player 1's");
         knights += w.players[1].dev_hand[DevCard::Knight.index()] as u32;
+        next_is_vp += (w.dev_deck[w.dev_deck_pos as usize] == DevCard::VictoryPoint) as u32;
+        p2_vp += w.players[2].dev_hand[DevCard::VictoryPoint.index()] as u32;
     }
     // Two cards drawn uniformly from the 20 non-VP cards (14 of them knights): 2 * 14 / 20 knights.
     let mean = knights as f64 / n as f64;
     assert!((mean - 1.4).abs() < 0.03, "mean knights {mean}");
+    // The 23 cards left after player 1's two (5 of them VP) are in uniform order: the next draw and
+    // player 2's one card are each a VP card with probability 5/23.
+    let exact = 5.0 / 23.0;
+    let next = next_is_vp as f64 / n as f64;
+    assert!((next - exact).abs() < 0.03, "next deck card is VP {next}, exact {exact}");
+    let p2 = p2_vp as f64 / n as f64;
+    assert!((p2 - exact).abs() < 0.03, "player 2 holds VP {p2}, exact {exact}");
 }
 
 #[test]
