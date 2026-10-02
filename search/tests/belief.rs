@@ -526,3 +526,47 @@ fn different_parents_that_reach_the_same_child_are_merged() {
         .1;
     assert!((merged - 2.0 / 3.0).abs() < 1e-9);
 }
+
+#[test]
+fn a_failed_observe_keeps_the_states_from_before_the_impossible_event() {
+    let mut log = setup_events();
+    log.extend([
+        Event::Produced {
+            player: 1,
+            resources: [1, 0, 0, 0, 2],
+        },
+        Event::Stole {
+            thief: 2,
+            victim: 1,
+            resource: None,
+        },
+    ]);
+    // One impossible event of each kind: a hidden steal from player 3's empty hand, and player 2
+    // discarding a brick (they hold a wood or an ore and a sheep).
+    let impossible = [
+        Event::Stole {
+            thief: 1,
+            victim: 3,
+            resource: None,
+        },
+        Event::Discarded {
+            player: 2,
+            resource: Resource::Brick,
+        },
+    ];
+    for bad in impossible {
+        let mut b = Belief::new(0, DEFAULT_MAX_STATES, 0);
+        b.observe(&log).unwrap();
+        let more = Event::Produced {
+            player: 2,
+            resources: [0, 0, 1, 0, 0],
+        };
+        let mut expected = b.clone();
+        expected.observe(&[more]).unwrap();
+        assert!(b.observe(&[more, bad]).is_err(), "{bad:?} is impossible");
+        assert_eq!(b.states(), expected.states(), "{bad:?}");
+        assert!(!b.states().is_empty());
+        let total: f64 = b.states().iter().map(|s| s.1).sum();
+        assert!((total - 1.0).abs() < 1e-12, "weights sum to {total}");
+    }
+}

@@ -56,6 +56,8 @@ pub struct IsmctsBot {
     tracked: Tracked,
     last: Option<SearchResult>,
     resets: u64,
+    /// `observe` counted a reset since the last `act`, so that decision counts no other.
+    counted_in_observe: bool,
     /// Truncations of beliefs already replaced.
     past_truncations: u64,
     searches: u64,
@@ -75,6 +77,7 @@ impl IsmctsBot {
             tracked: Tracked::Unseen,
             last: None,
             resets: 0,
+            counted_in_observe: false,
             past_truncations: 0,
             searches: 0,
             buf: Vec::new(),
@@ -116,12 +119,14 @@ impl Bot for IsmctsBot {
         };
         if b.observe(events).is_err() {
             self.resets += 1;
+            self.counted_in_observe = true;
             self.set_tracked(Tracked::Dropped(viewer));
         }
     }
 
     fn act(&mut self, obs: &Observation, legal: &[Action]) -> Action {
         self.last = None;
+        let counted_in_observe = std::mem::take(&mut self.counted_in_observe);
         match obs.phase {
             Phase::TradeResponse if legal.contains(&Action::RejectTrade) => {
                 return Action::RejectTrade
@@ -142,6 +147,7 @@ impl Bot for IsmctsBot {
             Tracked::Dropped(v) if *v == obs.viewer => Some(false),
             _ => Some(true),
         };
+        let counted = counted_in_observe || rebuild == Some(true);
         if let Some(count) = rebuild {
             self.resets += count as u64;
             let b = Belief::from_observation(obs, DEFAULT_MAX_STATES, self.rng.next_u64());
@@ -158,8 +164,11 @@ impl Bot for IsmctsBot {
                 a
             }
             Err(_) => {
-                // Counted now; the next searched decision rebuilds without counting again.
-                self.resets += 1;
+                // At most one reset per decision: not again if `observe` or the rebuild above
+                // already counted one. The next searched decision rebuilds without counting.
+                if !counted {
+                    self.resets += 1;
+                }
                 self.set_tracked(Tracked::Dropped(obs.viewer));
                 greedy::choose(obs, legal)
             }

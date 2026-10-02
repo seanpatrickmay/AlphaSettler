@@ -296,11 +296,12 @@ impl Belief {
     }
 
     /// Advance by `events` as the viewer saw them, in log order. Err when no joint hands are
-    /// consistent with the history (an inconsistent feed, or a tracker bug).
+    /// consistent with the history (an inconsistent feed, or a tracker bug); the belief is then
+    /// left as it was before the event that ruled every state out.
     pub fn observe(&mut self, events: &[Event]) -> Result<(), String> {
         let mut unused = Rng::new(0); // `step` draws only for hidden steals, which branch here instead
         for e in events {
-            if let Event::Stole {
+            let next: Vec<(HandTracker, f64)> = if let Event::Stole {
                 thief,
                 victim,
                 resource: None,
@@ -328,17 +329,21 @@ impl Belief {
                         }
                     }
                 }
-                self.states = next.into_iter().collect();
+                next.into_iter().collect()
             } else {
                 // Deterministic and injective on the hands, so states stay distinct and sorted.
-                self.states.retain_mut(|(t, _)| t.step(e, &mut unused));
-            }
-            if self.states.is_empty() {
+                self.states
+                    .iter()
+                    .filter_map(|&(mut t, w)| t.step(e, &mut unused).then_some((t, w)))
+                    .collect()
+            };
+            if next.is_empty() {
                 return Err(format!(
                     "player {}'s belief: no hands are consistent with event {e:?}",
                     self.viewer
                 ));
             }
+            self.states = next;
             let z: f64 = self.states.iter().map(|s| s.1).sum();
             for s in &mut self.states {
                 s.1 /= z;

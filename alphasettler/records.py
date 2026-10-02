@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TextIO
 
-from alphasettler._engine import Game
+from alphasettler._engine import Game, resolve_config
 
 
 class Writer:
@@ -19,7 +19,9 @@ class Writer:
         self._f = f
 
     def write_game(self, game: dict, config: dict) -> None:
-        self._f.write(json.dumps({"config": config, **game}) + "\n")
+        """Write `game` played under `config` (overrides of the defaults); the record stores the
+        whole resolved config, so it replays under its own rules if the defaults change."""
+        self._f.write(json.dumps({"config": resolve_config(config), **game}) + "\n")
 
     def flush(self) -> None:
         """Push everything written so far through the compressor to disk."""

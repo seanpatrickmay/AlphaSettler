@@ -349,3 +349,52 @@ fn terminal_values_are_one_hot_for_a_winner_and_even_at_the_turn_cap() {
     s.phase = Phase::GameOver { winner: None };
     assert_eq!(terminal_value(&s), [0.25; 4]);
 }
+
+/// Uniform values; a prior that puts nearly everything on PlayKnight wherever it is legal.
+struct KnightFirst;
+
+impl Evaluator for KnightFirst {
+    fn evaluate(&mut self, leaves: &[Leaf<'_>]) -> Vec<Eval> {
+        leaves
+            .iter()
+            .map(|l| {
+                let n = l.legal.len();
+                let prior = match l.legal.iter().position(|&a| a == Action::PlayKnight) {
+                    Some(k) if n > 1 => (0..n)
+                        .map(|i| if i == k { 0.97 } else { 0.03 / (n - 1) as f32 })
+                        .collect(),
+                    _ => vec![1.0 / n as f32; n],
+                };
+                Eval {
+                    value: [0.25; 4],
+                    prior,
+                }
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn the_chosen_move_is_always_one_the_caller_listed() {
+    // The worlds allow Roll and PlayKnight, and PlayKnight draws most visits; the caller lists
+    // only Roll and a move no world allows, so PlayKnight must never be returned.
+    for seed in 0..4 {
+        let s = knight_before_roll(seed, no_trades());
+        let obs = s.observation(0);
+        let listed = [Action::Roll, Action::EndTurn];
+        let b = Belief::from_observation(&obs, 64, seed);
+        let (r, tree) = search_tree(
+            &obs,
+            &listed,
+            &b,
+            &mut KnightFirst,
+            &cfg(200),
+            &mut Rng::new(seed),
+        )
+        .unwrap();
+        let root = &tree.nodes[ROOT as usize].children;
+        let visits = |a: Action| root.iter().find(|c| c.key == a.encode()).unwrap().visits;
+        assert!(visits(Action::PlayKnight) > visits(Action::Roll));
+        assert_eq!(r.action, Action::Roll, "seed {seed}");
+    }
+}

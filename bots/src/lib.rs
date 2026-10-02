@@ -1,4 +1,6 @@
-//! Baseline bots and the native arena. Bots see only an `Observation` and the legal actions.
+//! Baseline bots, IsmctsBot and the native arena. Each decision a bot sees an `Observation` and the
+//! legal actions; through `observe` it also sees the events since its last move, redacted for its
+//! seat, so it can keep its own history.
 
 pub mod arena;
 pub mod greedy;

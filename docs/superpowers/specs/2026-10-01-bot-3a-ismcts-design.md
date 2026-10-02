@@ -213,11 +213,12 @@ pub trait Evaluator { fn evaluate(&mut self, leaves: &[Leaf]) -> Vec<Eval>; }
   it. Bot names select it: `ismcts` (1,000 simulations), `ismcts@N`, `ismcts@N+rD` (D rollout
   moves).
 
-**Self-play records (built in 3a).** `alphasettler selfplay --games N --simulations S --out DIR`
+**Self-play records (built in 3a).** `alphasettler selfplay --games N --simulations S --out-dir DIR`
 plays IsmctsBot in all four seats and records every searched decision: the decision index, the
 actor, the actor's observation, the legal moves, the root visit counts and a `full_search` flag
 (always true in 3a). Records are grouped per game, one gzipped JSONL line per game holding the
-seed, config, every action, the decisions and the outcome. It switches to a columnar format only
+seed, the full config (every field, so a record replays under its own rules if the defaults
+change), every action, the decisions and the outcome. It switches to a columnar format only
 if 3b's data loading measures too slow. Storing the seed and the
 observation means any feature encoding can be computed later, so 3b designs its network input
 without replaying games. If 3a meets its headline target, the first network trains on a search that

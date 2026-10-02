@@ -260,6 +260,33 @@ fn belief_resets_sum_over_seats_that_report_them() {
 }
 
 #[test]
+fn a_decision_counts_at_most_one_reset() {
+    // An observation the sampler rejects (more hidden dev cards than the deck has) after a
+    // reset was already counted for the same decision: the failed search adds none.
+    let s = main_with(6, CITY_COST, no_trades());
+    let mut broken = s.observation(0);
+    broken.dev_card_counts[1] += 30;
+    let legal = s.legal_actions();
+    let mut fresh = IsmctsBot::new(6, 20, 0);
+    assert!(legal.contains(&fresh.act(&broken, &legal)));
+    assert!(fresh.take_last_search().is_none(), "the search failed");
+    assert_eq!(resets(&fresh), 1, "no history, then a failed search");
+    // A later decision whose search fails again is a new reset.
+    fresh.act(&broken, &legal);
+    assert_eq!(resets(&fresh), 2);
+
+    let mut contradicted = IsmctsBot::new(7, 20, 0);
+    contradicted.observe(0, &contradiction(&s.observation(0)));
+    assert_eq!(resets(&contradicted), 1);
+    contradicted.act(&broken, &legal);
+    assert_eq!(
+        resets(&contradicted),
+        1,
+        "a contradiction, then a failed search"
+    );
+}
+
+#[test]
 fn a_new_seat_starts_a_new_game_without_a_reset() {
     let mut bots: Vec<Box<dyn Bot>> = (0..4u64).map(|p| make_bot("greedy", p).unwrap()).collect();
     bots[0] = Box::new(IsmctsBot::new(9, 20, 0));

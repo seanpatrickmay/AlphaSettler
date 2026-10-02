@@ -249,6 +249,17 @@ fn bot_names() -> Vec<&'static str> {
     settler_bots::BOT_NAMES.to_vec()
 }
 
+/// Every `GameConfig` field as a dict: the defaults with `config`'s overrides applied (and
+/// validated), so a stored config replays under its own rules even if the defaults change.
+#[pyfunction]
+#[pyo3(signature = (config=None))]
+fn resolve_config<'py>(
+    py: Python<'py>,
+    config: Option<&Bound<'py, PyDict>>,
+) -> PyResult<Bound<'py, PyDict>> {
+    config_dict(py, &parse_config(config)?)
+}
+
 /// Native arena: `seeds` seeds starting at `seed_start`, each played four times with the
 /// candidate rotated through every seat, at most `MAX_SEEDS` seeds per call. Releases the GIL
 /// while games run.
@@ -478,6 +489,7 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(action_space_size, m)?)?;
     m.add_function(wrap_pyfunction!(describe_action, m)?)?;
     m.add_function(wrap_pyfunction!(bot_names, m)?)?;
+    m.add_function(wrap_pyfunction!(resolve_config, m)?)?;
     m.add_function(wrap_pyfunction!(run_match, m)?)?;
     m.add_function(wrap_pyfunction!(selfplay, m)?)?;
     m.add_function(wrap_pyfunction!(fit_heuristic, m)?)?;

@@ -205,6 +205,7 @@ def test_cli_selfplay_streams_batches_and_replays(tmp_path, monkeypatch, capsys)
     games = list(records.read(path))
     assert [g["seed"] for g in games] == [0, 1, 2, 3, 4]
     for g in games:
+        assert g["config"]["vp_to_win"] == 10 and g["config"]["max_offers_per_turn"] == 0
         assert records.replay_mismatches(g) == []
 
 

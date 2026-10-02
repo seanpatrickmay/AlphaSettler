@@ -21,7 +21,8 @@ pub struct Child {
     pub node: u32,
     pub prior: f32,
     pub visits: u32,
-    /// Simulations in which this action was legal at its parent (ISMCTS availability).
+    /// Descents through the parent in which this action was legal (ISMCTS availability). Not
+    /// exactly simulations: a descent abandoned as `Busy` later in the tree still counts.
     pub available: u32,
     /// Simulations through this child waiting for their leaf evaluation (virtual loss).
     pub pending: u32,

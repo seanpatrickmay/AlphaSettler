@@ -187,6 +187,9 @@ fn descend(
                 legal: legal.clone(),
             });
         }
+        // Availability counts every descent through here, including one that then stops at a
+        // node another simulation in the batch is evaluating (`Busy`), which is not counted as a
+        // simulation: at batch 8 that over-counts the root's simulations by about 0.3%.
         let allowed = ActionSet::of(legal);
         let mut unseen = allowed;
         for c in n.children.iter_mut() {
@@ -338,16 +341,19 @@ pub fn search_tree<E: Evaluator>(
         }
     }
     let root = &tree.nodes[ROOT as usize];
+    // Root children come from each world's legal moves; play only one the caller listed.
+    let searchable = ActionSet::of(&root_actions);
     let best = root
         .children
         .iter()
+        .filter(|c| searchable.contains(c.key))
         .max_by(|a, b| {
             a.visits
                 .cmp(&b.visits)
                 .then(a.prior.total_cmp(&b.prior))
                 .then(b.key.cmp(&a.key))
         })
-        .expect("the first simulation expands the root");
+        .ok_or("no searched root move is among the legal actions")?;
     let action = Action::decode(best.key).expect("children are keyed by valid action ids");
     let visits = legal
         .iter()

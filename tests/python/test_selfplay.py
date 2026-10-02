@@ -1,10 +1,9 @@
-import gzip
 import json
 
 import pytest
 
 from alphasettler import Bot, Game, records
-from alphasettler._engine import fit_heuristic, selfplay
+from alphasettler._engine import fit_heuristic, resolve_config, selfplay
 
 CONFIG = {"max_offers_per_turn": 0}
 
@@ -28,11 +27,24 @@ def test_records_round_trip_and_replay_exactly(tmp_path):
     records.write(path, games, CONFIG)
     back = list(records.read(path))
     assert [g["seed"] for g in back] == [5, 6]
-    assert all(g["config"] == CONFIG for g in back)
+    full = resolve_config(CONFIG)
+    assert full == {**resolve_config(), "max_offers_per_turn": 0} and "vp_to_win" in full
+    assert all(g["config"] == full for g in back)
     for g in back:
         assert records.replay_mismatches(g) == []
     with pytest.raises(FileExistsError):
         records.write(path, games, CONFIG)
+
+
+def test_resolve_config_fills_every_field_and_validates():
+    full = resolve_config({"vp_to_win": 5})
+    assert full["vp_to_win"] == 5
+    assert set(full) == set(resolve_config())
+    assert resolve_config(full) == full
+    with pytest.raises(ValueError):
+        resolve_config({"vp_to_win": 1})
+    with pytest.raises(ValueError):
+        resolve_config({"no_such_key": 1})
 
 
 def test_replay_detects_a_tampered_record(tmp_path):
