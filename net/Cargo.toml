@@ -1,0 +1,16 @@
+[package]
+name = "settler-net"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+publish = false
+
+[lib]
+name = "settler_net"
+
+[dependencies]
+settler-engine = { path = "../engine" }
+settler-search = { path = "../search" }
+
+[lints.clippy]
+needless_range_loop = "allow"

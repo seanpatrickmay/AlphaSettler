@@ -683,6 +683,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "settler-net"
+version = "0.1.0"
+dependencies = [
+ "settler-engine",
+ "settler-search",
+]
+
+[[package]]
 name = "settler-search"
 version = "0.1.0"
 dependencies = [
