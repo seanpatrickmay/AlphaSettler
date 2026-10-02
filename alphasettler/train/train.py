@@ -97,20 +97,26 @@ def losses(net: model_mod.Net, t: Tensors) -> dict[str, torch.Tensor]:
     return {"policy": policy, "value": value_loss, "aux": aux_loss, "l2": l2, "total": total}
 
 
+def _worst(diff: torch.Tensor) -> float:
+    """The largest entry, a NaN counting as infinitely wrong (`max` and `>` would let it pass)."""
+    return torch.nan_to_num(diff, nan=float("inf")).max().item()
+
+
 def parity_error(ref: tuple[torch.Tensor, torch.Tensor, torch.Tensor], rust: dict, mask: torch.Tensor) -> float:
     """The worst parity error between PyTorch's outputs `ref` and `net_forward`'s `rust`, each
     in units of PARITY_TOLERANCE's rule (preflight F9): the prior over legal moves (`mask`) and
-    the value probabilities compare absolutely; raw logits and aux relative to max(1, |PyTorch|)."""
+    the value probabilities compare absolutely; raw logits and aux relative to max(1, |PyTorch|).
+    A NaN anywhere on either side is an infinite error."""
     got = [torch.frombuffer(bytearray(rust[key]), dtype=torch.float32).view_as(r)
            for key, r in zip(("policy", "value", "aux"), ref)]
-    worst = max(((g - r).abs() / r.abs().clamp(min=1.0)).max().item() for g, r in zip(got, ref))
+    errors = [_worst((g - r).abs() / r.abs().clamp(min=1.0)) for g, r in zip(got, ref)]
 
     def prior(logits: torch.Tensor) -> torch.Tensor:
         return torch.softmax(logits.double().masked_fill(~mask, float("-inf")), dim=1)
 
-    worst = max(worst, (prior(got[0]) - prior(ref[0])).abs().max().item())
-    value = torch.softmax(got[1].double(), dim=1) - torch.softmax(ref[1].double(), dim=1)
-    return max(worst, value.abs().max().item())
+    errors.append(_worst((prior(got[0]) - prior(ref[0])).abs()))
+    errors.append(_worst((torch.softmax(got[1].double(), dim=1) - torch.softmax(ref[1].double(), dim=1)).abs()))
+    return max(errors)
 
 
 def parity_check(net: model_mod.Net, path: str | Path, window: Window) -> float:
@@ -123,7 +129,7 @@ def parity_check(net: model_mod.Net, path: str | Path, window: Window) -> float:
     with torch.no_grad():
         ref = cpu(t.public, t.hidden)
     worst = parity_error(ref, net_forward(str(path), batch["public"], batch["hidden"]), t.mask)
-    if worst > PARITY_TOLERANCE:
+    if not worst <= PARITY_TOLERANCE:  # NaN-safe
         raise RuntimeError(f"the exported weights disagree with PyTorch: max error {worst:.3g} > {PARITY_TOLERANCE}")
     return worst
 

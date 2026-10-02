@@ -18,6 +18,12 @@ from alphasettler.arena import SEED_LIMIT, _write_records, check, format_summary
 from alphasettler.stats import paired, summarize
 
 
+# Spec Section 4: net0 trains from scratch at 1e-3, every later net from its parent at 3e-4.
+SCRATCH_LR = 1e-3
+FINE_TUNE_LR = 3e-4
+TRAIN_INSTALL = ".venv/bin/pip3 install -e '.[train]'"
+
+
 def _positive_int(text: str) -> int:
     value = int(text)
     if value <= 0:
@@ -86,7 +92,8 @@ def _parser() -> argparse.ArgumentParser:
     t.add_argument("records", nargs="+", help="generation directories, oldest first; the last is the newest")
     t.add_argument("--out", required=True, help="weights file to write")
     t.add_argument("--init", default=None, help="weights file to start from (default: from scratch)")
-    t.add_argument("--lr", type=float, default=3e-4)
+    t.add_argument("--lr", type=float, default=None,
+                   help=f"default: {SCRATCH_LR:g} from scratch, {FINE_TUNE_LR:g} with --init (spec Section 4)")
     t.add_argument("--steps", type=_positive_int, default=None, help="default: 2 x new positions / batch")
     t.add_argument("--batch", type=_positive_int, default=1024)
     t.add_argument("--seed", type=int, default=0)
@@ -229,16 +236,36 @@ def _fit_heuristic(args) -> int:
     return 0
 
 
+def _train_missing() -> bool:
+    """True, after printing how to install it, if PyTorch (the `train` extra) is missing. Any
+    other import error surfaces as itself."""
+    try:
+        import alphasettler.train  # noqa: F401
+    except ModuleNotFoundError as e:
+        if e.name != "torch":
+            raise
+        print(f"error: PyTorch (the train extra) is not installed; install it with: {TRAIN_INSTALL}", file=sys.stderr)
+        return True
+    return False
+
+
 def _train(args) -> int:
+    if _train_missing():
+        return 2
+    from alphasettler.train import model
     from alphasettler.train.data import load_window
     from alphasettler.train.train import TrainConfig, train
 
+    init = Path(args.init) if args.init else None
+    lr = args.lr if args.lr is not None else FINE_TUNE_LR if init is not None else SCRATCH_LR
+    cfg = TrainConfig(lr=lr, steps=args.steps, batch=args.batch, seed=args.seed, device=args.device,
+                      threads=args.threads, trunk=args.trunk, value=args.value_width)
+    cfg.check()
+    if init is not None:
+        model.load(init)  # a bad --init fails now, not after the window is read
     dirs = [Path(d).resolve() for d in args.records]
     # Relative to the generations' common parent, so each file keeps its generation's name.
     root = Path(os.path.commonpath([str(d.parent) for d in dirs]))
-    cfg = TrainConfig(lr=args.lr, steps=args.steps, batch=args.batch, seed=args.seed, device=args.device,
-                      threads=args.threads, trunk=args.trunk, value=args.value_width)
-    cfg.check()
     window = load_window(root, dirs)
     for line in window.notices:
         print(f"notice: {line}")
@@ -247,14 +274,15 @@ def _train(args) -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
-        s = train(window, out, cfg, Path(args.init) if args.init else None)
+        s = train(window, out, cfg, init)
     except KeyboardInterrupt:
         print("interrupted: nothing written", file=sys.stderr)
         return 130
     except RuntimeError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    print(f"trained {s['steps']} steps on {s['device']}; parity max error {s['parity_max_error']:.2e}; wrote {out}")
+    print(f"trained {s['steps']} steps on {s['device']} at lr {s['lr']:g}; "
+          f"parity max error {s['parity_max_error']:.2e}; wrote {out}")
     return 0
 
 

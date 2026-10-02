@@ -1,18 +1,20 @@
 """Training data (spec Section 4): self-play record files -> the Rust sampler -> tensors.
 
 A generation directory holds finished record files `*.jsonl.gz` (other machines may drop more in:
-the scale-out path). Hidden temp files (`files.temp_path`) are never read. Files that are empty,
-cut short, hold no decisions or do not replay are skipped (or kept up to the damage) with a
-notice, and a seed already read in the same generation (a second writer playing the same seeds)
-is read once. Records go into the `TrainingSet` a file at a time, as a stream, so the window is
-never held as Python dicts."""
+the scale-out path). Hidden temp files (`files.temp_path`) are never read. A file cut short or
+garbled is kept up to the damage; one holding a record that does not replay (or is malformed) is
+skipped whole; empty files and files without decisions are noted. Each case prints a notice.
+A seed already read in the same generation (a second writer playing the same seeds) is read
+once. Records stream into the `TrainingSet` a file at a time, so the window is never held as
+Python dicts; the Rust side checks every field of every record."""
 
 from __future__ import annotations
 
+import gzip
 import json
 import zlib
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
@@ -22,9 +24,13 @@ from alphasettler._engine import NET_HIDDEN_LEN, NET_PUBLIC_LEN, TrainingSet, ac
 
 ACTIONS = action_space_size()
 SEATS = 4
+# Seeds a duplicate notice lists before it elides the rest.
+NOTICE_SEEDS = 5
 
-# What a cut-short or garbled file raises while it is read (gzip, zlib, JSON, a non-record line).
-_READ_ERRORS = (EOFError, OSError, zlib.error, json.JSONDecodeError, UnicodeDecodeError, KeyError, TypeError)
+# What reading a cut-short or garbled file raises: gzip framing, deflate data, text, JSON. Only
+# these end a file early; anything else (an OSError such as a permission error, MemoryError, a
+# bug) propagates.
+_READ_ERRORS = (EOFError, gzip.BadGzipFile, zlib.error, UnicodeDecodeError, json.JSONDecodeError)
 
 
 def record_files(gen_dir: str | Path) -> list[Path]:
@@ -32,67 +38,87 @@ def record_files(gen_dir: str | Path) -> list[Path]:
     return sorted(p for p in Path(gen_dir).glob("*.jsonl.gz") if not p.name.startswith("."))
 
 
-def compact(game: dict) -> dict:
-    """Only what the sampler needs."""
-    return {
-        "seed": game["seed"],
-        "config": game["config"],
-        "actions": game["actions"],
-        "decisions": [{"index": d["index"], "actor": d["actor"], "visits": d["visits"], "full_search": d["full_search"]}
-                      for d in game["decisions"]],
-        "winner": game["winner"],
-        "vp": game["vp"],
-    }
-
-
 @dataclass
 class _FileStats:
-    duplicates: int = 0
-    kept: int = 0
-    decisions: int = 0
-    error: str | None = None
+    added: set[int] = field(default_factory=set)
+    duplicates: list[int] = field(default_factory=list)
+    read_error: str | None = None
+    # An exception raised inside the stream other than a read error. `TrainingSet.extend` wraps
+    # it in a ValueError whose `__cause__` is this object, which is how a bug is told apart from
+    # a bad record.
+    bug: BaseException | None = None
 
 
-def _games(path: Path, gen_name: str, seen: set[int], added: set[int], stats: _FileStats,
-           notices: list[str]) -> Iterator[dict]:
-    """The file's games, compacted, skipping seeds in `seen` or `added` (and adding the rest to
-    `added`); a read error ends the stream and is kept in `stats`."""
+def _games(path: Path, seen: set[int], stats: _FileStats) -> Iterator[dict]:
+    """The file's records as read, minus seeds in `seen` or already streamed (collected in
+    `stats.added`). A read error ends the stream and is kept in `stats.read_error`. Records are
+    passed on unexamined beyond their seed: the Rust side checks every field."""
     try:
-        for g in records.read(path):
-            seed = g["seed"]
-            if seed in seen or seed in added:
-                stats.duplicates += 1
-                notices.append(f"{path}: seed {seed} is already in {gen_name}; skipped the duplicate")
+        reader = records.read(path)
+        while True:
+            try:
+                g = next(reader)
+            except StopIteration:
+                return
+            except _READ_ERRORS as e:
+                stats.read_error = f"{type(e).__name__}: {e}"
+                return
+            seed = g.get("seed") if isinstance(g, dict) else None
+            if isinstance(seed, int) and (seed in seen or seed in stats.added):
+                stats.duplicates.append(seed)
                 continue
-            c = compact(g)
-            added.add(seed)
-            stats.kept += 1
-            stats.decisions += len(c["decisions"])
-            yield c
-    except _READ_ERRORS as e:
-        stats.error = f"{type(e).__name__}: {e}"
+            if isinstance(seed, int):
+                stats.added.add(seed)
+            yield g
+    except Exception as e:
+        stats.bug = e
+        raise
+
+
+def _seed_list(seeds: list[int]) -> str:
+    shown = ", ".join(str(s) for s in seeds[:NOTICE_SEEDS])
+    return shown + (f", ... ({len(seeds) - NOTICE_SEEDS} more)" if len(seeds) > NOTICE_SEEDS else "")
+
+
+def _read_file(path: Path, gen_name: str, data: TrainingSet, seen: set[int], notices: list[str]) -> None:
+    stats = _FileStats()
+    games, decisions = data.games, data.decisions
+    failure = None
+    try:
+        data.extend(_games(path, seen, stats))
+    except ValueError as e:
+        failure = e
+    if failure is not None:
+        if stats.bug is not None and failure.__cause__ is stats.bug:
+            raise stats.bug  # our own error inside the stream, not a bad record
+        # A record that is malformed or does not replay: `extend` added nothing from this file.
+        notices.append(f"{path}: skipped the whole file: {failure}")
+        return
+    seen |= stats.added
+    kept, new_decisions = data.games - games, data.decisions - decisions
+    if stats.duplicates:
+        n = len(stats.duplicates)
+        what = f"all {n} games duplicate earlier seeds" if kept == 0 and stats.read_error is None \
+            else f"skipped {n} games duplicating earlier seeds"
+        notices.append(f"{path}: {what} (already in {gen_name}: {_seed_list(stats.duplicates)})")
+    if stats.read_error is not None:
+        notices.append(f"{path}: kept {kept} games, skipped an unreadable rest ({stats.read_error})")
+    elif kept == 0 and not stats.duplicates:
+        notices.append(f"{path}: no games")
+    if kept and new_decisions == 0:
+        notices.append(f"{path}: {kept} games but no decisions")
 
 
 def read_generation(gen_dir: str | Path, data: TrainingSet, notices: list[str]) -> list[Path]:
-    """Add every record file of `gen_dir` to `data`, one file at a time; returns the files read."""
+    """Add every record file of `gen_dir` to `data`, one file at a time; returns the files read.
+    ValueError if `gen_dir` is not a directory."""
     gen_dir = Path(gen_dir)
+    if not gen_dir.is_dir():
+        raise ValueError(f"generation directory {gen_dir} does not exist (or is not a directory)")
     seen: set[int] = set()
     paths = record_files(gen_dir)
     for path in paths:
-        stats, added = _FileStats(), set()
-        try:
-            data.extend(_games(path, gen_dir.name, seen, added, stats, notices))
-        except ValueError as e:  # a record that does not replay: `extend` added nothing
-            notices.append(f"{path}: skipped the whole file: {e}")
-            continue
-        seen |= added
-        if stats.error is not None:
-            notices.append(f"{path}: kept {stats.kept} games, skipped an unreadable rest ({stats.error})")
-        elif stats.kept == 0:
-            notices.append(f"{path}: all {stats.duplicates} games duplicate earlier seeds" if stats.duplicates
-                           else f"{path}: no games")
-        if stats.kept and stats.decisions == 0:
-            notices.append(f"{path}: {stats.kept} games but no decisions")
+        _read_file(path, gen_dir.name, data, seen, notices)
     return paths
 
 
