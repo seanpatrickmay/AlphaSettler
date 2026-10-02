@@ -8,12 +8,12 @@ use settler_engine::topology::{topo, NUM_EDGES, NUM_NODES, NUM_TILES};
 use settler_engine::types::*;
 use settler_engine::{Observation, Phase, State, ACTION_SPACE_SIZE};
 
-pub const ENCODER_VERSION: u32 = 1;
+pub const ENCODER_VERSION: u32 = 2;
 
 pub const NODE_WIDTH: usize = 19;
 pub const EDGE_WIDTH: usize = 4;
 pub const TILE_WIDTH: usize = 8;
-pub const SEAT_WIDTH: usize = 11;
+pub const SEAT_WIDTH: usize = 10;
 pub const NUM_PHASES: usize = 11;
 
 pub const NODE_BASE: usize = 0;
@@ -30,31 +30,52 @@ pub const DECK: usize = BANK + NUM_RESOURCES;
 pub const PHASE: usize = DECK + 1;
 pub const TURN: usize = PHASE + NUM_PHASES;
 pub const DEV_PLAYED: usize = TURN + 1;
-pub const PUBLIC_LEN: usize = DEV_PLAYED + 1;
+/// Whose turn it is (seat-relative one-hot); differs from the actor in Discard and trade replies.
+pub const CURRENT: usize = DEV_PLAYED + 1;
+/// The phase resumed after the robber or Road Building: PreRoll, Main.
+pub const RETURN_PHASE: usize = CURRENT + NUM_PLAYERS;
+/// Free roads left in Road Building (0 outside it).
+pub const FREE_ROADS: usize = RETURN_PHASE + 2;
+pub const PUBLIC_LEN: usize = FREE_ROADS + 1;
 
 /// Per opponent (relative seats 1..=3): hand by resource, then dev cards held by kind.
 pub const HIDDEN_WIDTH: usize = 10;
 pub const HIDDEN_LEN: usize = (NUM_PLAYERS - 1) * HIDDEN_WIDTH;
 
-// A count x is encoded as x / DEN, roughly in [0, 1].
-/// Cards of one resource.
-pub const CARD_DEN: u32 = 10;
-/// A player's total cards.
+// A count x is encoded as x / DEN. Each DEN is the engine's hard maximum where that is small
+// (so the feature stays in [0, 1]), or the realistic maximum where the hard one is far out.
+/// Cards of one resource in a hand: at most the 19 the bank starts with.
+pub const CARD_DEN: u32 = 19;
+/// A player's total cards. The hard maximum is 95 (every card); a 7 halves any hand over 7, so
+/// hands rarely pass 20 and this feature rarely passes 1. Not clamped.
 pub const HAND_DEN: u32 = 20;
-/// Dev cards, per kind or in total.
-pub const DEV_DEN: u32 = 5;
-pub const KNIGHT_DEN: u32 = 14;
+/// Dev cards in total (held, or bought this turn): at most the whole deck.
+pub const DEV_TOTAL_DEN: u32 = DEV_DECK_SIZE as u32;
+/// Dev cards of one kind (held or played): at most that kind's count in the deck (14 knights, 5
+/// VP, 2 of each other kind), in `DevCard` order.
+pub const DEV_KIND_DEN: [u32; 5] = [
+    DEV_DECK_COUNTS[0] as u32,
+    DEV_DECK_COUNTS[1] as u32,
+    DEV_DECK_COUNTS[2] as u32,
+    DEV_DECK_COUNTS[3] as u32,
+    DEV_DECK_COUNTS[4] as u32,
+];
+/// Public VP: the game ends at 10.
 pub const VP_DEN: u32 = 10;
+/// Cards owed in a discard: half a hand, so realistically at most 10 (hard maximum 47).
 pub const DISCARD_DEN: u32 = 10;
 pub const BANK_DEN: u32 = 19;
-pub const DECK_DEN: u32 = 25;
+/// Dev cards left in the deck.
+pub const DECK_DEN: u32 = DEV_DECK_SIZE as u32;
 /// One tile's pips.
 pub const PIP_DEN: u32 = 5;
 /// A node's pips of one resource.
 pub const NODE_PIP_DEN: u32 = 15;
+/// Free roads left in Road Building (1 or 2 during it).
+pub const FREE_ROAD_DEN: u32 = 2;
 
 /// Everything the layout depends on, hashed into `ENCODING_HASH`.
-pub const LAYOUT: [u32; 22] = [
+pub const LAYOUT: [u32; 27] = [
     ENCODER_VERSION,
     NUM_NODES as u32,
     NODE_WIDTH as u32,
@@ -69,14 +90,19 @@ pub const LAYOUT: [u32; 22] = [
     ACTION_SPACE_SIZE as u32,
     CARD_DEN,
     HAND_DEN,
-    DEV_DEN,
-    KNIGHT_DEN,
+    DEV_TOTAL_DEN,
+    DEV_KIND_DEN[0],
+    DEV_KIND_DEN[1],
+    DEV_KIND_DEN[2],
+    DEV_KIND_DEN[3],
+    DEV_KIND_DEN[4],
     VP_DEN,
     DISCARD_DEN,
     BANK_DEN,
     DECK_DEN,
     PIP_DEN,
     NODE_PIP_DEN,
+    FREE_ROAD_DEN,
 ];
 
 /// The whole layout as canonical text: every block in vector order with its item count and one
@@ -86,24 +112,26 @@ pub const LAYOUT: [u32; 22] = [
 /// `encode_public` and `encode_hidden_from`: `net/tests/encode.rs` checks its offsets, widths,
 /// scales and version against the constants.
 pub const LAYOUT_DESCRIPTION: &str = "\
-settler-net features v1
+settler-net features v2
 seats relative to the viewer: r0 is the viewer, then r1 r2 r3 in turn order
 resources: wood brick sheep wheat ore
 dev kinds: knight victory_point road_building year_of_plenty monopoly
-scales: card=10 hand=20 dev=5 knight=14 vp=10 discard=10 bank=19 deck=25 pip=5 node_pip=15
+scales: card=19 hand=20 dev_total=25 dev_knight=14 dev_victory_point=5 dev_road_building=2 \
+dev_year_of_plenty=2 dev_monopoly=2 vp=10 discard=10 bank=19 deck=25 pip=5 node_pip=15 free_roads=2
 public node x54: settlement_r0 settlement_r1 settlement_r2 settlement_r3 city_r0 city_r1 city_r2 \
 city_r3 port_generic port_wood port_brick port_sheep port_wheat port_ore pips_wood/node_pip \
 pips_brick/node_pip pips_sheep/node_pip pips_wheat/node_pip pips_ore/node_pip
 public edge x72: road_r0 road_r1 road_r2 road_r3
 public tile x19: wood brick sheep wheat ore desert pips/pip robber
 public own_hand x1: wood/card brick/card sheep/card wheat/card ore/card
-public own_dev_old x1: knight/dev victory_point/dev road_building/dev year_of_plenty/dev \
-monopoly/dev
-public own_dev_new x1: knight/dev victory_point/dev road_building/dev year_of_plenty/dev \
-monopoly/dev
-public seat x4: hand_count/hand dev_count/dev new_dev_count/dev played_knight/dev \
-played_victory_point/dev played_road_building/dev played_year_of_plenty/dev played_monopoly/dev \
-knights/knight public_vp/vp discard_owed/discard
+public own_dev_old x1: knight/dev_knight victory_point/dev_victory_point \
+road_building/dev_road_building year_of_plenty/dev_year_of_plenty monopoly/dev_monopoly
+public own_dev_new x1: knight/dev_knight victory_point/dev_victory_point \
+road_building/dev_road_building year_of_plenty/dev_year_of_plenty monopoly/dev_monopoly
+public seat x4: hand_count/hand dev_count/dev_total new_dev_count/dev_total \
+played_knight/dev_knight played_victory_point/dev_victory_point \
+played_road_building/dev_road_building played_year_of_plenty/dev_year_of_plenty \
+played_monopoly/dev_monopoly public_vp/vp discard_owed/discard
 public longest_road x1: r0 r1 r2 r3 none
 public largest_army x1: r0 r1 r2 r3 none
 public bank x1: wood/bank brick/bank sheep/bank wheat/bank ore/bank
@@ -112,8 +140,12 @@ public phase x1: setup_settlement setup_road pre_roll discard move_robber steal 
 road_building trade_response trade_confirm game_over
 public turn x1: turn/max_turns
 public dev_played x1: dev_played
-hidden opponent x3: wood/card brick/card sheep/card wheat/card ore/card knight/dev \
-victory_point/dev road_building/dev year_of_plenty/dev monopoly/dev
+public current x1: r0 r1 r2 r3
+public return_phase x1: pre_roll main
+public free_roads x1: roads_left/free_roads
+hidden opponent x3: wood/card brick/card sheep/card wheat/card ore/card \
+knight/dev_knight victory_point/dev_victory_point road_building/dev_road_building \
+year_of_plenty/dev_year_of_plenty monopoly/dev_monopoly
 ";
 
 /// FNV-1a over the little-endian bytes of `layout`, then the bytes of `description`.
@@ -178,6 +210,15 @@ pub fn phase_index(p: Phase) -> usize {
         Phase::TradeResponse => 8,
         Phase::TradeConfirm => 9,
         Phase::GameOver { .. } => 10,
+    }
+}
+
+/// `return_phase` is always PreRoll or Main (an engine invariant).
+fn return_phase_index(p: Phase) -> usize {
+    match p {
+        Phase::PreRoll => 0,
+        Phase::Main => 1,
+        other => panic!("return_phase must be PreRoll or Main, got {other:?}"),
     }
 }
 
@@ -250,20 +291,20 @@ pub fn encode_public(obs: &Observation, out: &mut [f32]) {
     }
     for k in 0..5 {
         let new = obs.my_new_dev_cards[k];
-        out[OWN_DEV_OLD + k] = scaled((obs.my_dev_cards[k] - new) as u32, DEV_DEN);
-        out[OWN_DEV_NEW + k] = scaled(new as u32, DEV_DEN);
+        out[OWN_DEV_OLD + k] = scaled((obs.my_dev_cards[k] - new) as u32, DEV_KIND_DEN[k]);
+        out[OWN_DEV_NEW + k] = scaled(new as u32, DEV_KIND_DEN[k]);
     }
     for p in 0..NUM_PLAYERS {
         let at = SEATS + rel(p as PlayerId, v) * SEAT_WIDTH;
         out[at] = scaled(obs.hand_counts[p] as u32, HAND_DEN);
-        out[at + 1] = scaled(obs.dev_card_counts[p] as u32, DEV_DEN);
-        out[at + 2] = scaled(obs.new_dev_card_counts[p] as u32, DEV_DEN);
+        out[at + 1] = scaled(obs.dev_card_counts[p] as u32, DEV_TOTAL_DEN);
+        out[at + 2] = scaled(obs.new_dev_card_counts[p] as u32, DEV_TOTAL_DEN);
+        // No separate knights slot: `knights_played` equals `dev_cards_played[p][0]`.
         for k in 0..5 {
-            out[at + 3 + k] = scaled(obs.dev_cards_played[p][k] as u32, DEV_DEN);
+            out[at + 3 + k] = scaled(obs.dev_cards_played[p][k] as u32, DEV_KIND_DEN[k]);
         }
-        out[at + 8] = scaled(obs.knights_played[p] as u32, KNIGHT_DEN);
-        out[at + 9] = scaled(obs.public_vp[p] as u32, VP_DEN);
-        out[at + 10] = scaled(obs.discard_remaining[p] as u32, DISCARD_DEN);
+        out[at + 8] = scaled(obs.public_vp[p] as u32, VP_DEN);
+        out[at + 9] = scaled(obs.discard_remaining[p] as u32, DISCARD_DEN);
     }
     let owner = |o: Option<PlayerId>| o.map_or(NUM_PLAYERS, |p| rel(p, v));
     out[LONGEST_ROAD + owner(obs.longest_road_owner)] = 1.0;
@@ -275,6 +316,11 @@ pub fn encode_public(obs: &Observation, out: &mut [f32]) {
     out[PHASE + phase_index(obs.phase)] = 1.0;
     out[TURN] = scaled(obs.turn, obs.config.max_turns.max(1));
     out[DEV_PLAYED] = obs.dev_played_this_turn as u8 as f32;
+    out[CURRENT + rel(obs.current, v)] = 1.0;
+    out[RETURN_PHASE + return_phase_index(obs.return_phase)] = 1.0;
+    if let Phase::RoadBuilding { roads_left } = obs.phase {
+        out[FREE_ROADS] = scaled(roads_left as u32, FREE_ROAD_DEN);
+    }
 }
 
 /// The hidden block for `actor`: each opponent's hand and dev cards (VP cards and cards bought
@@ -297,7 +343,7 @@ pub fn encode_hidden_from(
             out[at + res] = scaled(hands[p][res] as u32, CARD_DEN);
         }
         for k in 0..5 {
-            out[at + 5 + k] = scaled(dev_cards[p][k] as u32, DEV_DEN);
+            out[at + 5 + k] = scaled(dev_cards[p][k] as u32, DEV_KIND_DEN[k]);
         }
     }
 }

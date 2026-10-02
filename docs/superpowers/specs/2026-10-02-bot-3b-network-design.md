@@ -60,16 +60,18 @@ alphasettler/
 **Seat-relative view.** Before encoding, players are rotated so the actor is seat 0 and the others
 follow in turn order. The value head's output is rotated back to absolute seats.
 
-**Public features** (from `world.observation(actor)` only), about 1,600 floats:
+**Public features** (from `world.observation(actor)` only), 1,557 floats:
 
 | Block | Per item |
 |---|---|
 | 54 nodes | building owner and kind, seat-relative (8: settlement or city × 4 seats); port kind (6); pips of adjacent tiles per resource (5) |
 | 72 edges | road owner, seat-relative (4) |
 | 19 tiles | resource or desert (6); pips (1); robber here (1) |
-| Scalars | own hand (5); own dev cards, old and new (10); per seat: hand count, dev card count, new dev card count, dev cards played by kind (5), knights played, public VP, discards owed; longest road and largest army owner (5 each: a seat or none); bank (5); dev deck remaining; phase (one-hot); turn / turn cap; dev card played this turn |
+| Scalars | own hand (5); own dev cards, old and new (10); per seat: hand count, dev card count, new dev card count, dev cards played by kind (5, knights included), public VP, discards owed; longest road and largest army owner (5 each: a seat or none); bank (5); dev deck remaining; phase (one-hot); turn / turn cap; dev card played this turn; current player, seat-relative (4: differs from the actor in Discard); return phase (2: PreRoll or Main); free roads left in Road Building (1) |
 
-Counts are scaled to roughly [0, 1] by fixed constants in the encoder.
+Counts are scaled to roughly [0, 1] by fixed constants in the encoder: each is divided by the
+engine's maximum (a resource's 19 cards, the 25-card dev deck, each dev kind's count in the deck),
+or by a realistic maximum where the hard one is far out (hand total / 20, discards owed / 10).
 
 **Hidden block** (from the world, value head only): each opponent's hand (5) and dev cards by
 kind (5), seat-relative, 30 floats.
@@ -89,7 +91,8 @@ public features → 512 → 512 → 512   shared trunk, ReLU
 - `OfferTrade` ids are always masked; 3b never trades.
 
 **Weights file.** Little-endian. Header: magic `ASNET\0\0\0`, format version (u32),
-`ENCODING_HASH` (u64, a hash of the encoder's layout constants and version), layer count and each
+`ENCODING_HASH` (u64, a hash of the encoder's layout constants, a canonical description of its
+block and slot order, and its version), layer count and each
 layer's shape. Then f32 weights and biases in layer order. Loading fails with a clear error on a
 wrong magic, version, hash or shape, or on a short file.
 

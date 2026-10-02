@@ -8,11 +8,13 @@ use settler_net::encode::*;
 /// Pips by number token, written out (the encoder computes them).
 const PIPS: [u32; 13] = [0, 0, 1, 2, 3, 4, 5, 0, 5, 4, 3, 2, 1];
 
-/// A hand-built position with every scalar block non-trivial. Player 2 is to act.
+/// A hand-built position with every scalar block non-trivial. Player 2 is to act, placing the
+/// second free road of a Road Building card played before rolling.
 fn golden_state() -> State {
     let mut s = State::new(42, GameConfig::default());
     s.setup_step = 8;
-    s.phase = Phase::Main;
+    s.phase = Phase::RoadBuilding { roads_left: 1 };
+    s.return_phase = Phase::PreRoll;
     s.current = 2;
     s.turn = 37;
     s.robber = 7;
@@ -28,7 +30,7 @@ fn golden_state() -> State {
     p2.dev_hand = [2, 1, 0, 0, 0];
     p2.dev_new = [1, 0, 0, 0, 0];
     p2.knights_played = 1;
-    p2.dev_played = [1, 0, 0, 0, 0];
+    p2.dev_played = [1, 0, 1, 0, 0];
     let p3 = &mut s.players[3];
     p3.settlements = 1;
     p3.roads = 1;
@@ -43,7 +45,7 @@ fn golden_state() -> State {
 
 #[test]
 fn the_layout_adds_up() {
-    assert_eq!(PUBLIC_LEN, 1554);
+    assert_eq!(PUBLIC_LEN, 1557);
     assert_eq!(HIDDEN_LEN, 30);
     assert_eq!(
         (
@@ -56,7 +58,11 @@ fn the_layout_adds_up() {
             PHASE,
             TURN
         ),
-        (1026, 1314, 1466, 1481, 1525, 1535, 1541, 1552)
+        (1026, 1314, 1466, 1481, 1521, 1531, 1537, 1548)
+    );
+    assert_eq!(
+        (DEV_PLAYED, CURRENT, RETURN_PHASE, FREE_ROADS),
+        (1549, 1550, 1554, 1556)
     );
     assert_eq!(ENCODING_HASH, layout_hash(&LAYOUT, LAYOUT_DESCRIPTION));
 }
@@ -139,14 +145,19 @@ fn the_description_matches_the_constants() {
     let want_scales = [
         ("card", CARD_DEN),
         ("hand", HAND_DEN),
-        ("dev", DEV_DEN),
-        ("knight", KNIGHT_DEN),
+        ("dev_total", DEV_TOTAL_DEN),
+        ("dev_knight", DEV_KIND_DEN[0]),
+        ("dev_victory_point", DEV_KIND_DEN[1]),
+        ("dev_road_building", DEV_KIND_DEN[2]),
+        ("dev_year_of_plenty", DEV_KIND_DEN[3]),
+        ("dev_monopoly", DEV_KIND_DEN[4]),
         ("vp", VP_DEN),
         ("discard", DISCARD_DEN),
         ("bank", BANK_DEN),
         ("deck", DECK_DEN),
         ("pip", PIP_DEN),
         ("node_pip", NODE_PIP_DEN),
+        ("free_roads", FREE_ROAD_DEN),
     ];
     assert_eq!(scales, want_scales);
 
@@ -166,6 +177,9 @@ fn the_description_matches_the_constants() {
         ("public", "phase", 1, NUM_PHASES, PHASE),
         ("public", "turn", 1, 1, TURN),
         ("public", "dev_played", 1, 1, DEV_PLAYED),
+        ("public", "current", 1, NUM_PLAYERS, CURRENT),
+        ("public", "return_phase", 1, 2, RETURN_PHASE),
+        ("public", "free_roads", 1, 1, FREE_ROADS),
         ("hidden", "opponent", NUM_PLAYERS - 1, HIDDEN_WIDTH, 0),
     ];
     let mut got = Vec::new();
@@ -231,8 +245,10 @@ fn the_golden_position_encodes_exactly() {
         want[NODE_BASE + x as usize * NODE_WIDTH + slot] = 1.0;
         want[NODE_BASE + y as usize * NODE_WIDTH + slot] = 1.0;
     }
-    want[TILE_BASE + 7 * TILE_WIDTH + 7] = 1.0; // robber on tile 7
-                                                // Buildings and roads, seat-relative to player 2.
+    // The robber on tile 7.
+    want[TILE_BASE + 7 * TILE_WIDTH + 7] = 1.0;
+
+    // Buildings and roads, seat-relative to player 2.
     want[NODE_BASE + 10 * NODE_WIDTH] = 1.0; // player 2 (rel 0) settlement
     want[NODE_BASE + 20 * NODE_WIDTH + 4] = 1.0; // player 2 (rel 0) city
     want[NODE_BASE + 1] = 1.0; // node 0: player 3 (rel 1) settlement
@@ -240,28 +256,29 @@ fn the_golden_position_encodes_exactly() {
     want[EDGE_BASE + 3 * EDGE_WIDTH] = 1.0;
     want[EDGE_BASE + 4 * EDGE_WIDTH] = 1.0;
     want[EDGE_BASE + 1] = 1.0; // edge 0: player 3 (rel 1)
-                               // Scalars.
-    want[OWN_HAND..OWN_HAND + 5].copy_from_slice(&[1.0 / 10.0, 0.0, 2.0 / 10.0, 0.0, 3.0 / 10.0]);
-    want[OWN_DEV_OLD..OWN_DEV_OLD + 5].copy_from_slice(&[1.0 / 5.0, 1.0 / 5.0, 0.0, 0.0, 0.0]);
-    want[OWN_DEV_NEW] = 1.0 / 5.0;
+
+    // Scalars. Dev cards of one kind are divided by that kind's deck count (14, 5, 2, 2, 2).
+    want[OWN_HAND..OWN_HAND + 5].copy_from_slice(&[1.0 / 19.0, 0.0, 2.0 / 19.0, 0.0, 3.0 / 19.0]);
+    want[OWN_DEV_OLD..OWN_DEV_OLD + 5].copy_from_slice(&[1.0 / 14.0, 1.0 / 5.0, 0.0, 0.0, 0.0]);
+    want[OWN_DEV_NEW] = 1.0 / 14.0;
     let seat = |r: usize| SEATS + r * SEAT_WIDTH;
+    // Player 2 (rel 0): 6 cards, 3 dev cards (1 new), played a knight and a road building, 3 VP.
     want[seat(0)..seat(0) + SEAT_WIDTH].copy_from_slice(&[
         6.0 / 20.0,
-        3.0 / 5.0,
-        1.0 / 5.0,
-        1.0 / 5.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
+        3.0 / 25.0,
+        1.0 / 25.0,
         1.0 / 14.0,
+        0.0,
+        1.0 / 2.0,
+        0.0,
+        0.0,
         3.0 / 10.0,
         0.0,
     ]);
+    // Player 3 (rel 1): 4 cards, 1 dev card, 3 VP (settlement + longest road), owes 2.
     want[seat(1)..seat(1) + SEAT_WIDTH].copy_from_slice(&[
         4.0 / 20.0,
-        1.0 / 5.0,
-        0.0,
+        1.0 / 25.0,
         0.0,
         0.0,
         0.0,
@@ -271,9 +288,11 @@ fn the_golden_position_encodes_exactly() {
         3.0 / 10.0,
         2.0 / 10.0,
     ]);
+    // Player 0 (rel 2): 1 card, a city.
     want[seat(2)] = 1.0 / 20.0;
-    want[seat(2) + 9] = 2.0 / 10.0;
-    want[seat(3) + 3 + 4] = 1.0 / 5.0; // player 1 played a monopoly
+    want[seat(2) + 8] = 2.0 / 10.0;
+    // Player 1 (rel 3) played a monopoly.
+    want[seat(3) + 3 + 4] = 1.0 / 2.0;
     want[LONGEST_ROAD + 1] = 1.0;
     want[LARGEST_ARMY + 4] = 1.0; // nobody
     want[BANK..BANK + 5].copy_from_slice(&[
@@ -284,19 +303,27 @@ fn the_golden_position_encodes_exactly() {
         11.0 / 19.0,
     ]);
     want[DECK] = 16.0 / 25.0;
-    want[PHASE + 6] = 1.0; // Main
+    want[PHASE + 7] = 1.0; // RoadBuilding
     want[TURN] = 37.0 / 1000.0;
     want[DEV_PLAYED] = 1.0;
+    want[CURRENT] = 1.0; // player 2 is the viewer
+    want[RETURN_PHASE] = 1.0; // PreRoll
+    want[FREE_ROADS] = 1.0 / 2.0;
     for i in 0..PUBLIC_LEN {
         assert_eq!(got[i], want[i], "feature {i}");
     }
 
+    // Seen by player 0, the current player is relative seat 2.
+    let mut seen_by_0 = vec![f32::NAN; PUBLIC_LEN];
+    encode_public(&s.observation(0), &mut seen_by_0);
+    assert_eq!(seen_by_0[CURRENT..CURRENT + 4], [0.0, 0.0, 1.0, 0.0]);
+
     let mut hidden = vec![f32::NAN; HIDDEN_LEN];
     encode_hidden(&s, 2, &mut hidden);
     let mut want_hidden = vec![0.0f32; HIDDEN_LEN];
-    want_hidden[1] = 4.0 / 10.0; // rel 1 = player 3: 4 brick
-    want_hidden[5 + 2] = 1.0 / 5.0; // and a road building card
-    want_hidden[HIDDEN_WIDTH + 3] = 1.0 / 10.0; // rel 2 = player 0: 1 wheat
+    want_hidden[1] = 4.0 / 19.0; // rel 1 = player 3: 4 brick
+    want_hidden[5 + 2] = 1.0 / 2.0; // and a road building card
+    want_hidden[HIDDEN_WIDTH + 3] = 1.0 / 19.0; // rel 2 = player 0: 1 wheat
     assert_eq!(hidden, want_hidden);
 }
 
@@ -343,6 +370,8 @@ fn public(o: &Observation) -> Vec<f32> {
 #[test]
 fn rotating_every_seat_and_the_actor_together_gives_the_same_features() {
     let (mut checked, mut moved, mut trades) = (0, 0, 0);
+    // Positions where the actor is not the current player, and Road Building positions.
+    let (mut off_turn, mut road_building) = (0, 0);
     for s in random_positions(0..4, 7, GameConfig::default()) {
         let actor = s.current_actor();
         let obs = s.observation(actor);
@@ -352,6 +381,8 @@ fn rotating_every_seat_and_the_actor_together_gives_the_same_features() {
         let mut hidden = vec![0.0; HIDDEN_LEN];
         encode_hidden_from(&hands, &devs, actor, &mut hidden);
         trades += obs.trade.is_some() as u32;
+        off_turn += (obs.current != obs.viewer) as u32;
+        road_building += matches!(obs.phase, Phase::RoadBuilding { .. }) as u32;
         for k in 1..4 {
             let r = rotated(&obs, k);
             moved += (r.settlements != obs.settlements) as u32;
@@ -363,8 +394,8 @@ fn rotating_every_seat_and_the_actor_together_gives_the_same_features() {
         checked += 1;
     }
     assert!(
-        checked > 500 && moved > 0 && trades > 0,
-        "{checked} {moved} {trades}"
+        checked > 500 && moved > 0 && trades > 0 && off_turn > 0 && road_building > 0,
+        "{checked} {moved} {trades} {off_turn} {road_building}"
     );
 }
 
