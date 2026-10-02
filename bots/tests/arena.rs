@@ -1,7 +1,7 @@
 use settler_bots::arena::{bot_seed, play_game, run_match, GameRecord, MAX_SEEDS};
+use settler_bots::greedy::GreedyBot;
 use settler_bots::{make_bot, Bot};
 use settler_engine::{Action, GameConfig, Observation};
-use settler_bots::greedy::GreedyBot;
 use settler_engine::{Event, Game, PlayerId};
 use std::sync::{Arc, Mutex};
 
@@ -154,7 +154,10 @@ impl Bot for Recorder {
     }
 
     fn observe(&mut self, viewer: PlayerId, events: &[Event]) {
-        assert!(self.viewer.map_or(true, |v| v == viewer), "a seat's viewer never changes");
+        assert!(
+            self.viewer.map_or(true, |v| v == viewer),
+            "a seat's viewer never changes"
+        );
         self.viewer = Some(viewer);
         self.seen.lock().unwrap().extend_from_slice(events);
     }
@@ -170,7 +173,8 @@ impl Bot for Recorder {
 fn each_bot_is_shown_its_own_redacted_log_before_it_moves() {
     for seed in 0..5 {
         let moves = Arc::new(Mutex::new(Vec::new()));
-        let seen: Vec<Arc<Mutex<Vec<Event>>>> = (0..4).map(|_| Arc::new(Mutex::new(Vec::new()))).collect();
+        let seen: Vec<Arc<Mutex<Vec<Event>>>> =
+            (0..4).map(|_| Arc::new(Mutex::new(Vec::new()))).collect();
         let mut bots: Vec<Box<dyn Bot>> = (0..4)
             .map(|p| {
                 Box::new(Recorder {
@@ -194,8 +198,16 @@ fn each_bot_is_shown_its_own_redacted_log_before_it_moves() {
         assert!(g.state().is_over());
         for p in 0..4 {
             let shown = seen[p].lock().unwrap();
-            assert_eq!(shown.len(), at_last_move[p], "seat {p} saw every event up to its last move");
-            assert_eq!(&shown[..], &g.log_for(p as u8)[..shown.len()], "seat {p} saw its redacted log");
+            assert_eq!(
+                shown.len(),
+                at_last_move[p],
+                "seat {p} saw every event up to its last move"
+            );
+            assert_eq!(
+                &shown[..],
+                &g.log_for(p as u8)[..shown.len()],
+                "seat {p} saw its redacted log"
+            );
         }
     }
 }

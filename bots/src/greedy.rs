@@ -229,9 +229,9 @@ pub fn choose(obs: &Observation, legal: &[Action]) -> Action {
         }),
         Phase::MoveRobber => robber_choice(obs, legal),
         Phase::Steal => best_by(legal, |a| match a {
-            Action::StealFrom(p) => Some(
-                obs.public_vp[p as usize] as u32 * 100 + obs.hand_counts[p as usize] as u32,
-            ),
+            Action::StealFrom(p) => {
+                Some(obs.public_vp[p as usize] as u32 * 100 + obs.hand_counts[p as usize] as u32)
+            }
             _ => None,
         }),
         Phase::Main => main_choice(obs, legal),

@@ -208,15 +208,24 @@ impl PyBot {
     /// Show the bot new events as `viewer` saw them (dicts shaped like `Game.log` entries).
     fn observe(&self, viewer: &Bound<'_, PyAny>, events: &Bound<'_, PyList>) -> PyResult<()> {
         let viewer = viewer_arg(viewer)?;
-        let events = events.iter().map(|e| parse_event(&e)).collect::<PyResult<Vec<_>>>()?;
-        let mut bot = self.inner.lock().map_err(|_| value_error("bot state is poisoned"))?;
+        let events = events
+            .iter()
+            .map(|e| parse_event(&e))
+            .collect::<PyResult<Vec<_>>>()?;
+        let mut bot = self
+            .inner
+            .lock()
+            .map_err(|_| value_error("bot state is poisoned"))?;
         bot.observe(viewer, &events);
         Ok(())
     }
 
     /// The bot's named counters (e.g. `belief_resets` for ismcts); empty for bots without any.
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let bot = self.inner.lock().map_err(|_| value_error("bot state is poisoned"))?;
+        let bot = self
+            .inner
+            .lock()
+            .map_err(|_| value_error("bot state is poisoned"))?;
         let d = PyDict::new(py);
         for (k, v) in bot.diagnostics() {
             d.set_item(k, v)?;
@@ -321,20 +330,30 @@ fn selfplay<'py>(
         )));
     }
     if rollout > MAX_ROLLOUT {
-        return Err(value_error(format!("rollout must be 0..={MAX_ROLLOUT}, got {rollout}")));
+        return Err(value_error(format!(
+            "rollout must be 0..={MAX_ROLLOUT}, got {rollout}"
+        )));
     }
     let end = seed_start
         .checked_add(games)
         .ok_or_else(|| value_error("seed_start + games exceeds the u64 seed range"))?;
     let config = parse_config(config)?;
     let played = py
-        .detach(|| settler_bots::selfplay::run(seed_start..end, config, simulations, rollout, threads))
+        .detach(|| {
+            settler_bots::selfplay::run(seed_start..end, config, simulations, rollout, threads)
+        })
         .map_err(value_error)?;
     let out = PyList::empty(py);
     for g in played {
         let d = PyDict::new(py);
         d.set_item("seed", g.seed)?;
-        d.set_item("actions", g.actions.iter().map(|a| a.encode() as u32).collect::<Vec<_>>())?;
+        d.set_item(
+            "actions",
+            g.actions
+                .iter()
+                .map(|a| a.encode() as u32)
+                .collect::<Vec<_>>(),
+        )?;
         d.set_item("winner", g.winner)?;
         d.set_item("vp", counts(&g.vp))?;
         d.set_item("turns", g.turns)?;
@@ -347,10 +366,19 @@ fn selfplay<'py>(
                 let e = PyDict::new(py);
                 e.set_item("index", dec.index)?;
                 e.set_item("actor", dec.actor)?;
-                e.set_item("legal", dec.legal.iter().map(|a| a.encode() as u32).collect::<Vec<_>>())?;
+                e.set_item(
+                    "legal",
+                    dec.legal
+                        .iter()
+                        .map(|a| a.encode() as u32)
+                        .collect::<Vec<_>>(),
+                )?;
                 e.set_item("visits", dec.visits.clone())?;
                 e.set_item("full_search", dec.full_search)?;
-                e.set_item("observation", observation_dict(py, &s.observation(dec.actor))?)?;
+                e.set_item(
+                    "observation",
+                    observation_dict(py, &s.observation(dec.actor))?,
+                )?;
                 decisions.append(e)?;
             }
             s.apply(a);
@@ -373,18 +401,25 @@ fn fit_heuristic<'py>(
     iterations: Option<&Bound<'py, PyAny>>,
     l2: f64,
 ) -> PyResult<Bound<'py, PyDict>> {
-    use settler_bots::heuristic::{fit, log_likelihood, samples_from_games, ReplayGame, DEFAULT_WEIGHTS};
+    use settler_bots::heuristic::{
+        fit, log_likelihood, samples_from_games, ReplayGame, DEFAULT_WEIGHTS,
+    };
     let iterations: u32 = match iterations {
         Some(n) => int_arg(n, "iterations")?,
         None => 25,
     };
     if !(l2.is_finite() && l2 >= 0.0) {
-        return Err(value_error(format!("l2 must be finite and non-negative, got {l2}")));
+        return Err(value_error(format!(
+            "l2 must be finite and non-negative, got {l2}"
+        )));
     }
     let mut replay = Vec::new();
     for g in games.iter() {
         let g = g.cast::<PyDict>()?;
-        let get = |k: &str| g.get_item(k)?.ok_or_else(|| value_error(format!("game record is missing {k:?}")));
+        let get = |k: &str| {
+            g.get_item(k)?
+                .ok_or_else(|| value_error(format!("game record is missing {k:?}")))
+        };
         let config_obj = get("config")?;
         let config = parse_config(Some(config_obj.cast::<PyDict>()?))?;
         let actions = get("actions")?
@@ -395,16 +430,29 @@ fn fit_heuristic<'py>(
         let at = get("decisions")?
             .extract::<Vec<Bound<'_, PyDict>>>()?
             .iter()
-            .map(|d| d.get_item("index")?.ok_or_else(|| value_error("decision is missing \"index\""))?.extract::<u32>())
+            .map(|d| {
+                d.get_item("index")?
+                    .ok_or_else(|| value_error("decision is missing \"index\""))?
+                    .extract::<u32>()
+            })
             .collect::<PyResult<Vec<_>>>()?;
         let winner = get("winner")?.extract::<Option<u8>>()?;
-        replay.push(ReplayGame { seed: int_arg(&get("seed")?, "seed")?, config, actions, winner, at });
+        replay.push(ReplayGame {
+            seed: int_arg(&get("seed")?, "seed")?,
+            config,
+            actions,
+            winner,
+            at,
+        });
     }
     let (samples, weights) = py
         .detach(|| {
             let samples = samples_from_games(&replay)?;
             if samples.is_empty() {
-                return Err("no samples to fit: the records hold no decided game with a recorded decision".to_owned());
+                return Err(
+                    "no samples to fit: the records hold no decided game with a recorded decision"
+                        .to_owned(),
+                );
             }
             let weights = fit(&samples, DEFAULT_WEIGHTS, iterations, l2);
             Ok::<_, String>((samples, weights))
@@ -413,7 +461,10 @@ fn fit_heuristic<'py>(
     let d = PyDict::new(py);
     d.set_item("weights", weights.to_vec())?;
     d.set_item("samples", samples.len())?;
-    d.set_item("log_likelihood_before", log_likelihood(&samples, &DEFAULT_WEIGHTS))?;
+    d.set_item(
+        "log_likelihood_before",
+        log_likelihood(&samples, &DEFAULT_WEIGHTS),
+    )?;
     d.set_item("log_likelihood_after", log_likelihood(&samples, &weights))?;
     Ok(d)
 }
@@ -429,7 +480,10 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(selfplay, m)?)?;
     m.add_function(wrap_pyfunction!(fit_heuristic, m)?)?;
     m.add("MAX_SEEDS", settler_bots::arena::MAX_SEEDS)?;
-    m.add("SELFPLAY_MIN_SIMULATIONS", settler_bots::selfplay::MIN_SIMULATIONS)?;
+    m.add(
+        "SELFPLAY_MIN_SIMULATIONS",
+        settler_bots::selfplay::MIN_SIMULATIONS,
+    )?;
     m.add("MAX_SIMULATIONS", settler_bots::ismcts::MAX_SIMULATIONS)?;
     m.add("MAX_ROLLOUT", settler_bots::ismcts::MAX_ROLLOUT)?;
     Ok(())

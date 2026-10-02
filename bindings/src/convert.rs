@@ -734,52 +734,104 @@ pub fn parse_event(v: &Bound<'_, PyAny>) -> PyResult<Event> {
     const E: &str = "event";
     let d = v.cast::<PyDict>()?;
     let get = |k: &str| item(d, k, E);
-    let player = |k: &str| -> PyResult<PlayerId> { Ok(index_arg(&get(k)?, NUM_PLAYERS, k)? as PlayerId) };
+    let player =
+        |k: &str| -> PyResult<PlayerId> { Ok(index_arg(&get(k)?, NUM_PLAYERS, k)? as PlayerId) };
     let hand = |k: &str| -> PyResult<Hand> { small_array(&get(k)?, k) };
-    let resource = |k: &str| -> PyResult<Resource> { parse_resource(&get(k)?.extract::<String>()?) };
+    let resource =
+        |k: &str| -> PyResult<Resource> { parse_resource(&get(k)?.extract::<String>()?) };
     let kind: String = get("type")?.extract()?;
     Ok(match kind.as_str() {
-        "built_settlement" => Event::BuiltSettlement { player: player("player")?, node: index_arg(&get("node")?, NUM_NODES, "node")? as u8 },
-        "built_city" => Event::BuiltCity { player: player("player")?, node: index_arg(&get("node")?, NUM_NODES, "node")? as u8 },
-        "built_road" => Event::BuiltRoad { player: player("player")?, edge: index_arg(&get("edge")?, NUM_EDGES, "edge")? as u8 },
+        "built_settlement" => Event::BuiltSettlement {
+            player: player("player")?,
+            node: index_arg(&get("node")?, NUM_NODES, "node")? as u8,
+        },
+        "built_city" => Event::BuiltCity {
+            player: player("player")?,
+            node: index_arg(&get("node")?, NUM_NODES, "node")? as u8,
+        },
+        "built_road" => Event::BuiltRoad {
+            player: player("player")?,
+            edge: index_arg(&get("edge")?, NUM_EDGES, "edge")? as u8,
+        },
         "rolled" => {
             let dice = small_dice(&get("dice")?)?;
-            Event::Rolled { player: player("player")?, dice }
+            Event::Rolled {
+                player: player("player")?,
+                dice,
+            }
         }
-        "produced" => Event::Produced { player: player("player")?, resources: hand("resources")? },
-        "discarded" => Event::Discarded { player: player("player")?, resource: resource("resource")? },
-        "robber_moved" => Event::RobberMoved { player: player("player")?, tile: index_arg(&get("tile")?, NUM_TILES, "tile")? as u8 },
+        "produced" => Event::Produced {
+            player: player("player")?,
+            resources: hand("resources")?,
+        },
+        "discarded" => Event::Discarded {
+            player: player("player")?,
+            resource: resource("resource")?,
+        },
+        "robber_moved" => Event::RobberMoved {
+            player: player("player")?,
+            tile: index_arg(&get("tile")?, NUM_TILES, "tile")? as u8,
+        },
         "stole" => Event::Stole {
             thief: player("thief")?,
             victim: player("victim")?,
-            resource: opt(&get("resource")?, |r| parse_resource(&r.extract::<String>()?))?,
+            resource: opt(&get("resource")?, |r| {
+                parse_resource(&r.extract::<String>()?)
+            })?,
         },
         "bought_dev" => Event::BoughtDev {
             player: player("player")?,
             card: opt(&get("card")?, |c| parse_dev(&c.extract::<String>()?))?,
         },
-        "played_dev" => Event::PlayedDev { player: player("player")?, card: parse_dev(&get("card")?.extract::<String>()?)? },
+        "played_dev" => Event::PlayedDev {
+            player: player("player")?,
+            card: parse_dev(&get("card")?.extract::<String>()?)?,
+        },
         "monopoly_taken" => {
             let xs = seq_arg(&get("from")?, NUM_PLAYERS, "from")?;
             let mut from = [0u8; NUM_PLAYERS];
             for (f, x) in from.iter_mut().zip(&xs) {
                 *f = int_arg::<u8>(x, "from")?;
             }
-            Event::MonopolyTaken { player: player("player")?, resource: resource("resource")?, from }
+            Event::MonopolyTaken {
+                player: player("player")?,
+                resource: resource("resource")?,
+                from,
+            }
         }
-        "year_of_plenty_taken" => Event::YearOfPlentyTaken { player: player("player")?, resources: hand("resources")? },
-        "maritime_traded" => Event::MaritimeTraded { player: player("player")?, gave: hand("gave")?, got: hand("got")? },
-        "trade_offered" => Event::TradeOffered { player: player("player")?, give: hand("give")?, get: hand("get")? },
-        "trade_responded" => Event::TradeResponded { player: player("player")?, accepted: get("accepted")?.extract::<bool>()? },
+        "year_of_plenty_taken" => Event::YearOfPlentyTaken {
+            player: player("player")?,
+            resources: hand("resources")?,
+        },
+        "maritime_traded" => Event::MaritimeTraded {
+            player: player("player")?,
+            gave: hand("gave")?,
+            got: hand("got")?,
+        },
+        "trade_offered" => Event::TradeOffered {
+            player: player("player")?,
+            give: hand("give")?,
+            get: hand("get")?,
+        },
+        "trade_responded" => Event::TradeResponded {
+            player: player("player")?,
+            accepted: get("accepted")?.extract::<bool>()?,
+        },
         "trade_confirmed" => Event::TradeConfirmed {
             offerer: player("offerer")?,
             partner: player("partner")?,
             offerer_gave: hand("offerer_gave")?,
             partner_gave: hand("partner_gave")?,
         },
-        "trade_cancelled" => Event::TradeCancelled { player: player("player")? },
-        "turn_ended" => Event::TurnEnded { player: player("player")? },
-        "game_over" => Event::GameOver { winner: opt_player(&get("winner")?, "winner")? },
+        "trade_cancelled" => Event::TradeCancelled {
+            player: player("player")?,
+        },
+        "turn_ended" => Event::TurnEnded {
+            player: player("player")?,
+        },
+        "game_over" => Event::GameOver {
+            winner: opt_player(&get("winner")?, "winner")?,
+        },
         other => return Err(value_error(format!("unknown event type {other:?}"))),
     })
 }
@@ -788,7 +840,11 @@ fn small_dice(v: &Bound<'_, PyAny>) -> PyResult<(u8, u8)> {
     let xs = seq_arg(v, 2, "dice")?;
     let die = |x: &Bound<'_, PyAny>| -> PyResult<u8> {
         let d = int_arg::<u8>(x, "dice")?;
-        if (1..=6).contains(&d) { Ok(d) } else { Err(value_error(format!("a die shows 1-6, got {d}"))) }
+        if (1..=6).contains(&d) {
+            Ok(d)
+        } else {
+            Err(value_error(format!("a die shows 1-6, got {d}")))
+        }
     };
     Ok((die(&xs[0])?, die(&xs[1])?))
 }

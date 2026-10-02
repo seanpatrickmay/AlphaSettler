@@ -35,8 +35,9 @@ pub struct SelfPlayGame {
 }
 
 pub fn play(seed: u64, config: GameConfig, simulations: u32, rollout: u32) -> SelfPlayGame {
-    let mut bots: Vec<IsmctsBot> =
-        (0..NUM_PLAYERS).map(|p| IsmctsBot::new(bot_seed(seed, p), simulations, rollout)).collect();
+    let mut bots: Vec<IsmctsBot> = (0..NUM_PLAYERS)
+        .map(|p| IsmctsBot::new(bot_seed(seed, p), simulations, rollout))
+        .collect();
     let mut s = State::new(seed, config);
     let (mut feed, mut buf, mut step) = (EventFeed::default(), Vec::new(), Vec::new());
     let (mut actions, mut decisions) = (Vec::new(), Vec::new());
@@ -45,7 +46,11 @@ pub fn play(seed: u64, config: GameConfig, simulations: u32, rollout: u32) -> Se
         let actor = s.current_actor() as usize;
         feed.deliver(actor, &mut bots[actor]);
         let a = bots[actor].act(&s.observation(actor as PlayerId), &buf);
-        assert!(buf.contains(&a), "ismcts chose illegal action {a:?} in phase {:?}", s.phase);
+        assert!(
+            buf.contains(&a),
+            "ismcts chose illegal action {a:?} in phase {:?}",
+            s.phase
+        );
         if let Some(r) = bots[actor].take_last_search() {
             decisions.push(Decision {
                 index: actions.len() as u32,
@@ -60,14 +65,29 @@ pub fn play(seed: u64, config: GameConfig, simulations: u32, rollout: u32) -> Se
         s.apply_with(a, None, &mut step);
         feed.push(&step);
     }
-    SelfPlayGame { seed, actions, decisions, winner: s.winner(), vp: std::array::from_fn(|p| s.total_vp(p)), turns: s.turn }
+    SelfPlayGame {
+        seed,
+        actions,
+        decisions,
+        winner: s.winner(),
+        vp: std::array::from_fn(|p| s.total_vp(p)),
+        turns: s.turn,
+    }
 }
 
 /// Every seed in `seeds`, spread over `threads`; sorted by seed and independent of `threads`.
-pub fn run(seeds: Range<u64>, config: GameConfig, simulations: u32, rollout: u32, threads: usize) -> Result<Vec<SelfPlayGame>, String> {
+pub fn run(
+    seeds: Range<u64>,
+    config: GameConfig,
+    simulations: u32,
+    rollout: u32,
+    threads: usize,
+) -> Result<Vec<SelfPlayGame>, String> {
     config.validate()?;
     if simulations < MIN_SIMULATIONS {
-        return Err(format!("self-play needs at least {MIN_SIMULATIONS} simulations per search, got {simulations}"));
+        return Err(format!(
+            "self-play needs at least {MIN_SIMULATIONS} simulations per search, got {simulations}"
+        ));
     }
     let n = seeds.end.saturating_sub(seeds.start);
     if n > MAX_SEEDS {
@@ -76,11 +96,19 @@ pub fn run(seeds: Range<u64>, config: GameConfig, simulations: u32, rollout: u32
     let mut games: Vec<SelfPlayGame> = std::thread::scope(|scope| {
         let workers: Vec<_> = split_seeds(seeds, threads)
             .into_iter()
-            .map(|part| scope.spawn(move || part.map(|seed| play(seed, config, simulations, rollout)).collect::<Vec<_>>()))
+            .map(|part| {
+                scope.spawn(move || {
+                    part.map(|seed| play(seed, config, simulations, rollout))
+                        .collect::<Vec<_>>()
+                })
+            })
             .collect();
         workers
             .into_iter()
-            .flat_map(|w| w.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+            .flat_map(|w| {
+                w.join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
             .collect()
     });
     games.sort_by_key(|g| g.seed);

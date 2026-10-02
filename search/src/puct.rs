@@ -10,13 +10,19 @@ pub const DEFAULT_FPU: f32 = 0.25;
 /// (virtual-loss) visits count as visits worth nothing.
 pub fn score(c: &Child, actor: usize, c_puct: f32, fpu: f32) -> f32 {
     let n = c.visits + c.pending;
-    let q = if n == 0 { fpu } else { c.value_sum[actor] / n as f32 };
+    let q = if n == 0 {
+        fpu
+    } else {
+        c.value_sum[actor] / n as f32
+    };
     q + c_puct * c.prior * (c.available.max(1) as f32).sqrt() / (1.0 + n as f32)
 }
 
 /// First-play urgency: the mean value for `actor` over the node's visited children.
 pub fn fpu(children: &[Child], actor: usize) -> f32 {
-    let (sum, n) = children.iter().fold((0.0, 0u32), |(s, n), c| (s + c.value_sum[actor], n + c.visits));
+    let (sum, n) = children.iter().fold((0.0, 0u32), |(s, n), c| {
+        (s + c.value_sum[actor], n + c.visits)
+    });
     if n == 0 {
         DEFAULT_FPU
     } else {
@@ -26,7 +32,12 @@ pub fn fpu(children: &[Child], actor: usize) -> f32 {
 
 /// The best child for `actor` among those `allowed` (max^n: each player maximises their own
 /// value). Ties go to the lower index.
-pub fn select(children: &[Child], allowed: impl Fn(&Child) -> bool, actor: usize, c_puct: f32) -> Option<usize> {
+pub fn select(
+    children: &[Child],
+    allowed: impl Fn(&Child) -> bool,
+    actor: usize,
+    c_puct: f32,
+) -> Option<usize> {
     let f = fpu(children, actor);
     let mut best: Option<(usize, f32)> = None;
     for (i, c) in children.iter().enumerate() {
@@ -46,12 +57,20 @@ mod tests {
     use super::*;
 
     fn child(key: u16, visits: u32, available: u32, value_sum: [f32; 4]) -> Child {
-        Child { visits, available, value_sum, ..Child::new(key, 0.5) }
+        Child {
+            visits,
+            available,
+            value_sum,
+            ..Child::new(key, 0.5)
+        }
     }
 
     #[test]
     fn each_player_maximises_their_own_value() {
-        let kids = [child(0, 10, 10, [0.0, 0.0, 9.0, 0.0]), child(1, 10, 10, [9.0, 0.0, 0.0, 0.0])];
+        let kids = [
+            child(0, 10, 10, [0.0, 0.0, 9.0, 0.0]),
+            child(1, 10, 10, [9.0, 0.0, 0.0, 0.0]),
+        ];
         assert_eq!(select(&kids, |_| true, 2, 0.0), Some(0));
         assert_eq!(select(&kids, |_| true, 0, 0.0), Some(1));
     }

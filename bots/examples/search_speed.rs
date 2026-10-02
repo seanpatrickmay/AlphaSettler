@@ -47,14 +47,23 @@ impl Bot for Timed {
 }
 
 fn main() {
-    let args: Vec<u64> = std::env::args().skip(1).map(|a| a.parse().expect("a number")).collect();
+    let args: Vec<u64> = std::env::args()
+        .skip(1)
+        .map(|a| a.parse().expect("a number"))
+        .collect();
     let decisions = args.first().copied().unwrap_or(2000);
     let simulations = args.get(1).copied().unwrap_or(1000) as u32;
-    let config = GameConfig { max_offers_per_turn: 0, ..GameConfig::default() };
+    let config = GameConfig {
+        max_offers_per_turn: 0,
+        ..GameConfig::default()
+    };
     let totals = Arc::new(Mutex::new(Totals::default()));
     let mut seed = 0;
     while totals.lock().unwrap().decisions < decisions {
-        let mut bots: Vec<Box<dyn Bot>> = vec![Box::new(Timed { inner: IsmctsBot::new(seed, simulations, 0), totals: totals.clone() })];
+        let mut bots: Vec<Box<dyn Bot>> = vec![Box::new(Timed {
+            inner: IsmctsBot::new(seed, simulations, 0),
+            totals: totals.clone(),
+        })];
         bots.extend((1..4).map(|p| Box::new(GreedyBot::new(p)) as Box<dyn Bot>));
         play_game(seed, config, &mut bots);
         seed += 1;

@@ -39,7 +39,10 @@ impl HandTracker {
     /// Known `hands` at the position `obs` shows, with the free-build bookkeeping it implies.
     pub fn resume(hands: [Hand; NUM_PLAYERS], obs: &Observation) -> HandTracker {
         let placed = |count: &dyn Fn(usize) -> u32| {
-            (0..NUM_PLAYERS).map(count).sum::<u32>().min(SETUP_PIECES as u32) as u8
+            (0..NUM_PLAYERS)
+                .map(count)
+                .sum::<u32>()
+                .min(SETUP_PIECES as u32) as u8
         };
         let (free_roads, free_road_player) = match obs.phase {
             Phase::RoadBuilding { roads_left } => (roads_left, obs.current),
@@ -66,7 +69,8 @@ impl HandTracker {
         }
         let h = &mut self.hands;
         match *e {
-            Event::Produced { player, resources } | Event::YearOfPlentyTaken { player, resources } => {
+            Event::Produced { player, resources }
+            | Event::YearOfPlentyTaken { player, resources } => {
                 hand_add(&mut h[player as usize], &resources);
             }
             Event::Discarded { player, resource } => {
@@ -76,7 +80,11 @@ impl HandTracker {
                 }
                 *c -= 1;
             }
-            Event::Stole { thief, victim, resource } => {
+            Event::Stole {
+                thief,
+                victim,
+                resource,
+            } => {
                 let v = victim as usize;
                 let r = match resource {
                     Some(r) if h[v][r.index()] > 0 => r,
@@ -87,7 +95,11 @@ impl HandTracker {
                 h[v][r.index()] -= 1;
                 h[thief as usize][r.index()] += 1;
             }
-            Event::MonopolyTaken { player, resource, from } => {
+            Event::MonopolyTaken {
+                player,
+                resource,
+                from,
+            } => {
                 let (p, r) = (player as usize, resource.index());
                 if (0..NUM_PLAYERS).any(|q| q != p && h[q][r] != from[q]) {
                     return false;
@@ -107,7 +119,12 @@ impl HandTracker {
                 hand_sub(mine, &gave);
                 hand_add(mine, &got);
             }
-            Event::TradeConfirmed { offerer, partner, offerer_gave, partner_gave } => {
+            Event::TradeConfirmed {
+                offerer,
+                partner,
+                offerer_gave,
+                partner_gave,
+            } => {
                 let (o, q) = (offerer as usize, partner as usize);
                 if !covers(&h[o], &offerer_gave) || !covers(&h[q], &partner_gave) {
                     return false;
@@ -124,7 +141,10 @@ impl HandTracker {
                 }
                 self.pending_get = get;
             }
-            Event::TradeResponded { player, accepted: true } => {
+            Event::TradeResponded {
+                player,
+                accepted: true,
+            } => {
                 if !covers(&h[player as usize], &self.pending_get) {
                     return false;
                 }
@@ -161,7 +181,10 @@ impl HandTracker {
             }
             Event::BuiltCity { player, .. } => Some((player as usize, CITY_COST)),
             Event::BoughtDev { player, .. } => Some((player as usize, DEV_COST)),
-            Event::PlayedDev { player, card: DevCard::RoadBuilding } => {
+            Event::PlayedDev {
+                player,
+                card: DevCard::RoadBuilding,
+            } => {
                 self.free_roads = 2;
                 self.free_road_player = player;
                 None
@@ -181,7 +204,9 @@ const OBSERVATION_DEALS: usize = 1024;
 fn deal_hidden_hands(obs: &Observation, rng: &mut Rng) -> [Hand; NUM_PLAYERS] {
     let me = obs.viewer as usize;
     let mut pool: Hand = std::array::from_fn(|r| {
-        BANK_PER_RESOURCE.saturating_sub(obs.bank[r]).saturating_sub(obs.my_hand[r])
+        BANK_PER_RESOURCE
+            .saturating_sub(obs.bank[r])
+            .saturating_sub(obs.my_hand[r])
     });
     let mut hands = [[0u8; NUM_RESOURCES]; NUM_PLAYERS];
     hands[me] = obs.my_hand;
@@ -218,7 +243,13 @@ impl Belief {
     /// The belief at the start of a game: every hand empty, with certainty.
     pub fn new(viewer: PlayerId, max_states: usize, seed: u64) -> Belief {
         assert!(max_states > 0, "a belief needs room for at least one state");
-        Belief { viewer, max_states, states: vec![(HandTracker::new(), 1.0)], rng: Rng::new(seed), truncations: 0 }
+        Belief {
+            viewer,
+            max_states,
+            states: vec![(HandTracker::new(), 1.0)],
+            rng: Rng::new(seed),
+            truncations: 0,
+        }
     }
 
     /// A belief for a viewer who has not seen the history: the cards nobody can see are dealt
@@ -229,7 +260,13 @@ impl Belief {
         let draws = (0..OBSERVATION_DEALS.min(max_states))
             .map(|_| HandTracker::resume(deal_hidden_hands(obs, &mut rng), obs))
             .collect();
-        Belief { viewer: obs.viewer, max_states, states: merged(draws), rng, truncations: 0 }
+        Belief {
+            viewer: obs.viewer,
+            max_states,
+            states: merged(draws),
+            rng,
+            truncations: 0,
+        }
     }
 
     pub fn viewer(&self) -> PlayerId {
@@ -263,7 +300,12 @@ impl Belief {
     pub fn observe(&mut self, events: &[Event]) -> Result<(), String> {
         let mut unused = Rng::new(0); // `step` draws only for hidden steals, which branch here instead
         for e in events {
-            if let Event::Stole { thief, victim, resource: None } = *e {
+            if let Event::Stole {
+                thief,
+                victim,
+                resource: None,
+            } = *e
+            {
                 let mut next: BTreeMap<HandTracker, f64> = BTreeMap::new();
                 for &(t, w) in &self.states {
                     let v = t.hands[victim as usize];
@@ -274,7 +316,14 @@ impl Belief {
                             continue;
                         }
                         let mut u = t;
-                        if u.step(&Event::Stole { thief, victim, resource: Some(r) }, &mut unused) {
+                        if u.step(
+                            &Event::Stole {
+                                thief,
+                                victim,
+                                resource: Some(r),
+                            },
+                            &mut unused,
+                        ) {
                             *next.entry(u).or_insert(0.0) += w * k as f64 / total;
                         }
                     }
@@ -285,7 +334,10 @@ impl Belief {
                 self.states.retain_mut(|(t, _)| t.step(e, &mut unused));
             }
             if self.states.is_empty() {
-                return Err(format!("player {}'s belief: no hands are consistent with event {e:?}", self.viewer));
+                return Err(format!(
+                    "player {}'s belief: no hands are consistent with event {e:?}",
+                    self.viewer
+                ));
             }
             let z: f64 = self.states.iter().map(|s| s.1).sum();
             for s in &mut self.states {
@@ -320,7 +372,10 @@ impl Belief {
     /// Err if some state disagrees with `obs`: the viewer's own hand or anyone's card count.
     pub fn check(&self, obs: &Observation) -> Result<(), String> {
         if obs.viewer != self.viewer {
-            return Err(format!("belief of player {} checked against player {}'s view", self.viewer, obs.viewer));
+            return Err(format!(
+                "belief of player {} checked against player {}'s view",
+                self.viewer, obs.viewer
+            ));
         }
         for (t, _) in &self.states {
             if t.hands[self.viewer as usize] != obs.my_hand {

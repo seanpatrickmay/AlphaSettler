@@ -7,7 +7,10 @@ use settler_engine::rng::Rng;
 use settler_engine::*;
 
 fn no_trades() -> GameConfig {
-    GameConfig { max_offers_per_turn: 0, ..GameConfig::default() }
+    GameConfig {
+        max_offers_per_turn: 0,
+        ..GameConfig::default()
+    }
 }
 
 #[test]
@@ -17,8 +20,19 @@ fn names_parse_and_bad_ones_are_rejected() {
     assert_eq!(parse_name("ismcts@1"), Some((1, 0)));
     assert_eq!(parse_name("ismcts@1000000"), Some((1_000_000, 0)));
     assert_eq!(parse_name("ismcts@300+r8"), Some((300, 8)));
-    for bad in ["ismcts@0", "ismcts@", "ismcts@abc", "ismcts@+5", "ismcts@1000001", "ismcts@300+r0",
-                "ismcts@300+r201", "ismcts@300+r", "ismctsx", "ismcts@300/r8", "ismcts+r8"] {
+    for bad in [
+        "ismcts@0",
+        "ismcts@",
+        "ismcts@abc",
+        "ismcts@+5",
+        "ismcts@1000001",
+        "ismcts@300+r0",
+        "ismcts@300+r201",
+        "ismcts@300+r",
+        "ismctsx",
+        "ismcts@300/r8",
+        "ismcts+r8",
+    ] {
         assert_eq!(parse_name(bad), None, "{bad}");
         assert!(make_bot(bad, 0).is_none(), "{bad}");
     }
@@ -28,8 +42,9 @@ fn names_parse_and_bad_ones_are_rejected() {
 #[test]
 fn plays_whole_games_without_belief_resets() {
     for seed in 0..2u64 {
-        let mut bots: Vec<Box<dyn Bot>> =
-            (0..4u64).map(|p| Box::new(IsmctsBot::new(seed * 4 + p, 20, 0)) as Box<dyn Bot>).collect();
+        let mut bots: Vec<Box<dyn Bot>> = (0..4u64)
+            .map(|p| Box::new(IsmctsBot::new(seed * 4 + p, 20, 0)) as Box<dyn Bot>)
+            .collect();
         let (_, _, turns, _) = play_game(seed, no_trades(), &mut bots);
         assert!(turns > 0);
         for b in &bots {
@@ -50,8 +65,15 @@ fn arena_results_do_not_depend_on_thread_count() {
 #[test]
 fn beats_random() {
     let records = run_match("ismcts@100", "random", 0..10, no_trades(), 10).unwrap();
-    let wins = records.iter().filter(|r| r.winner == Some(r.candidate_seat)).count();
-    assert!(wins as f64 / records.len() as f64 > 0.8, "{wins}/{}", records.len());
+    let wins = records
+        .iter()
+        .filter(|r| r.winner == Some(r.candidate_seat))
+        .count();
+    assert!(
+        wins as f64 / records.len() as f64 > 0.8,
+        "{wins}/{}",
+        records.len()
+    );
 }
 
 #[test]
@@ -66,12 +88,18 @@ fn answers_offers_without_searching() {
         let mut bot = IsmctsBot::new(0, 50, 0);
         if s.phase == Phase::TradeResponse {
             assert_eq!(bot.act(&s.observation(actor), &legal), Action::RejectTrade);
-            assert!(bot.take_last_search().is_none(), "answered an offer by searching");
+            assert!(
+                bot.take_last_search().is_none(),
+                "answered an offer by searching"
+            );
             rejected = true;
         }
         if s.phase == Phase::TradeConfirm {
             assert_eq!(bot.act(&s.observation(actor), &legal), Action::CancelTrade);
-            assert!(bot.take_last_search().is_none(), "answered an offer by searching");
+            assert!(
+                bot.take_last_search().is_none(),
+                "answered an offer by searching"
+            );
             cancelled = true;
         }
         let pick = if s.phase == Phase::TradeResponse && legal.contains(&Action::AcceptTrade) {
@@ -81,7 +109,10 @@ fn answers_offers_without_searching() {
         };
         g.apply(pick).unwrap();
     }
-    assert!(rejected && cancelled, "random play with trades reaches both trade phases");
+    assert!(
+        rejected && cancelled,
+        "random play with trades reaches both trade phases"
+    );
 }
 
 fn resets(bot: &IsmctsBot) -> u64 {
@@ -100,18 +131,31 @@ fn advance(g: &mut Game, rng: &mut Rng, min_turn: u32, searched: bool) {
         settler_search::search_actions(&legal, &mut moves);
         let ready = s.turn >= min_turn
             && s.current_actor() == 0
-            && !matches!(s.phase, Phase::SetupSettlement | Phase::SetupRoad { .. } | Phase::TradeResponse | Phase::TradeConfirm);
+            && !matches!(
+                s.phase,
+                Phase::SetupSettlement
+                    | Phase::SetupRoad { .. }
+                    | Phase::TradeResponse
+                    | Phase::TradeConfirm
+            );
         if ready && (moves.len() > 1) == searched {
             return;
         }
-        g.apply(legal[rng.below(legal.len() as u32) as usize]).unwrap();
+        g.apply(legal[rng.below(legal.len() as u32) as usize])
+            .unwrap();
     }
 }
 
 /// Events no history can explain: player 0 discards one more wood than they hold.
 fn contradiction(obs: &Observation) -> Vec<Event> {
     let wood = obs.my_hand[Resource::Wood.index()] as usize;
-    vec![Event::Discarded { player: 0, resource: Resource::Wood }; wood + 1]
+    vec![
+        Event::Discarded {
+            player: 0,
+            resource: Resource::Wood
+        };
+        wood + 1
+    ]
 }
 
 /// Act for player 0 at `g`'s current decision, check the move is legal and apply it.
@@ -134,10 +178,18 @@ fn a_contradictory_history_is_counted_and_recovered_from() {
         if inject {
             bot.observe(0, &contradiction(&g.observation(0)));
         }
-        assert_eq!(resets(&bot), expected, "inject {inject}: counted at the error");
+        assert_eq!(
+            resets(&bot),
+            expected,
+            "inject {inject}: counted at the error"
+        );
         act_and_apply(&mut bot, &mut g);
         assert!(bot.take_last_search().is_some());
-        assert_eq!(resets(&bot), expected, "inject {inject}: the rebuild is not counted again");
+        assert_eq!(
+            resets(&bot),
+            expected,
+            "inject {inject}: the rebuild is not counted again"
+        );
         // The rebuilt belief keeps tracking the true history.
         for _ in 0..3 {
             advance(&mut g, &mut rng, 0, true);
@@ -162,7 +214,10 @@ fn a_contradiction_before_an_unsearched_move_is_counted_once() {
     bot.observe(0, &contradiction(&g.observation(0)));
     assert_eq!(resets(&bot), 1);
     act_and_apply(&mut bot, &mut g);
-    assert!(bot.take_last_search().is_none(), "a single move is not searched");
+    assert!(
+        bot.take_last_search().is_none(),
+        "a single move is not searched"
+    );
     assert_eq!(resets(&bot), 1);
     // Events while the belief is dropped are skipped, then the next search rebuilds uncounted.
     for _ in 0..3 {
@@ -240,7 +295,10 @@ fn builds_an_affordable_city_rather_than_ending_the_turn() {
     for seed in 0..4 {
         let s = main_with(seed, CITY_COST, no_trades());
         let mut bot = IsmctsBot::new(seed, 1000, 0);
-        assert!(matches!(decide(&mut bot, &s), Action::BuildCity(_)), "seed {seed}");
+        assert!(
+            matches!(decide(&mut bot, &s), Action::BuildCity(_)),
+            "seed {seed}"
+        );
     }
 }
 
@@ -250,7 +308,11 @@ fn never_robs_its_own_buildings_when_an_opponent_tile_is_free() {
     for seed in 0..4 {
         let mut s = main_with(seed, [0; 5], no_trades());
         let mut snap = s.snapshot();
-        let i = snap.dev_deck.iter().position(|&c| c == DevCard::Knight).unwrap();
+        let i = snap
+            .dev_deck
+            .iter()
+            .position(|&c| c == DevCard::Knight)
+            .unwrap();
         snap.dev_deck.remove(i);
         snap.players[0].dev_hand[DevCard::Knight.index()] = 1;
         s = State::from_snapshot(seed, no_trades(), &snap).unwrap();
@@ -261,7 +323,9 @@ fn never_robs_its_own_buildings_when_an_opponent_tile_is_free() {
         let touches = |t: u8, m: u64| topo().tile_node_mask[t as usize] & m != 0;
         assert!((0..19).any(|t| t != s.robber && touches(t, theirs) && !touches(t, mine)));
         let mut bot = IsmctsBot::new(seed, 1000, 0);
-        let Action::MoveRobber(t) = decide(&mut bot, &s) else { panic!("not a robber move") };
+        let Action::MoveRobber(t) = decide(&mut bot, &s) else {
+            panic!("not a robber move")
+        };
         assert!(!touches(t, mine), "seed {seed}: robbed own tile {t}");
     }
 }

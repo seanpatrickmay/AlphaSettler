@@ -8,18 +8,27 @@ use std::collections::HashMap;
 
 #[test]
 fn the_full_log_reproduces_every_hand() {
-    let configs = (0..40).map(|s| (s, no_trades())).chain((40..48).map(|s| (s, GameConfig::default())));
+    let configs = (0..40)
+        .map(|s| (s, no_trades()))
+        .chain((40..48).map(|s| (s, GameConfig::default())));
     for (seed, config) in configs {
         let mut t = HandTracker::new();
         let mut rng = Rng::new(0);
         let mut seen = 0;
         random_game(seed, config, |g| {
             for e in &g.log()[seen..] {
-                assert!(t.step(e, &mut rng), "seed {seed}: {e:?} rejected on the true history");
+                assert!(
+                    t.step(e, &mut rng),
+                    "seed {seed}: {e:?} rejected on the true history"
+                );
             }
             seen = g.log().len();
             for p in 0..NUM_PLAYERS {
-                assert_eq!(t.hands[p], g.state().players[p].hand, "seed {seed} player {p}");
+                assert_eq!(
+                    t.hands[p],
+                    g.state().players[p].hand,
+                    "seed {seed} player {p}"
+                );
             }
         });
     }
@@ -29,7 +38,9 @@ fn the_full_log_reproduces_every_hand() {
 fn every_state_matches_the_visible_counts_and_the_truth_stays_possible() {
     let mut largest = 0;
     for seed in 0..12 {
-        let mut beliefs: Vec<Belief> = (0..4).map(|p| Belief::new(p, DEFAULT_MAX_STATES, seed)).collect();
+        let mut beliefs: Vec<Belief> = (0..4)
+            .map(|p| Belief::new(p, DEFAULT_MAX_STATES, seed))
+            .collect();
         let mut seen = [0usize; 4];
         random_game(seed, no_trades(), |g| {
             let true_hands: [Hand; 4] = std::array::from_fn(|q| g.state().players[q].hand);
@@ -61,7 +72,12 @@ fn exact(log: &[Event]) -> HashMap<[Hand; 4], f64> {
     for e in log {
         let mut next = Vec::new();
         for (t, w) in states {
-            if let Event::Stole { thief, victim, resource: None } = *e {
+            if let Event::Stole {
+                thief,
+                victim,
+                resource: None,
+            } = *e
+            {
                 let v = t.hands[victim as usize];
                 let total = hand_total(&v) as f64;
                 for r in Resource::ALL {
@@ -69,7 +85,14 @@ fn exact(log: &[Event]) -> HashMap<[Hand; 4], f64> {
                         continue;
                     }
                     let mut u = t;
-                    if u.step(&Event::Stole { thief, victim, resource: Some(r) }, &mut rng) {
+                    if u.step(
+                        &Event::Stole {
+                            thief,
+                            victim,
+                            resource: Some(r),
+                        },
+                        &mut rng,
+                    ) {
                         next.push((u, w * v[r.index()] as f64 / total));
                     }
                 }
@@ -96,8 +119,14 @@ fn assert_matches_exact(log: &[Event], seed: u64) {
     b.observe(log).unwrap();
     assert_eq!(b.states().len(), truth.len(), "seed {seed}: support size");
     for (t, w) in b.states() {
-        let p = truth.get(&t.hands).unwrap_or_else(|| panic!("seed {seed}: {:?} is ruled out", t.hands));
-        assert!((w - p).abs() < 1e-9, "seed {seed}: {:?} exact {p} tracked {w}", t.hands);
+        let p = truth
+            .get(&t.hands)
+            .unwrap_or_else(|| panic!("seed {seed}: {:?} is ruled out", t.hands));
+        assert!(
+            (w - p).abs() < 1e-9,
+            "seed {seed}: {:?} exact {p} tracked {w}",
+            t.hands
+        );
     }
 }
 
@@ -105,11 +134,28 @@ fn assert_matches_exact(log: &[Event], seed: u64) {
 fn hand_built_histories_match_the_exact_posterior() {
     let mut log = setup_events();
     log.extend([
-        Event::Produced { player: 1, resources: [1, 0, 0, 0, 2] },
-        Event::Produced { player: 3, resources: [0, 2, 0, 1, 0] },
-        Event::Stole { thief: 2, victim: 1, resource: None },
-        Event::Stole { thief: 2, victim: 3, resource: None },
-        Event::Discarded { player: 2, resource: Resource::Ore },
+        Event::Produced {
+            player: 1,
+            resources: [1, 0, 0, 0, 2],
+        },
+        Event::Produced {
+            player: 3,
+            resources: [0, 2, 0, 1, 0],
+        },
+        Event::Stole {
+            thief: 2,
+            victim: 1,
+            resource: None,
+        },
+        Event::Stole {
+            thief: 2,
+            victim: 3,
+            resource: None,
+        },
+        Event::Discarded {
+            player: 2,
+            resource: Resource::Ore,
+        },
     ]);
     assert_matches_exact(&log, 1);
 }
@@ -130,7 +176,10 @@ fn random_history(seed: u64) -> Vec<Event> {
             0 => {
                 let mut h = [0u8; 5];
                 h[rng.below(5) as usize] += 1 + rng.below(2) as u8;
-                Event::Produced { player: p, resources: h }
+                Event::Produced {
+                    player: p,
+                    resources: h,
+                }
             }
             1 if hidden < 4 => {
                 let q = 1 + (p as u32 + rng.below(2)) % 3;
@@ -140,21 +189,40 @@ fn random_history(seed: u64) -> Vec<Event> {
                 hidden += 1;
                 let r = settler_engine::rules::roll::pick_card(&truth.hands[q as usize], &mut rng);
                 let mut t = truth;
-                assert!(t.step(&Event::Stole { thief: p, victim: q as u8, resource: Some(r) }, &mut rng));
+                assert!(t.step(
+                    &Event::Stole {
+                        thief: p,
+                        victim: q as u8,
+                        resource: Some(r)
+                    },
+                    &mut rng
+                ));
                 truth = t;
-                log.push(Event::Stole { thief: p, victim: q as u8, resource: None });
+                log.push(Event::Stole {
+                    thief: p,
+                    victim: q as u8,
+                    resource: None,
+                });
                 continue;
             }
             2 => {
                 let h = truth.hands[p as usize];
-                let Some(r) = Resource::ALL.into_iter().find(|r| h[r.index()] > 0) else { continue };
-                Event::Discarded { player: p, resource: r }
+                let Some(r) = Resource::ALL.into_iter().find(|r| h[r.index()] > 0) else {
+                    continue;
+                };
+                Event::Discarded {
+                    player: p,
+                    resource: r,
+                }
             }
             _ => {
                 if !covers(&truth.hands[p as usize], &ROAD_COST) {
                     continue;
                 }
-                Event::BuiltRoad { player: p, edge: 40 }
+                Event::BuiltRoad {
+                    player: p,
+                    edge: 40,
+                }
             }
         };
         assert!(truth.step(&e, &mut rng));
@@ -177,7 +245,10 @@ fn a_tight_cap_resamples_but_stays_inside_the_exact_support() {
     let truth = exact(&log);
     let mut b = Belief::new(0, 4, 9);
     b.observe(&log).unwrap();
-    assert!(b.truncations() > 0, "history 6 has more than 4 possible joint hands");
+    assert!(
+        b.truncations() > 0,
+        "history 6 has more than 4 possible joint hands"
+    );
     assert!(b.states().len() <= 4);
     assert!((b.states().iter().map(|s| s.1).sum::<f64>() - 1.0).abs() < 1e-9);
     assert!(b.states().iter().all(|(t, _)| truth.contains_key(&t.hands)));
@@ -187,8 +258,14 @@ fn a_tight_cap_resamples_but_stays_inside_the_exact_support() {
 fn an_impossible_history_is_an_error() {
     let mut log = setup_events();
     log.extend([
-        Event::Produced { player: 1, resources: [1, 0, 0, 0, 0] },
-        Event::Discarded { player: 1, resource: Resource::Ore },
+        Event::Produced {
+            player: 1,
+            resources: [1, 0, 0, 0, 0],
+        },
+        Event::Discarded {
+            player: 1,
+            resource: Resource::Ore,
+        },
     ]);
     assert!(Belief::new(0, DEFAULT_MAX_STATES, 0).observe(&log).is_err());
 }
@@ -218,41 +295,92 @@ fn a_belief_from_an_observation_deals_the_unseen_cards() {
 fn road_building_roads_are_free() {
     let mut log = setup_events();
     log.extend([
-        Event::PlayedDev { player: 1, card: DevCard::RoadBuilding },
-        Event::BuiltRoad { player: 1, edge: 50 },
-        Event::BuiltRoad { player: 1, edge: 51 },
+        Event::PlayedDev {
+            player: 1,
+            card: DevCard::RoadBuilding,
+        },
+        Event::BuiltRoad {
+            player: 1,
+            edge: 50,
+        },
+        Event::BuiltRoad {
+            player: 1,
+            edge: 51,
+        },
     ]);
     let mut t = HandTracker::new();
     let mut rng = Rng::new(0);
-    assert!(log.iter().all(|e| t.step(e, &mut rng)), "two free roads after Road Building");
-    assert!(!t.step(&Event::BuiltRoad { player: 1, edge: 52 }, &mut rng), "a third road is paid");
+    assert!(
+        log.iter().all(|e| t.step(e, &mut rng)),
+        "two free roads after Road Building"
+    );
+    assert!(
+        !t.step(
+            &Event::BuiltRoad {
+                player: 1,
+                edge: 52
+            },
+            &mut rng
+        ),
+        "a third road is paid"
+    );
 }
 
 #[test]
 fn sampling_hands_follows_the_weights() {
     let mut log = setup_events();
     log.extend([
-        Event::Produced { player: 1, resources: [3, 1, 0, 0, 0] },
-        Event::Stole { thief: 2, victim: 1, resource: None },
+        Event::Produced {
+            player: 1,
+            resources: [3, 1, 0, 0, 0],
+        },
+        Event::Stole {
+            thief: 2,
+            victim: 1,
+            resource: None,
+        },
     ]);
     let mut b = Belief::new(0, DEFAULT_MAX_STATES, 0);
     b.observe(&log).unwrap();
     assert_eq!(b.states().len(), 2);
     let mut rng = Rng::new(4);
     let n = 20_000;
-    let wood = (0..n).filter(|_| b.sample_hands(&mut rng)[2][0] == 1).count();
+    let wood = (0..n)
+        .filter(|_| b.sample_hands(&mut rng)[2][0] == 1)
+        .count();
     assert!((wood as f64 / n as f64 - 0.75).abs() < 0.015);
 }
 
 #[test]
 fn an_intervening_event_closes_the_road_building_window() {
     let mut log = setup_events();
-    log.extend([Event::PlayedDev { player: 1, card: DevCard::RoadBuilding }, Event::BuiltRoad { player: 1, edge: 50 }]);
+    log.extend([
+        Event::PlayedDev {
+            player: 1,
+            card: DevCard::RoadBuilding,
+        },
+        Event::BuiltRoad {
+            player: 1,
+            edge: 50,
+        },
+    ]);
     let mut t = HandTracker::new();
     let mut rng = Rng::new(0);
-    assert!(log.iter().all(|e| t.step(e, &mut rng)), "one free road after Road Building");
+    assert!(
+        log.iter().all(|e| t.step(e, &mut rng)),
+        "one free road after Road Building"
+    );
     assert!(t.step(&Event::TurnEnded { player: 1 }, &mut rng));
-    assert!(!t.step(&Event::BuiltRoad { player: 1, edge: 51 }, &mut rng), "the window closed, so the road is paid");
+    assert!(
+        !t.step(
+            &Event::BuiltRoad {
+                player: 1,
+                edge: 51
+            },
+            &mut rng
+        ),
+        "the window closed, so the road is paid"
+    );
 }
 
 /// Player 1 holds one of resource 0 and one of resource 4; player 2 steals one unseen, so player 2
@@ -260,8 +388,15 @@ fn an_intervening_event_closes_the_road_building_window() {
 fn two_possible_thefts() -> Vec<Event> {
     let mut log = setup_events();
     log.extend([
-        Event::Produced { player: 1, resources: [1, 0, 0, 0, 1] },
-        Event::Stole { thief: 2, victim: 1, resource: None },
+        Event::Produced {
+            player: 1,
+            resources: [1, 0, 0, 0, 1],
+        },
+        Event::Stole {
+            thief: 2,
+            victim: 1,
+            resource: None,
+        },
     ]);
     log
 }
@@ -273,7 +408,11 @@ fn an_offer_of_a_card_only_one_state_holds_prunes_the_others() {
     b.observe(&log).unwrap();
     assert_eq!(b.states().len(), 2);
     log.extend([
-        Event::TradeOffered { player: 2, give: [1, 0, 0, 0, 0], get: [0, 1, 0, 0, 0] },
+        Event::TradeOffered {
+            player: 2,
+            give: [1, 0, 0, 0, 0],
+            get: [0, 1, 0, 0, 0],
+        },
         Event::TradeCancelled { player: 2 },
     ]);
     let mut b = Belief::new(0, DEFAULT_MAX_STATES, 0);
@@ -289,16 +428,32 @@ fn an_offer_of_a_card_only_one_state_holds_prunes_the_others() {
 fn an_accept_requires_holding_what_the_offerer_wants() {
     // Player 3 offers resource 1 for resource 0; players 0 and 1 reject; player 2 accepts.
     let offer = [
-        Event::Produced { player: 3, resources: [0, 1, 0, 0, 0] },
-        Event::TradeOffered { player: 3, give: [0, 1, 0, 0, 0], get: [1, 0, 0, 0, 0] },
-        Event::TradeResponded { player: 0, accepted: false },
-        Event::TradeResponded { player: 1, accepted: false },
+        Event::Produced {
+            player: 3,
+            resources: [0, 1, 0, 0, 0],
+        },
+        Event::TradeOffered {
+            player: 3,
+            give: [0, 1, 0, 0, 0],
+            get: [1, 0, 0, 0, 0],
+        },
+        Event::TradeResponded {
+            player: 0,
+            accepted: false,
+        },
+        Event::TradeResponded {
+            player: 1,
+            accepted: false,
+        },
     ];
 
     // A rejection by player 2 says nothing about their hand: both states stay.
     let mut log = two_possible_thefts();
     log.extend(offer);
-    log.push(Event::TradeResponded { player: 2, accepted: false });
+    log.push(Event::TradeResponded {
+        player: 2,
+        accepted: false,
+    });
     log.push(Event::TradeCancelled { player: 3 });
     let mut b = Belief::new(0, DEFAULT_MAX_STATES, 0);
     b.observe(&log).unwrap();
@@ -307,7 +462,10 @@ fn an_accept_requires_holding_what_the_offerer_wants() {
     // An acceptance proves player 2 holds resource 0, and the confirmed trade then moves cards.
     let mut log = two_possible_thefts();
     log.extend(offer);
-    log.push(Event::TradeResponded { player: 2, accepted: true });
+    log.push(Event::TradeResponded {
+        player: 2,
+        accepted: true,
+    });
     let mut b = Belief::new(0, DEFAULT_MAX_STATES, 0);
     b.observe(&log).unwrap();
     assert_eq!(b.states().len(), 1);
@@ -330,21 +488,41 @@ fn different_parents_that_reach_the_same_child_are_merged() {
     // (2/3 * 1/2) and ore,wood (1/3 * 1) -- the last two end in the same joint hand.
     let mut log = setup_events();
     log.extend([
-        Event::Produced { player: 1, resources: [2, 1, 0, 0, 0] },
-        Event::Stole { thief: 2, victim: 1, resource: None },
-        Event::Stole { thief: 2, victim: 1, resource: None },
+        Event::Produced {
+            player: 1,
+            resources: [2, 1, 0, 0, 0],
+        },
+        Event::Stole {
+            thief: 2,
+            victim: 1,
+            resource: None,
+        },
+        Event::Stole {
+            thief: 2,
+            victim: 1,
+            resource: None,
+        },
     ]);
     let truth = exact(&log);
     let mut b = Belief::new(0, DEFAULT_MAX_STATES, 0);
     b.observe(&log).unwrap();
     let branches = 3;
-    assert!(b.states().len() < branches, "merged support {} < {branches} branches", b.states().len());
+    assert!(
+        b.states().len() < branches,
+        "merged support {} < {branches} branches",
+        b.states().len()
+    );
     assert_eq!(b.states().len(), 2);
     assert_eq!(b.states().len(), truth.len());
     for (t, w) in b.states() {
         let p = truth[&t.hands];
         assert!((w - p).abs() < 1e-9, "{:?} exact {p} tracked {w}", t.hands);
     }
-    let merged = b.states().iter().find(|(t, _)| t.hands[2] == [1, 1, 0, 0, 0]).expect("the merged state").1;
+    let merged = b
+        .states()
+        .iter()
+        .find(|(t, _)| t.hands[2] == [1, 1, 0, 0, 0])
+        .expect("the merged state")
+        .1;
     assert!((merged - 2.0 / 3.0).abs() < 1e-9);
 }

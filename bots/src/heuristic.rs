@@ -8,8 +8,16 @@ use settler_engine::{Action, Observation, State};
 use settler_search::{search_actions, terminal_value, Eval, Evaluator, Leaf};
 
 pub const NUM_FEATURES: usize = 8;
-pub const FEATURE_NAMES: [&str; NUM_FEATURES] =
-    ["vp", "production", "hand", "over_limit", "dev_cards", "road_length", "knights", "settlement_spots"];
+pub const FEATURE_NAMES: [&str; NUM_FEATURES] = [
+    "vp",
+    "production",
+    "hand",
+    "over_limit",
+    "dev_cards",
+    "road_length",
+    "knights",
+    "settlement_spots",
+];
 /// Weights of the per-player strength score. Hand-set until `alphasettler fit-heuristic` refits
 /// them (docs/bot/results-3a.md records each fit).
 pub const DEFAULT_WEIGHTS: [f32; NUM_FEATURES] = [1.0, 0.08, 0.05, -0.1, 0.3, 0.05, 0.1, 0.2];
@@ -37,7 +45,9 @@ fn settlement_spots(s: &State, p: usize) -> u32 {
         reach |= (1u64 << a) | (1u64 << b);
     }
     bits64(reach)
-        .filter(|&n| occupied & (1u64 << n) == 0 && occupied & t.node_neighbor_mask[n as usize] == 0)
+        .filter(|&n| {
+            occupied & (1u64 << n) == 0 && occupied & t.node_neighbor_mask[n as usize] == 0
+        })
         .count() as u32
 }
 
@@ -51,7 +61,9 @@ pub fn features(s: &State, p: usize) -> [f32; NUM_FEATURES] {
         if tile as u8 == s.robber {
             continue;
         }
-        let Some(r) = s.board.tile_resource[tile] else { continue };
+        let Some(r) = s.board.tile_resource[tile] else {
+            continue;
+        };
         let mask = t.tile_node_mask[tile];
         let weight = (pl.settlements & mask).count_ones() + 2 * (pl.cities & mask).count_ones();
         production += (weight * pips(s.board.tile_number[tile])) as f32 * scarce[r.index()];
@@ -123,7 +135,12 @@ pub struct HeuristicEvaluator {
 
 impl HeuristicEvaluator {
     pub fn new(weights: [f32; NUM_FEATURES], rollout: u32) -> HeuristicEvaluator {
-        HeuristicEvaluator { weights, rollout, buf: Vec::new(), moves: Vec::new() }
+        HeuristicEvaluator {
+            weights,
+            rollout,
+            buf: Vec::new(),
+            moves: Vec::new(),
+        }
     }
 
     fn leaf_value(&mut self, world: &State) -> [f32; NUM_PLAYERS] {
@@ -188,16 +205,27 @@ pub fn samples_from_games(games: &[ReplayGame]) -> Result<Vec<Sample>, String> {
         let mut at = g.at.iter().peekable();
         for (i, &a) in g.actions.iter().enumerate() {
             if at.next_if(|&&k| k as usize == i).is_some() {
-                out.push(Sample { features: std::array::from_fn(|p| features(&s, p)), winner: winner as usize });
+                out.push(Sample {
+                    features: std::array::from_fn(|p| features(&s, p)),
+                    winner: winner as usize,
+                });
             }
             legal_actions(&s, &mut buf);
             if !buf.contains(&a) {
-                return Err(format!("game {}: move {i} ({a:?}) is illegal on replay", g.seed));
+                return Err(format!(
+                    "game {}: move {i} ({a:?}) is illegal on replay",
+                    g.seed
+                ));
             }
             s.apply(a);
         }
         if s.winner() != g.winner {
-            return Err(format!("game {}: the replay ends with winner {:?}, the record says {:?}", g.seed, s.winner(), g.winner));
+            return Err(format!(
+                "game {}: the replay ends with winner {:?}, the record says {:?}",
+                g.seed,
+                s.winner(),
+                g.winner
+            ));
         }
     }
     Ok(out)
@@ -215,7 +243,10 @@ fn probabilities(z: [f64; NUM_PLAYERS]) -> [f64; NUM_PLAYERS] {
 }
 
 fn mean_ll(samples: &[Sample], w: &[f64; NUM_FEATURES]) -> f64 {
-    let total: f64 = samples.iter().map(|s| probabilities(scores(w, &s.features))[s.winner].ln()).sum();
+    let total: f64 = samples
+        .iter()
+        .map(|s| probabilities(scores(w, &s.features))[s.winner].ln())
+        .sum();
     total / samples.len().max(1) as f64
 }
 
@@ -225,7 +256,10 @@ pub fn log_likelihood(samples: &[Sample], weights: &[f32; NUM_FEATURES]) -> f64 
 }
 
 /// Solve `a x = b` by Gaussian elimination with partial pivoting; None if singular.
-fn solve(mut a: [[f64; NUM_FEATURES]; NUM_FEATURES], mut b: [f64; NUM_FEATURES]) -> Option<[f64; NUM_FEATURES]> {
+fn solve(
+    mut a: [[f64; NUM_FEATURES]; NUM_FEATURES],
+    mut b: [f64; NUM_FEATURES],
+) -> Option<[f64; NUM_FEATURES]> {
     let n = NUM_FEATURES;
     for col in 0..n {
         let pivot = (col..n).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
@@ -252,9 +286,15 @@ fn solve(mut a: [[f64; NUM_FEATURES]; NUM_FEATURES], mut b: [f64; NUM_FEATURES])
 
 /// Maximum-likelihood weights of the conditional logit P(winner) = softmax(w · features),
 /// maximising mean log-likelihood minus `l2`·|w|², by Newton's method with step halving.
-pub fn fit(samples: &[Sample], start: [f32; NUM_FEATURES], iterations: u32, l2: f64) -> [f32; NUM_FEATURES] {
+pub fn fit(
+    samples: &[Sample],
+    start: [f32; NUM_FEATURES],
+    iterations: u32,
+    l2: f64,
+) -> [f32; NUM_FEATURES] {
     let n = samples.len().max(1) as f64;
-    let objective = |w: &[f64; NUM_FEATURES]| mean_ll(samples, w) - l2 * w.iter().map(|x| x * x).sum::<f64>();
+    let objective =
+        |w: &[f64; NUM_FEATURES]| mean_ll(samples, w) - l2 * w.iter().map(|x| x * x).sum::<f64>();
     let mut w = start.map(|x| x as f64);
     for _ in 0..iterations {
         let mut g = [0.0f64; NUM_FEATURES];

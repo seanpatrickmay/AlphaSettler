@@ -22,7 +22,11 @@ pub struct SearchConfig {
 
 impl Default for SearchConfig {
     fn default() -> Self {
-        SearchConfig { simulations: 1000, c_puct: 1.5, batch: 8 }
+        SearchConfig {
+            simulations: 1000,
+            c_puct: 1.5,
+            batch: 8,
+        }
     }
 }
 
@@ -39,7 +43,12 @@ pub struct SearchResult {
 /// The actions the search considers: everything legal except domestic offers (3a never trades).
 pub fn search_actions(legal: &[Action], out: &mut Vec<Action>) {
     out.clear();
-    out.extend(legal.iter().copied().filter(|a| !matches!(a, Action::OfferTrade { .. })));
+    out.extend(
+        legal
+            .iter()
+            .copied()
+            .filter(|a| !matches!(a, Action::OfferTrade { .. })),
+    );
 }
 
 /// A finished game's value: 1 for the winner, ¼ each when the turn cap ended it.
@@ -70,7 +79,14 @@ fn apply_visible(s: &mut State, a: Action, rng: &mut Rng) -> u16 {
     match a {
         Action::Roll => {
             let dice = (1 + rng.below(6) as u8, 1 + rng.below(6) as u8);
-            s.apply_with(a, Some(Chance::Roll { dice, discards: None }), &mut NoEvents);
+            s.apply_with(
+                a,
+                Some(Chance::Roll {
+                    dice,
+                    discards: None,
+                }),
+                &mut NoEvents,
+            );
             (dice.0 + dice.1) as u16
         }
         Action::StealFrom(v) => {
@@ -122,7 +138,10 @@ struct Pending {
 // A Descent is moved straight into the batch, so boxing the large variant would only add an allocation.
 #[allow(clippy::large_enum_variant)]
 enum Descent {
-    Terminal { path: Path, value: [f32; NUM_PLAYERS] },
+    Terminal {
+        path: Path,
+        value: [f32; NUM_PLAYERS],
+    },
     Leaf(Pending),
     /// Reached a node another simulation in this batch is already evaluating.
     Busy,
@@ -141,7 +160,10 @@ fn descend(
     let mut path = Path::new();
     loop {
         if world.is_over() {
-            return Descent::Terminal { value: terminal_value(&world), path };
+            return Descent::Terminal {
+                value: terminal_value(&world),
+                path,
+            };
         }
         if let NodeKind::Chance { action } = tree.nodes[node as usize].kind {
             let key = apply_visible(&mut world, action, rng);
@@ -158,7 +180,12 @@ fn descend(
                 return Descent::Busy;
             }
             n.awaiting_eval = true;
-            return Descent::Leaf(Pending { path, node, world, legal: legal.clone() });
+            return Descent::Leaf(Pending {
+                path,
+                node,
+                world,
+                legal: legal.clone(),
+            });
         }
         let allowed = ActionSet::of(legal);
         let mut unseen = allowed;
@@ -172,7 +199,10 @@ fn descend(
         let uniform = 1.0 / legal.len() as f32;
         for a in legal.iter() {
             if unseen.contains(a.encode()) {
-                n.children.push(Child { available: 1, ..Child::new(a.encode(), uniform) });
+                n.children.push(Child {
+                    available: 1,
+                    ..Child::new(a.encode(), uniform)
+                });
             }
         }
         let actor = world.current_actor() as usize;
@@ -211,11 +241,19 @@ fn backup(tree: &mut Tree, path: &[(u32, usize)], value: &[f32; NUM_PLAYERS]) {
 }
 
 fn expand(tree: &mut Tree, node: u32, legal: &[Action], prior: &[f32]) {
-    assert_eq!(prior.len(), legal.len(), "the evaluator's prior must align with the legal actions");
+    assert_eq!(
+        prior.len(),
+        legal.len(),
+        "the evaluator's prior must align with the legal actions"
+    );
     let n = &mut tree.nodes[node as usize];
     n.expanded = true;
     n.awaiting_eval = false;
-    n.children.extend(legal.iter().zip(prior).map(|(a, &p)| Child { available: 1, ..Child::new(a.encode(), p) }));
+    n.children
+        .extend(legal.iter().zip(prior).map(|(a, &p)| Child {
+            available: 1,
+            ..Child::new(a.encode(), p)
+        }));
 }
 
 /// Search `obs.viewer`'s decision among `legal` (see `search`), also returning the tree.
@@ -227,13 +265,21 @@ pub fn search_tree<E: Evaluator>(
     cfg: &SearchConfig,
     rng: &mut Rng,
 ) -> Result<(SearchResult, Tree), String> {
-    assert!(cfg.simulations > 0 && cfg.batch > 0, "simulations and batch must be positive");
+    assert!(
+        cfg.simulations > 0 && cfg.batch > 0,
+        "simulations and batch must be positive"
+    );
     let mut root_actions = Vec::new();
     search_actions(legal, &mut root_actions);
     match root_actions.len() {
         0 => return Err("nothing to search: no legal action".into()),
         1 => {
-            let r = SearchResult { action: root_actions[0], visits: vec![0; legal.len()], simulations: 0, nodes: 0 };
+            let r = SearchResult {
+                action: root_actions[0],
+                visits: vec![0; legal.len()],
+                simulations: 0,
+                nodes: 0,
+            };
             return Ok((r, Tree::new()));
         }
         _ => {}
@@ -247,7 +293,15 @@ pub fn search_tree<E: Evaluator>(
         batch.clear();
         while batch.len() < cfg.batch && done + (batch.len() as u32) < cfg.simulations {
             let world = sampler.sample(belief, rng);
-            match descend(&mut tree, world, obs.viewer, cfg.c_puct, rng, &mut buf, &mut scratch) {
+            match descend(
+                &mut tree,
+                world,
+                obs.viewer,
+                cfg.c_puct,
+                rng,
+                &mut buf,
+                &mut scratch,
+            ) {
                 Descent::Terminal { path, value } => {
                     backup(&mut tree, &path, &value);
                     done += 1;
@@ -264,10 +318,18 @@ pub fn search_tree<E: Evaluator>(
         }
         let leaves: Vec<Leaf<'_>> = batch
             .iter()
-            .map(|p| Leaf { world: &p.world, actor: p.world.current_actor(), legal: &p.legal })
+            .map(|p| Leaf {
+                world: &p.world,
+                actor: p.world.current_actor(),
+                legal: &p.legal,
+            })
             .collect();
         let evals = eval.evaluate(&leaves);
-        assert_eq!(evals.len(), batch.len(), "the evaluator must return one evaluation per leaf");
+        assert_eq!(
+            evals.len(),
+            batch.len(),
+            "the evaluator must return one evaluation per leaf"
+        );
         for (p, e) in batch.iter().zip(&evals) {
             expand(&mut tree, p.node, &p.legal, &e.prior);
             set_pending(&mut tree, &p.path, false);
@@ -279,15 +341,33 @@ pub fn search_tree<E: Evaluator>(
     let best = root
         .children
         .iter()
-        .max_by(|a, b| a.visits.cmp(&b.visits).then(a.prior.total_cmp(&b.prior)).then(b.key.cmp(&a.key)))
+        .max_by(|a, b| {
+            a.visits
+                .cmp(&b.visits)
+                .then(a.prior.total_cmp(&b.prior))
+                .then(b.key.cmp(&a.key))
+        })
         .expect("the first simulation expands the root");
     let action = Action::decode(best.key).expect("children are keyed by valid action ids");
     let visits = legal
         .iter()
-        .map(|a| root.children.iter().find(|c| c.key == a.encode()).map_or(0, |c| c.visits))
+        .map(|a| {
+            root.children
+                .iter()
+                .find(|c| c.key == a.encode())
+                .map_or(0, |c| c.visits)
+        })
         .collect();
     let nodes = tree.nodes.len();
-    Ok((SearchResult { action, visits, simulations: done, nodes }, tree))
+    Ok((
+        SearchResult {
+            action,
+            visits,
+            simulations: done,
+            nodes,
+        },
+        tree,
+    ))
 }
 
 /// The most-visited move for `obs.viewer` among `legal` after `cfg.simulations` simulations, each

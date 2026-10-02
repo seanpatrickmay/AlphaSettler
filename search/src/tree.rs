@@ -30,7 +30,15 @@ pub struct Child {
 
 impl Child {
     pub fn new(key: u16, prior: f32) -> Child {
-        Child { key, node: UNEXPANDED, prior, visits: 0, available: 0, pending: 0, value_sum: [0.0; NUM_PLAYERS] }
+        Child {
+            key,
+            node: UNEXPANDED,
+            prior,
+            visits: 0,
+            available: 0,
+            pending: 0,
+            value_sum: [0.0; NUM_PLAYERS],
+        }
     }
 }
 

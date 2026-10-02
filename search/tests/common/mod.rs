@@ -5,7 +5,10 @@ use settler_engine::rng::Rng;
 use settler_engine::*;
 
 pub fn no_trades() -> GameConfig {
-    GameConfig { max_offers_per_turn: 0, ..GameConfig::default() }
+    GameConfig {
+        max_offers_per_turn: 0,
+        ..GameConfig::default()
+    }
 }
 
 /// Plays uniformly random legal moves from game `seed`, calling `f(&game)` after every move.
@@ -14,7 +17,8 @@ pub fn random_game(seed: u64, config: GameConfig, mut f: impl FnMut(&Game)) {
     let mut rng = Rng::new(seed ^ 0x5EED);
     while !g.state().is_over() {
         let legal = g.legal_actions();
-        g.apply(legal[rng.below(legal.len() as u32) as usize]).unwrap();
+        g.apply(legal[rng.below(legal.len() as u32) as usize])
+            .unwrap();
         f(&g);
     }
 }
@@ -41,7 +45,11 @@ pub fn edit(s: &State, config: GameConfig, f: impl FnOnce(&mut Snapshot)) -> Sta
 /// Move `n` cards of `card` from the deck into player `p`'s hand (bought on an earlier turn).
 pub fn give_dev(snap: &mut Snapshot, p: usize, card: DevCard, n: u8) {
     for _ in 0..n {
-        let i = snap.dev_deck.iter().position(|&c| c == card).expect("the card is left in the deck");
+        let i = snap
+            .dev_deck
+            .iter()
+            .position(|&c| c == card)
+            .expect("the card is left in the deck");
         snap.dev_deck.remove(i);
         snap.players[p].dev_hand[card.index()] += 1;
     }
@@ -59,8 +67,14 @@ pub fn give_cards(snap: &mut Snapshot, p: usize, cards: Hand) {
 pub fn setup_events() -> Vec<Event> {
     let mut out = Vec::new();
     for (i, &p) in settler_engine::state::SETUP_ORDER.iter().enumerate() {
-        out.push(Event::BuiltSettlement { player: p, node: i as u8 });
-        out.push(Event::BuiltRoad { player: p, edge: i as u8 });
+        out.push(Event::BuiltSettlement {
+            player: p,
+            node: i as u8,
+        });
+        out.push(Event::BuiltRoad {
+            player: p,
+            edge: i as u8,
+        });
     }
     out
 }

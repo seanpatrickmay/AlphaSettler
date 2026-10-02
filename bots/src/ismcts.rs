@@ -6,7 +6,9 @@ use crate::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
 use crate::Bot;
 use settler_engine::rng::{mix, Rng};
 use settler_engine::{Action, Event, Observation, Phase, PlayerId};
-use settler_search::{search, search_actions, Belief, SearchConfig, SearchResult, DEFAULT_MAX_STATES};
+use settler_search::{
+    search, search_actions, Belief, SearchConfig, SearchResult, DEFAULT_MAX_STATES,
+};
 
 pub const DEFAULT_SIMULATIONS: u32 = 1000;
 pub const MAX_SIMULATIONS: u32 = 1_000_000;
@@ -65,7 +67,10 @@ impl IsmctsBot {
         IsmctsBot {
             seed,
             rng: Rng::new(seed),
-            cfg: SearchConfig { simulations, ..SearchConfig::default() },
+            cfg: SearchConfig {
+                simulations,
+                ..SearchConfig::default()
+            },
             eval: HeuristicEvaluator::new(DEFAULT_WEIGHTS, rollout),
             tracked: Tracked::Unseen,
             last: None,
@@ -100,9 +105,15 @@ impl Bot for IsmctsBot {
         match &self.tracked {
             Tracked::Live(b) if b.viewer() == viewer => {}
             Tracked::Dropped(v) if *v == viewer => return,
-            _ => self.set_tracked(Tracked::Live(Belief::new(viewer, DEFAULT_MAX_STATES, mix(self.seed, BELIEF_SALT)))),
+            _ => self.set_tracked(Tracked::Live(Belief::new(
+                viewer,
+                DEFAULT_MAX_STATES,
+                mix(self.seed, BELIEF_SALT),
+            ))),
         }
-        let Tracked::Live(b) = &mut self.tracked else { unreachable!("live after the match above") };
+        let Tracked::Live(b) = &mut self.tracked else {
+            unreachable!("live after the match above")
+        };
         if b.observe(events).is_err() {
             self.resets += 1;
             self.set_tracked(Tracked::Dropped(viewer));
@@ -112,8 +123,12 @@ impl Bot for IsmctsBot {
     fn act(&mut self, obs: &Observation, legal: &[Action]) -> Action {
         self.last = None;
         match obs.phase {
-            Phase::TradeResponse if legal.contains(&Action::RejectTrade) => return Action::RejectTrade,
-            Phase::TradeConfirm if legal.contains(&Action::CancelTrade) => return Action::CancelTrade,
+            Phase::TradeResponse if legal.contains(&Action::RejectTrade) => {
+                return Action::RejectTrade
+            }
+            Phase::TradeConfirm if legal.contains(&Action::CancelTrade) => {
+                return Action::CancelTrade
+            }
             _ => {}
         }
         search_actions(legal, &mut self.buf);
@@ -132,7 +147,9 @@ impl Bot for IsmctsBot {
             let b = Belief::from_observation(obs, DEFAULT_MAX_STATES, self.rng.next_u64());
             self.set_tracked(Tracked::Live(b));
         }
-        let Tracked::Live(belief) = &self.tracked else { unreachable!("live after the rebuild above") };
+        let Tracked::Live(belief) = &self.tracked else {
+            unreachable!("live after the rebuild above")
+        };
         match search(obs, legal, belief, &mut self.eval, &self.cfg, &mut self.rng) {
             Ok(r) => {
                 self.searches += 1;

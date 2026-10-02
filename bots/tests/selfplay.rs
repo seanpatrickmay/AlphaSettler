@@ -1,10 +1,15 @@
-use settler_bots::heuristic::{fit, log_likelihood, samples_from_games, ReplayGame, Sample, DEFAULT_WEIGHTS, NUM_FEATURES};
+use settler_bots::heuristic::{
+    fit, log_likelihood, samples_from_games, ReplayGame, Sample, DEFAULT_WEIGHTS, NUM_FEATURES,
+};
 use settler_bots::selfplay::{play, run, MIN_SIMULATIONS};
 use settler_engine::rng::Rng;
 use settler_engine::*;
 
 fn no_trades() -> GameConfig {
-    GameConfig { max_offers_per_turn: 0, ..GameConfig::default() }
+    GameConfig {
+        max_offers_per_turn: 0,
+        ..GameConfig::default()
+    }
 }
 
 #[test]
@@ -31,7 +36,10 @@ fn every_searched_decision_is_recorded_and_replays() {
 
 #[test]
 fn self_play_does_not_depend_on_thread_count() {
-    assert_eq!(run(0..4, no_trades(), 10, 0, 1).unwrap(), run(0..4, no_trades(), 10, 0, 3).unwrap());
+    assert_eq!(
+        run(0..4, no_trades(), 10, 0, 1).unwrap(),
+        run(0..4, no_trades(), 10, 0, 3).unwrap()
+    );
 }
 
 #[test]
@@ -39,7 +47,10 @@ fn self_play_refuses_searches_too_small_to_record_visits() {
     assert_eq!(MIN_SIMULATIONS, 2);
     let e = run(0..1, no_trades(), 1, 0, 1).unwrap_err();
     assert!(e.contains("at least 2 simulations"), "{e}");
-    assert!(run(0..1, no_trades(), 2, 0, 1).unwrap()[0].decisions.iter().all(|d| d.visits.iter().sum::<u32>() == 1));
+    assert!(run(0..1, no_trades(), 2, 0, 1).unwrap()[0]
+        .decisions
+        .iter()
+        .all(|d| d.visits.iter().sum::<u32>() == 1));
 }
 
 #[test]
@@ -49,8 +60,12 @@ fn the_fit_recovers_known_weights() {
     let mut uniform = || (rng.next_u64() >> 40) as f32 / (1u64 << 24) as f32;
     let samples: Vec<Sample> = (0..6000)
         .map(|_| {
-            let features: [[f32; NUM_FEATURES]; 4] = std::array::from_fn(|_| std::array::from_fn(|_| 3.0 * uniform()));
-            let scores: Vec<f32> = features.iter().map(|f| f.iter().zip(&truth).map(|(x, w)| x * w).sum()).collect();
+            let features: [[f32; NUM_FEATURES]; 4] =
+                std::array::from_fn(|_| std::array::from_fn(|_| 3.0 * uniform()));
+            let scores: Vec<f32> = features
+                .iter()
+                .map(|f| f.iter().zip(&truth).map(|(x, w)| x * w).sum())
+                .collect();
             let m = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             let e: Vec<f32> = scores.iter().map(|s| (s - m).exp()).collect();
             let total: f32 = e.iter().sum();
@@ -67,7 +82,12 @@ fn the_fit_recovers_known_weights() {
         .collect();
     let w = fit(&samples, [0.0; NUM_FEATURES], 25, 0.0);
     for i in 0..NUM_FEATURES {
-        assert!((w[i] - truth[i]).abs() < 0.15, "weight {i}: {} vs {}", w[i], truth[i]);
+        assert!(
+            (w[i] - truth[i]).abs() < 0.15,
+            "weight {i}: {} vs {}",
+            w[i],
+            truth[i]
+        );
     }
     assert!(log_likelihood(&samples, &w) >= log_likelihood(&samples, &[0.0; NUM_FEATURES]));
 }
