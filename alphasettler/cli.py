@@ -1,4 +1,6 @@
-"""Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay` and `fit-heuristic`."""
+"""Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay` and `fit-heuristic`.
+`selfplay --simulations S` writes 3a records; `selfplay --pcr` and `selfplay --net NAME` write 3b
+exploration records."""
 
 from __future__ import annotations
 
@@ -60,7 +62,15 @@ def _parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("selfplay", help="IsmctsBot self-play records for training and weight fits")
     s.add_argument("--games", type=_positive_int, required=True)
-    s.add_argument("--simulations", type=_positive_int, required=True)
+    s.add_argument("--simulations", type=_positive_int, default=None,
+                   help="3a self-play: every move a full search of this many simulations")
+    s.add_argument("--pcr", action="store_true",
+                   help="3b exploration with the heuristic bot (playout cap randomization, root noise, opening sampling)")
+    s.add_argument("--net", default=None, help="3b exploration with the network <nets-dir>/NET.bin")
+    s.add_argument("--nets-dir", default=DEFAULT_NETS_DIR)
+    s.add_argument("--full-simulations", type=int, default=None, help="3b: full-search simulations (default 600)")
+    s.add_argument("--fast-simulations", type=int, default=None, help="3b: fast-search simulations (default 100)")
+    s.add_argument("--full-probability", type=float, default=None, help="3b: chance of a full search (default 0.25)")
     s.add_argument("--rollout", type=int, default=0)
     s.add_argument("--seed-start", type=int, default=0)
     s.add_argument("--threads", type=_positive_int, default=None)
@@ -98,6 +108,13 @@ SELFPLAY_BATCH = 100
 
 
 def _selfplay(args) -> int:
+    if args.net is not None or args.pcr:
+        return _selfplay_explore(args)
+    if args.simulations is None:
+        raise ValueError("--simulations is required (or use --net NAME or --pcr for 3b exploration)")
+    for flag in ("full_simulations", "fast_simulations", "full_probability"):
+        if getattr(args, flag) is not None:
+            raise ValueError(f"--{flag.replace('_', '-')} needs --net or --pcr")
     from alphasettler import records
     from alphasettler._engine import MAX_ROLLOUT, MAX_SIMULATIONS, SELFPLAY_MIN_SIMULATIONS, selfplay
 
@@ -130,6 +147,53 @@ def _selfplay(args) -> int:
             return 130
     print(f"{games} games, {decisions} searched decisions, wrote {out}")
     print(f"belief resets: {resets}")
+    return 0
+
+
+def _selfplay_explore(args) -> int:
+    from alphasettler import files
+    from alphasettler import selfplay as explore
+    from alphasettler._engine import SELFPLAY_FAST_SIMULATIONS, SELFPLAY_FULL_PROBABILITY, SELFPLAY_FULL_SIMULATIONS
+
+    if args.simulations is not None:
+        raise ValueError("--simulations is for 3a self-play; with --net or --pcr use --full-simulations "
+                         "and --fast-simulations")
+    if args.rollout != 0:
+        raise ValueError("--rollout is not supported with --net or --pcr")
+    if args.seed_start < 0 or args.seed_start + args.games > SEED_LIMIT:
+        raise ValueError(f"seeds {args.seed_start}..{args.seed_start + args.games} are outside the u64 seed range")
+    full = SELFPLAY_FULL_SIMULATIONS if args.full_simulations is None else args.full_simulations
+    fast = SELFPLAY_FAST_SIMULATIONS if args.fast_simulations is None else args.fast_simulations
+    p = SELFPLAY_FULL_PROBABILITY if args.full_probability is None else args.full_probability
+    config = {} if args.trades else {"max_offers_per_turn": 0}
+    label = "ismcts" if args.net is None else f"net-{args.net}"
+    out = Path(args.out_dir) / f"{_stamp()}-selfplay-{label}-f{full}-q{fast}.jsonl.gz"
+    if out.exists():
+        raise ValueError(f"{out} already exists")
+    # Written under a hidden temporary name and renamed when complete, so a reader (another
+    # machine's train-loop, say) never takes a half-written file for a finished one.
+    tmp = files.temp_path(out)
+    counts: dict = {}
+    try:
+        explore.write_explore(tmp, args.seed_start, args.games, config=config, full_simulations=full,
+                              fast_simulations=fast, full_probability=p, net=args.net, nets_dir=args.nets_dir,
+                              threads=args.threads, counts=counts)
+    except KeyboardInterrupt:
+        # The writer closed the gzip stream cleanly: the games so far are a readable file.
+        kept = tmp.exists()
+        if kept:
+            os.replace(tmp, out)
+        print(f"interrupted: kept {counts.get('games', 0)} games, {counts.get('decisions', 0)} searched "
+              f"decisions{f' in {out}' if kept else ''}", file=sys.stderr)
+        print(f"belief resets: {counts.get('belief_resets', 0)}", file=sys.stderr)
+        return 130
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    os.replace(tmp, out)
+    print(f"{counts['games']} games, {counts['decisions']} searched decisions "
+          f"({counts['full_decisions']} full searches), wrote {out}")
+    print(f"belief resets: {counts['belief_resets']}")
     return 0
 
 

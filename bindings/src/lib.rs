@@ -314,6 +314,59 @@ fn run_match<'py>(
     Ok(out)
 }
 
+/// One self-play game as a record dict. With `observations`, each decision also carries the
+/// actor's observation (3a records); 3b records leave it out (the seed and actions reproduce it).
+fn game_dict<'py>(
+    py: Python<'py>,
+    g: &settler_bots::selfplay::SelfPlayGame,
+    config: &settler_engine::GameConfig,
+    observations: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("seed", g.seed)?;
+    d.set_item(
+        "actions",
+        g.actions
+            .iter()
+            .map(|a| a.encode() as u32)
+            .collect::<Vec<_>>(),
+    )?;
+    d.set_item("winner", g.winner)?;
+    d.set_item("vp", counts(&g.vp))?;
+    d.set_item("turns", g.turns)?;
+    d.set_item("belief_resets", g.belief_resets)?;
+    let decisions = PyList::empty(py);
+    let mut s = settler_engine::State::new(g.seed, *config);
+    let mut applied = 0usize;
+    for dec in &g.decisions {
+        let e = PyDict::new(py);
+        e.set_item("index", dec.index)?;
+        e.set_item("actor", dec.actor)?;
+        e.set_item(
+            "legal",
+            dec.legal
+                .iter()
+                .map(|a| a.encode() as u32)
+                .collect::<Vec<_>>(),
+        )?;
+        e.set_item("visits", dec.visits.clone())?;
+        e.set_item("full_search", dec.full_search)?;
+        if observations {
+            while applied < dec.index as usize {
+                s.apply(g.actions[applied]);
+                applied += 1;
+            }
+            e.set_item(
+                "observation",
+                observation_dict(py, &s.observation(dec.actor))?,
+            )?;
+        }
+        decisions.append(e)?;
+    }
+    d.set_item("decisions", decisions)?;
+    Ok(d)
+}
+
 /// IsmctsBot self-play: `games` games from `seed_start`, every searched decision recorded with
 /// the actor's observation. `rollout` defaults to 0. Releases the GIL while games run.
 #[pyfunction]
@@ -360,48 +413,80 @@ fn selfplay<'py>(
         })
         .map_err(value_error)?;
     let out = PyList::empty(py);
-    for g in played {
-        let d = PyDict::new(py);
-        d.set_item("seed", g.seed)?;
-        d.set_item(
-            "actions",
-            g.actions
-                .iter()
-                .map(|a| a.encode() as u32)
-                .collect::<Vec<_>>(),
-        )?;
-        d.set_item("winner", g.winner)?;
-        d.set_item("vp", counts(&g.vp))?;
-        d.set_item("turns", g.turns)?;
-        d.set_item("belief_resets", g.belief_resets)?;
-        // Replay to attach each decision's observation.
-        let mut s = settler_engine::State::new(g.seed, config);
-        let decisions = PyList::empty(py);
-        let mut next = g.decisions.iter().peekable();
-        for (i, &a) in g.actions.iter().enumerate() {
-            if let Some(dec) = next.next_if(|dec| dec.index as usize == i) {
-                let e = PyDict::new(py);
-                e.set_item("index", dec.index)?;
-                e.set_item("actor", dec.actor)?;
-                e.set_item(
-                    "legal",
-                    dec.legal
-                        .iter()
-                        .map(|a| a.encode() as u32)
-                        .collect::<Vec<_>>(),
-                )?;
-                e.set_item("visits", dec.visits.clone())?;
-                e.set_item("full_search", dec.full_search)?;
-                e.set_item(
-                    "observation",
-                    observation_dict(py, &s.observation(dec.actor))?,
-                )?;
-                decisions.append(e)?;
-            }
-            s.apply(a);
-        }
-        d.set_item("decisions", decisions)?;
-        out.append(d)?;
+    for g in &played {
+        out.append(game_dict(py, g, &config, true)?)?;
+    }
+    Ok(out)
+}
+
+/// 3b self-play (spec Section 4): playout cap randomization (`full_simulations` with
+/// probability `full_probability`, else `fast_simulations`), root noise on full searches and
+/// opening sampling. With `net`, every seat is the network `<nets_dir>/<net>.bin` (loaded once);
+/// otherwise the heuristic. Decisions carry no observations. Releases the GIL while games run.
+#[pyfunction]
+#[pyo3(signature = (seed_start, games, threads, full_simulations, fast_simulations, full_probability, config=None, net=None, nets_dir=None))]
+#[allow(clippy::too_many_arguments)]
+fn selfplay_explore<'py>(
+    py: Python<'py>,
+    seed_start: &Bound<'py, PyAny>,
+    games: &Bound<'py, PyAny>,
+    threads: &Bound<'py, PyAny>,
+    full_simulations: &Bound<'py, PyAny>,
+    fast_simulations: &Bound<'py, PyAny>,
+    full_probability: f64,
+    config: Option<&Bound<'py, PyDict>>,
+    net: Option<&str>,
+    nets_dir: Option<PathBuf>,
+) -> PyResult<Bound<'py, PyList>> {
+    use settler_bots::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
+    use settler_bots::netbot::{load_net, DEFAULT_NETS_DIR, NET_BATCH};
+    use settler_bots::selfplay::{run_with, Exploration};
+    use settler_net::evaluator::NetEvaluator;
+    let seed_start: u64 = int_arg(seed_start, "seed_start")?;
+    let games: u64 = int_arg(games, "games")?;
+    let threads: usize = int_arg(threads, "threads")?;
+    let ex = Exploration {
+        full_simulations: int_arg(full_simulations, "full_simulations")?,
+        fast_simulations: int_arg(fast_simulations, "fast_simulations")?,
+        full_probability,
+        ..Exploration::standard()
+    };
+    ex.validate().map_err(value_error)?;
+    if games == 0 {
+        return Err(value_error("games must be positive"));
+    }
+    let end = seed_start
+        .checked_add(games)
+        .ok_or_else(|| value_error("seed_start + games exceeds the u64 seed range"))?;
+    let config = parse_config(config)?;
+    let dir = nets_dir.unwrap_or_else(|| PathBuf::from(DEFAULT_NETS_DIR));
+    let weights = match net {
+        Some(n) => Some(load_net(&dir, n).map_err(value_error)?),
+        None => None,
+    };
+    let played = py
+        .detach(|| match &weights {
+            None => run_with(
+                seed_start..end,
+                config,
+                &ex,
+                settler_search::SearchConfig::default().batch,
+                &|| HeuristicEvaluator::new(DEFAULT_WEIGHTS, 0),
+                threads,
+            ),
+            Some(w) => run_with(
+                seed_start..end,
+                config,
+                &ex,
+                NET_BATCH,
+                &|| NetEvaluator::new(w.clone()),
+                threads,
+            ),
+        })
+        .map_err(value_error)?;
+    let out = PyList::empty(py);
+    for g in &played {
+        out.append(game_dict(py, g, &config, false)?)?;
     }
     Ok(out)
 }
@@ -496,6 +581,30 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(resolve_config, m)?)?;
     m.add_function(wrap_pyfunction!(run_match, m)?)?;
     m.add_function(wrap_pyfunction!(selfplay, m)?)?;
+    m.add_function(wrap_pyfunction!(selfplay_explore, m)?)?;
+    m.add(
+        "SEARCH_BATCH",
+        settler_search::SearchConfig::default().batch,
+    )?;
+    m.add("NET_BATCH", settler_bots::netbot::NET_BATCH)?;
+    m.add(
+        "SELFPLAY_FULL_SIMULATIONS",
+        settler_bots::selfplay::FULL_SIMULATIONS,
+    )?;
+    m.add(
+        "SELFPLAY_FAST_SIMULATIONS",
+        settler_bots::selfplay::FAST_SIMULATIONS,
+    )?;
+    m.add(
+        "SELFPLAY_FULL_PROBABILITY",
+        settler_bots::selfplay::FULL_PROBABILITY,
+    )?;
+    m.add("NOISE_WEIGHT", settler_bots::selfplay::NOISE.weight as f64)?;
+    m.add(
+        "NOISE_ALPHA",
+        settler_bots::selfplay::NOISE.alpha_total as f64,
+    )?;
+    m.add("SAMPLE_TURNS", settler_bots::selfplay::SAMPLE_TURNS)?;
     m.add_function(wrap_pyfunction!(fit_heuristic, m)?)?;
     m.add("MAX_SEEDS", settler_bots::arena::MAX_SEEDS)?;
     m.add(

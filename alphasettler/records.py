@@ -1,8 +1,10 @@
-"""Self-play records: one gzipped JSONL line per game (spec Section 4)."""
+"""Self-play records: one gzipped JSONL line per game (spec Section 4). Files are byte-for-byte
+reproducible: the gzip header carries no file name and a zero timestamp."""
 
 from __future__ import annotations
 
 import gzip
+import io
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -35,8 +37,10 @@ def open_writer(path: str | Path) -> Iterator[Writer]:
     cleanly, so the games written so far stay readable."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(path, "xt") as f:
-        yield Writer(f)
+    with open(path, "xb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz:
+            with io.TextIOWrapper(gz, encoding="utf-8") as f:
+                yield Writer(f)
 
 
 def write(path: str | Path, games: list[dict], config: dict) -> None:
@@ -58,7 +62,8 @@ def _plain(x):
 
 
 def replay_mismatches(game: dict) -> list[str]:
-    """Replay `game` from its seed and actions; describe every stored decision that differs."""
+    """Replay `game` from its seed and actions; describe every stored decision that differs.
+    Observations are checked only where a decision carries one (3b records leave them out)."""
     g = Game(game["seed"], game["config"])
     decisions = {d["index"]: d for d in game["decisions"]}
     out = []
@@ -69,7 +74,7 @@ def replay_mismatches(game: dict) -> list[str]:
                 out.append(f"move {i}: actor {g.current_actor}, record says {d['actor']}")
             if g.legal_actions() != d["legal"]:
                 out.append(f"move {i}: legal actions differ")
-            if _plain(g.observation(d["actor"])) != d["observation"]:
+            if "observation" in d and _plain(g.observation(d["actor"])) != d["observation"]:
                 out.append(f"move {i}: observation differs")
         g.apply(a)
     if g.winner != game["winner"]:

@@ -274,3 +274,59 @@ fn fixed_exploration_is_3a_self_play() {
     );
     assert_eq!(digest(&play(5, no_trades(), 12, 3)), PLAY_5_AT_12_ROLLOUT_3);
 }
+
+/// Noise is drawn only for full searches: with no full searches, noise on or off plays the same
+/// games (fast searches stay un-noised).
+#[test]
+fn fast_searches_are_never_noised() {
+    let fast_only = Exploration {
+        full_probability: 0.0,
+        ..small_explore()
+    };
+    assert_eq!(fast_only.noise, Some(NOISE));
+    let quiet = Exploration {
+        noise: None,
+        ..fast_only
+    };
+    let noised = run_with(0..3, no_trades(), &fast_only, 8, &heuristic, 3).unwrap();
+    assert_eq!(
+        noised,
+        run_with(0..3, no_trades(), &quiet, 8, &heuristic, 3).unwrap()
+    );
+    assert!(noised
+        .iter()
+        .flat_map(|g| &g.decisions)
+        .all(|d| !d.full_search));
+}
+
+/// The noise reaches the search: at 40 simulations, noised and plain root searches record
+/// different visits on some position of a game.
+#[test]
+fn root_noise_changes_the_recorded_visits() {
+    use settler_bots::ismcts::{IsmctsBot, MoveOptions};
+    let g = play(3, no_trades(), 10, 0);
+    let mut s = State::new(3, no_trades());
+    let (mut compared, mut differ) = (0, 0);
+    for (i, &a) in g.actions.iter().enumerate() {
+        if i % 7 == 0 && !s.is_over() {
+            let (obs, legal) = (s.observation(s.current_actor()), s.legal_actions());
+            let visits = |noise| {
+                let mut bot = IsmctsBot::new(11, 40, 0);
+                let opts = MoveOptions {
+                    simulations: 40,
+                    noise,
+                    sample: None,
+                };
+                bot.act_with(&obs, &legal, &opts);
+                bot.take_last_search().map(|r| r.visits)
+            };
+            if let (Some(plain), Some(noised)) = (visits(None), visits(Some((NOISE, i as u64)))) {
+                compared += 1;
+                differ += (plain != noised) as u32;
+            }
+        }
+        s.apply(a);
+    }
+    assert!(compared >= 10, "only {compared} searched positions");
+    assert!(differ > 0, "noise changed none of {compared} searches");
+}
