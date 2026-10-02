@@ -193,6 +193,7 @@ def _catanatron_arena(args, out: Path) -> int:
         _write_records(f, args.candidate, args.baseline, records)
     print(format_summary(f"{args.candidate} vs {args.baseline}", summarize(records)))
     print(f"fallbacks: {sum(r['fallbacks'] for r in records)}")
+    print(f"belief resets: {sum(r['belief_resets'] for r in records)}")
     print(f"wrote {out}")
     return 0
 

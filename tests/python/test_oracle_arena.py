@@ -17,7 +17,7 @@ def test_records_have_the_native_shape():
     recs = run_match("random", "random", seeds=2, workers=2)
     assert len(recs) == 8
     assert [r["candidate_seat"] for r in recs[:4]] == [0, 1, 2, 3]
-    assert {"seed", "candidate_seat", "winner", "vp", "turns", "actions", "fallbacks"} <= set(recs[0])
+    assert {"seed", "candidate_seat", "winner", "vp", "turns", "actions", "fallbacks", "belief_resets"} <= set(recs[0])
     for r in recs:
         if r["winner"] is not None:
             assert r["vp"][r["winner"]] >= 10

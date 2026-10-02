@@ -12,12 +12,14 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 
+import catanatron.game as catan_game
 from catanatron import Color, Game as CatanGame, Player, RandomPlayer
 from catanatron.models.actions import generate_playable_actions
 from catanatron.players import AlphaBetaPlayer, ValueFunctionPlayer, WeightedRandomPlayer
 
 from alphasettler import Bot, Game
 from oracle import hash_seed_zero
+from oracle.events import record_events, redact
 from oracle.translate import (
     SETUP_TURNS, Untranslatable, action_token, catan_snapshot, move_robber, seat, steal_from,
 )
@@ -73,6 +75,11 @@ class AlphaSettlerPlayer(Player):
             return playable_actions[0]
         return choice
 
+    def observe(self, state, events: list[dict]) -> None:
+        """Show the bot the events of one executed action, redacted for its seat."""
+        viewer = seat(state, self.color)
+        self.bot.observe(viewer, [redact(e, viewer) for e in events])
+
 
 def _force_seating(game, players) -> None:
     st = game.state
@@ -89,7 +96,20 @@ def play_game(seed: int, candidate: str, baseline: str, candidate_seat: int) -> 
     ]
     game = CatanGame(players, seed=seed)
     _force_seating(game, players)
-    game.play()
+    # Catanatron's own Game.play loop (same condition, same end-of-game observer hook), with the
+    # candidate shown the events of every executed action, its own included. The empty first
+    # feed starts its game, as the native arena's feed does, so a candidate in seat 0 does not
+    # make its opening decision with no history at all.
+    me = players[candidate_seat]
+    me.observe(game.state, [])
+    before = catan_snapshot(game)
+    while game.winning_color() is None and game.state.num_turns < catan_game.TURNS_LIMIT:
+        game.play_tick()
+        after = catan_snapshot(game)
+        me.observe(game.state, record_events(before, after, game.state.action_records[-1], game.state))
+        before = after
+    for observer in game.observers:
+        observer.after(game)
     st = game.state
     winner = game.winning_color()
     return {
@@ -99,7 +119,8 @@ def play_game(seed: int, candidate: str, baseline: str, candidate_seat: int) -> 
         "vp": [st.player_state[f"P{i}_ACTUAL_VICTORY_POINTS"] for i in range(4)],
         "turns": st.num_turns - SETUP_TURNS,
         "actions": len(st.action_records),
-        "fallbacks": players[candidate_seat].fallbacks,
+        "fallbacks": me.fallbacks,
+        "belief_resets": me.bot.diagnostics().get("belief_resets", 0),
     }
 
 
