@@ -192,15 +192,16 @@ pub trait Evaluator { fn evaluate(&mut self, leaves: &[Leaf]) -> Vec<Eval>; }
   - VP, including sampled hidden VP;
   - production pips, weighted by resource scarcity on this board;
   - cards in hand and dev cards held;
-  - distance to longest road and to largest army;
+  - longest road length and knights played (progress toward the two awards; the awards' 2 VP are
+    already in VP);
   - open legal settlement spots.
 
   A softmax over the four scores gives win probabilities. The weights are fit by maximum
   likelihood on recorded games (a conditional logit solved by Newton's method in Rust, run by
   `alphasettler fit-heuristic` on the self-play records below). A softmax temperature would only
   rescale the weights, so the fit absorbs it. This fit is the first use of the data pipeline.
-- Prior: GreedyBot's choice (`bots/src/greedy.rs`, shared rather than copied) gets logit +2, any
-  build +1, buying a dev card +0.5, everything else 0, softmaxed over the legal moves.
+- Prior: GreedyBot's choice (`bots/src/greedy.rs`, shared rather than copied) gets logit +2, a
+  city or settlement +1 (roads get no bonus: most legal moves early are roads), buying a dev card +0.5, everything else 0, softmaxed over the legal moves.
 - Greedy rollout switch: an optional number of greedy moves played from the leaf before scoring
   it. Bot names select it: `ismcts` (1,000 simulations), `ismcts@N`, `ismcts@N+rD` (D rollout
   moves).
