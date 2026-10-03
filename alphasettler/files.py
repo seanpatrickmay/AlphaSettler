@@ -31,6 +31,14 @@ def remove_temps(directory: str | Path, name_glob: str) -> None:
         p.unlink()
 
 
+def remove_own_temps(directory: str | Path, name_glob: str) -> None:
+    """Delete this process's temporary files of `name_glob` in `directory` (an interrupted write
+    of its own). Another process's temp is never touched: it may be a writer still running, on
+    this machine or another one sharing the directory."""
+    for p in Path(directory).glob(f".{name_glob}.tmp-{os.getpid()}"):
+        p.unlink(missing_ok=True)
+
+
 def atomic_write_bytes(path: str | Path, data: bytes) -> None:
     tmp = temp_path(path)
     tmp.write_bytes(data)

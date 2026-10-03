@@ -1,6 +1,7 @@
-"""Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic` and
-`train`. `selfplay --simulations S` writes 3a records; `selfplay --pcr` and `selfplay --net NAME`
-write 3b exploration records; `train` (the train extra) trains a network on them."""
+"""Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic`, `train`
+and `train-loop`. `selfplay --simulations S` writes 3a records; `selfplay --pcr` and `selfplay --net
+NAME` write 3b exploration records; `train` (the train extra) trains a network on them; `train-loop`
+(the train extra) runs the resumable self-play, train and gate generations."""
 
 from __future__ import annotations
 
@@ -101,6 +102,30 @@ def _parser() -> argparse.ArgumentParser:
     t.add_argument("--threads", type=_positive_int, default=None)
     t.add_argument("--trunk", type=_positive_int, default=512)
     t.add_argument("--value-width", type=_positive_int, default=256)
+
+    lp = sub.add_parser("train-loop",
+                        help="self-play, train and gate generations; rerun to resume (needs the train extra)")
+    lp.add_argument("--dir", required=True, help="the run directory, e.g. runs/3b (nets in <dir>/nets)")
+    lp.add_argument("--generations", type=int, required=True,
+                    help="learned generations after the warm start (0: the warm start only)")
+    lp.add_argument("--games", type=_positive_int, default=10_000, help="self-play games per learned generation")
+    lp.add_argument("--warm-games", type=_positive_int, default=20_000, help="self-play games of generation 0")
+    lp.add_argument("--chunk-games", type=_positive_int, default=500, help="games per self-play record file")
+    lp.add_argument("--full-simulations", type=_positive_int, default=600)
+    lp.add_argument("--fast-simulations", type=_positive_int, default=100)
+    lp.add_argument("--full-probability", type=float, default=0.25)
+    lp.add_argument("--window", type=_positive_int, default=4, help="generations of records to train on")
+    lp.add_argument("--warm-lr", type=float, default=SCRATCH_LR, help="generation 0's learning rate (from scratch)")
+    lp.add_argument("--lr", type=float, default=FINE_TUNE_LR, help="later generations' learning rate")
+    lp.add_argument("--steps-factor", type=float, default=2.0, help="steps = factor x new positions / batch")
+    lp.add_argument("--batch", type=_positive_int, default=1024)
+    lp.add_argument("--trunk", type=_positive_int, default=512)
+    lp.add_argument("--value-width", type=_positive_int, default=256)
+    lp.add_argument("--gate-seeds", type=_positive_int, default=200)
+    lp.add_argument("--gate-simulations", type=_positive_int, default=600)
+    lp.add_argument("--max-turns", type=_positive_int, default=1000)
+    lp.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
+    lp.add_argument("--threads", type=_positive_int, default=None)
     return p
 
 
@@ -286,6 +311,35 @@ def _train(args) -> int:
     return 0
 
 
+def _train_loop(args) -> int:
+    if _train_missing():
+        return 2
+    from alphasettler.train.loop import Loop, LoopSettings, gen_name
+
+    s = LoopSettings(
+        generations=args.generations, games=args.games, warm_games=args.warm_games, chunk_games=args.chunk_games,
+        full_simulations=args.full_simulations, fast_simulations=args.fast_simulations,
+        full_probability=args.full_probability, window=args.window, warm_lr=args.warm_lr, lr=args.lr,
+        steps_factor=args.steps_factor, batch=args.batch, trunk=args.trunk, value=args.value_width,
+        gate_seeds=args.gate_seeds, gate_simulations=args.gate_simulations, max_turns=args.max_turns,
+        device=args.device, threads=args.threads,
+    )
+    loop = Loop(Path(args.dir), s)
+    try:
+        n = loop.run()
+    except KeyboardInterrupt:
+        print("interrupted: rerun the same command to resume at the first incomplete step", file=sys.stderr)
+        return 130
+    except RuntimeError as e:  # a failed parity check: nothing of the step was recorded
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"{n} steps run" if n else "nothing to do: every step is complete")
+    best = loop.manifest["best"]
+    if best is not None:
+        print(f"best net: {gen_name(best)} ({loop.nets / 'best.bin'})")
+    return 0
+
+
 def _oracle_missing() -> int:
     from oracle import CATANATRON_REQUIREMENT
 
@@ -368,6 +422,8 @@ def main(argv: list[str] | None = None) -> int:
             return _fit_heuristic(args)
         elif args.command == "train":
             return _train(args)
+        elif args.command == "train-loop":
+            return _train_loop(args)
         else:
             for name in (args.a, args.b, args.baseline):
                 _check_bot_name(name, args.nets_dir)
