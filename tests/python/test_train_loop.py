@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import socket
 import subprocess
 import sys
 from dataclasses import replace
@@ -56,6 +57,8 @@ def test_a_full_run_writes_every_output_and_redoes_nothing(reference):
     assert (g0["train"]["init"], g1["train"]["init"]) == (None, "gen-000")
     assert (g0["train"]["lr"], g1["train"]["lr"]) == (1e-3, 3e-4)
     assert g1["train"]["window"] == ["gen-000", "gen-001"]
+    assert (g1["train"]["window_size"], g1["train"]["steps_factor"]) == (4, 2.0)
+    assert g1["gate"]["config"] == {"max_offers_per_turn": 0, "max_turns": 60}
     assert g1["train"]["parity_max_error"] <= 1e-5
     assert g1["gate"]["games"] == 4 and g1["gate"]["promoted"] == promoted(g1["gate"]["wins"], 4)
     assert g1["gate"]["belief_resets"] == 0
@@ -119,57 +122,130 @@ def test_ctrl_c_after_each_step_resumes_without_redoing_a_completed_step(tmp_pat
         assert temps(d) == []
 
 
-@pytest.mark.parametrize("interrupt_at", [2, 5, 9, 17])
-def test_an_interrupt_during_a_rename_resumes_to_the_same_manifest(tmp_path, reference, monkeypatch, interrupt_at):
-    # os.replace calls in order: 1 gen-000/selfplay.json, 2-3 its chunks, 4 manifest, 5 gen-000/net.bin,
-    # 6 nets/gen-000.bin, 7 manifest, 8 nets/best.bin, 9 manifest, ..., 17 gen-001/gate.jsonl.
-    real = os.replace
-    calls = {"n": 0}
-
-    def flaky(src, dst):
-        calls["n"] += 1
-        if calls["n"] == interrupt_at:
-            raise KeyboardInterrupt
-        return real(src, dst)
-
-    monkeypatch.setattr(os, "replace", flaky)
-    with pytest.raises(KeyboardInterrupt):
-        Loop(tmp_path, TINY).run()
-    monkeypatch.setattr(os, "replace", real)
-    assert temps(tmp_path), "the interrupted write left its temp file"
-    Loop(tmp_path, TINY).run()
-    assert manifest(tmp_path) == manifest(reference)
-    assert temps(tmp_path) == []
-
-
 def _dead_pid():
     p = subprocess.Popen([sys.executable, "-c", "pass"])
     p.wait()
     return p.pid
 
 
-def test_only_this_process_temps_are_removed(tmp_path, capsys):
-    """Another process's temp file is never deleted, live writer or dead: it may be another
-    machine's self-play writing into the generation directory (its PID means nothing here). The
-    rerun names them in a notice and never reads them."""
-    live, dead = os.getppid(), _dead_pid()
-    gdir = tmp_path / "gen-000"
+def as_an_earlier_process(monkeypatch):
+    """Make this process look like another, since-ended one (its temps carry a dead PID), the way
+    a real rerun after Ctrl-C is a new process. Returns its PID and a function that undoes it."""
+    dead = _dead_pid()
+    monkeypatch.setattr(os, "getpid", lambda: dead)
+    return dead, monkeypatch.undo
+
+
+def interrupting_replace(monkeypatch, at):
+    real = os.replace
+    calls = {"n": 0}
+
+    def flaky(src, dst):
+        calls["n"] += 1
+        if calls["n"] == at:
+            raise KeyboardInterrupt
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky)
+
+
+@pytest.mark.parametrize("interrupt_at", [2, 3, 5, 9, 17])
+def test_an_interrupt_during_a_rename_resumes_to_the_same_manifest(tmp_path, reference, monkeypatch, interrupt_at):
+    # os.replace calls in order: 1 gen-000/selfplay.json, 2-3 its chunks, 4 manifest, 5 gen-000/net.bin,
+    # 6 nets/gen-000.bin, 7 manifest, 8 nets/best.bin, 9 manifest, ..., 17 gen-001/gate.jsonl.
+    dead, restore = as_an_earlier_process(monkeypatch)
+    interrupting_replace(monkeypatch, interrupt_at)
+    with pytest.raises(KeyboardInterrupt):
+        Loop(tmp_path, TINY).run()
+    restore()
+    left = temps(tmp_path)
+    assert left, "the interrupted write left its temp file"
+    assert {files.temp_writer(p) for p in left} == {(files.host(), dead)}
+    Loop(tmp_path, TINY).run()
+    assert manifest(tmp_path) == manifest(reference)
+    assert temps(tmp_path) == [], "the rerun deleted the dead run's temps of its own outputs"
+
+
+def test_a_finished_chunk_is_not_played_again(tmp_path, reference, monkeypatch):
+    """Rename 3 is chunk 1's: chunk 0 is finished, and the rerun keeps that very file."""
+    _, restore = as_an_earlier_process(monkeypatch)
+    interrupting_replace(monkeypatch, 3)
+    with pytest.raises(KeyboardInterrupt):
+        Loop(tmp_path, TINY).run()
+    restore()
+    chunk0 = tmp_path / "gen-000" / "selfplay-local-00000.jsonl.gz"
+    before = chunk0.stat()
+    Loop(tmp_path, TINY).run()
+    after = chunk0.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    assert manifest(tmp_path) == manifest(reference)
+
+
+def test_an_interrupt_inside_self_play_resumes_to_the_same_manifest(tmp_path, reference, monkeypatch):
+    """Ctrl-C inside `write_explore` (in the native call of chunk 1): the chunk's temp holds a
+    clean but partial file, and the rerun deletes it and plays the chunk whole."""
+    import alphasettler.selfplay as selfplay_mod
+
+    real = selfplay_mod.selfplay_explore
+    calls = {"n": 0}
+
+    def flaky(*args):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise KeyboardInterrupt
+        return real(*args)
+
+    _, restore = as_an_earlier_process(monkeypatch)
+    monkeypatch.setattr(selfplay_mod, "selfplay_explore", flaky)
+    with pytest.raises(KeyboardInterrupt):
+        Loop(tmp_path, TINY).run()
+    restore()
+    assert [p.name.split(".tmp-")[0] for p in temps(tmp_path)] == [".selfplay-local-00001.jsonl.gz"]
+    Loop(tmp_path, TINY).run()
+    assert manifest(tmp_path) == manifest(reference)
+    assert temps(tmp_path) == []
+
+
+def test_temp_names_carry_the_host_and_the_pid(monkeypatch):
+    monkeypatch.setattr(socket, "gethostname", lambda: "my-box/x.local")
+    t = files.temp_path("/d/net.bin")
+    assert t.name == f".net.bin.tmp-my-boxx.local-{os.getpid()}"
+    assert files.temp_writer(t) == ("my-boxx.local", os.getpid())
+    assert files.temp_writer(".a.tmp-h-1-2-3") == ("h-1-2", 3)
+    for name in (".a.tmp-123", ".a.tmp-host-x", ".a.tmp--5", "a.tmp-h-1", ".a.tmp"):
+        assert files.temp_writer(name) is None, name
+
+
+def test_only_dead_local_writers_temps_of_loop_outputs_are_removed(tmp_path, capsys):
+    """A temp is deleted only if its name is a loop output, its host is this machine and its PID
+    is not running (or is this process). Kept: a running writer's, another machine's (a host
+    that merely starts with this one's name too), another name (another machine's self-play),
+    a hostless or PID-less name."""
+    host, live, dead, me = files.host(), os.getppid(), _dead_pid(), os.getpid()
+    gdir, nets = tmp_path / "gen-000", tmp_path / "nets"
     gdir.mkdir()
-    kept = [gdir / f".selfplay-local-00000.jsonl.gz.tmp-{live}", gdir / f".selfplay-local-00001.jsonl.gz.tmp-{dead}",
-            gdir / f".20261002-selfplay-x.jsonl.gz.tmp-{dead}", tmp_path / f".manifest.json.tmp-{dead}",
-            gdir / f".selfplay.json.tmp-{dead}", gdir / ".selfplay-local-00000.jsonl.gz.tmp-notapid"]
-    gone = [gdir / f".selfplay.json.tmp-{os.getpid()}", gdir / f".selfplay-local-00001.jsonl.gz.tmp-{os.getpid()}",
-            tmp_path / f".manifest.json.tmp-{os.getpid()}"]
+    nets.mkdir()
+    kept = [gdir / f".selfplay-local-00000.jsonl.gz.tmp-{host}-{live}",
+            gdir / f".selfplay.json.tmp-otherhost-{dead}",
+            tmp_path / f".manifest.json.tmp-{host}-2-{dead}",
+            gdir / f".20261002-selfplay-x.jsonl.gz.tmp-{host}-{dead}",
+            gdir / f".selfplay-local-00001.jsonl.gz.tmp-{dead}",
+            gdir / f".selfplay-local-00000.jsonl.gz.tmp-{host}-notapid"]
+    gone = [tmp_path / f".manifest.json.tmp-{host}-{dead}",
+            *(gdir / f".{name}.tmp-{host}-{dead}" for name in ("selfplay.json", "selfplay-local-00001.jsonl.gz",
+                                                               "net.bin", "gate.jsonl", "gate.json")),
+            nets / f".gen-000.bin.tmp-{host}-{dead}", nets / f".best.bin.tmp-{host}-{dead}",
+            gdir / f".selfplay.json.tmp-{host}-{me}"]
     for p in kept + gone:
         p.write_text("half a file")
     assert Loop(tmp_path, replace(TINY, generations=0)).run(stop_after=1) == 1
     assert sorted(temps(tmp_path)) == sorted(kept)
-    assert f"notice: {len(kept)} temp files of other processes left alone" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert f"notice: deleted {len(gone)} temp files an interrupted run left" in out
+    assert f"notice: {len(kept)} temp files of other processes left alone" in out
     assert sorted(p.name for p in gdir.glob("*.jsonl.gz")) == ["selfplay-local-00000.jsonl.gz",
                                                                "selfplay-local-00001.jsonl.gz"]
     assert manifest(tmp_path)["generations"][0]["selfplay"]["games"] == 2
-    files.remove_own_temps(gdir, "selfplay-local-*")
-    assert sorted(temps(tmp_path)) == sorted(kept)
 
 
 def test_other_settings_on_a_started_self_play_step_are_an_error(tmp_path, monkeypatch):
@@ -198,13 +274,78 @@ def test_new_flags_apply_only_to_steps_not_yet_run(tmp_path, reference):
     assert m["generations"][1]["train"]["lr"] == 1e-4
 
 
-@pytest.mark.parametrize("change", [{"generations": -1}, {"lr": 0.0}, {"warm_lr": math.nan}, {"games": 0},
+@pytest.mark.parametrize("change", [{"generations": -1}, {"generations": 100}, {"lr": 0.0}, {"warm_lr": math.nan}, {"games": 0},
                                     {"window": 0}, {"gate_seeds": 0}, {"gate_simulations": 0}, {"device": "gpu"},
                                     {"warm_games": 10_000_001}])
 def test_bad_settings_are_an_error_before_anything_is_written(tmp_path, change):
     with pytest.raises(ValueError):
         Loop(tmp_path / "run", replace(TINY, **change))
     assert not (tmp_path / "run").exists()
+
+
+def test_self_play_seeds_stay_below_the_gate_seeds(tmp_path):
+    from alphasettler.train.loop import GATE_SEED_START, MAX_GENERATIONS, SEEDS_PER_GENERATION
+
+    assert MAX_GENERATIONS == 99
+    assert MAX_GENERATIONS * SEEDS_PER_GENERATION + SEEDS_PER_GENERATION <= GATE_SEED_START
+    Loop(tmp_path / "run", replace(TINY, generations=99, games=SEEDS_PER_GENERATION))
+    with pytest.raises(ValueError, match="--generations must be 0..=99"):
+        Loop(tmp_path / "run", replace(TINY, generations=100))
+    assert not (tmp_path / "run").exists()
+
+
+def test_best_bin_follows_the_manifest_after_an_unsaved_promotion(tmp_path, monkeypatch):
+    """A promoting gate interrupted after the best.bin rename but before the manifest is saved:
+    best.bin holds the new net while the manifest's best is the old one. A rerun puts it back,
+    whether it stops short of the gate or replays the gate and this time does not promote."""
+    import alphasettler.train.loop as loop_mod
+
+    assert Loop(tmp_path, TINY).run(stop_after=5) == 5
+    nets = tmp_path / "nets"
+    real_save = Loop._save
+
+    def unsaved_promotion():
+        def interrupt(self):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(loop_mod, "promoted", lambda wins, games: True)
+        monkeypatch.setattr(Loop, "_save", interrupt)
+        with pytest.raises(KeyboardInterrupt):
+            Loop(tmp_path, TINY).run()
+        monkeypatch.setattr(Loop, "_save", real_save)
+        assert (nets / "best.bin").read_bytes() == (nets / "gen-001.bin").read_bytes()
+        assert manifest(tmp_path)["best"] == 0
+
+    unsaved_promotion()
+    assert Loop(tmp_path, replace(TINY, generations=0)).run() == 0
+    assert (nets / "best.bin").read_bytes() == (nets / "gen-000.bin").read_bytes()
+
+    unsaved_promotion()
+    monkeypatch.setattr(loop_mod, "promoted", lambda wins, games: False)
+    assert Loop(tmp_path, TINY).run() == 1
+    m = manifest(tmp_path)
+    assert m["best"] == 0 and m["generations"][1]["gate"]["promoted"] is False
+    assert (nets / "best.bin").read_bytes() == (nets / "gen-000.bin").read_bytes()
+
+
+def test_a_changed_output_of_a_completed_step_is_an_error(tmp_path):
+    """Generation 1's training reads generation 0's net.bin and both generations' chunks; each
+    is checked against the manifest's sha256 first, and a mismatch names the file."""
+    assert Loop(tmp_path, TINY).run(stop_after=4) == 4  # through generation 1's self-play
+    for path in (tmp_path / "gen-000" / "net.bin", tmp_path / "gen-000" / "selfplay-local-00001.jsonl.gz",
+                 tmp_path / "gen-001" / "selfplay-local-00000.jsonl.gz"):
+        good = path.read_bytes()
+        path.write_bytes(good + b"x")
+        with pytest.raises(ValueError, match=rf"{path.parent.name}/{path.name} has sha256 [0-9a-f]{{64}}, not the"):
+            Loop(tmp_path, TINY).run()
+        path.write_bytes(good)
+    best = tmp_path / "nets" / "gen-000.bin"
+    good = best.read_bytes()
+    best.unlink()
+    with pytest.raises(ValueError, match="gen-000.bin is missing"):
+        Loop(tmp_path, TINY).run()
+    best.write_bytes(good)
+    assert Loop(tmp_path, TINY).run() == 2
 
 
 def cli(*args):

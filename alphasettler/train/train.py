@@ -163,6 +163,7 @@ def train(window: Window, out: str | Path, cfg: TrainConfig, init: str | Path | 
     try:
         tmp.write_bytes(model_mod.to_bytes(net))
         err = parity_check(net, tmp, window)
+        files.fsync_file(tmp)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise

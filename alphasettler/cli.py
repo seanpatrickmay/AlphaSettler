@@ -227,6 +227,7 @@ def _selfplay_explore(args) -> int:
         # The writer closed the gzip stream cleanly: the games so far are a readable file.
         kept = tmp.exists()
         if kept:
+            files.fsync_file(tmp)
             os.replace(tmp, out)
         print(f"interrupted: kept {counts.get('games', 0)} games, {counts.get('decisions', 0)} searched "
               f"decisions{f' in {out}' if kept else ''}", file=sys.stderr)
@@ -235,6 +236,7 @@ def _selfplay_explore(args) -> int:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    files.fsync_file(tmp)
     os.replace(tmp, out)
     print(f"{counts['games']} games, {counts['decisions']} searched decisions "
           f"({counts['full_decisions']} full searches), wrote {out}")
@@ -330,7 +332,7 @@ def _train_loop(args) -> int:
     except KeyboardInterrupt:
         print("interrupted: rerun the same command to resume at the first incomplete step", file=sys.stderr)
         return 130
-    except RuntimeError as e:  # a failed parity check: nothing of the step was recorded
+    except RuntimeError as e:  # a RuntimeError (for example a failed parity check): the step is not recorded
         print(f"error: {e}", file=sys.stderr)
         return 1
     print(f"{n} steps run" if n else "nothing to do: every step is complete")

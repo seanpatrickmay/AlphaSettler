@@ -240,13 +240,13 @@ def test_malformed_records_are_value_errors_not_crashes(tmp_path):
 
 
 def test_a_temp_name_is_never_a_record_file(tmp_path):
-    """F3: a half-written record is `.NAME.tmp-PID`: hidden, and not matched by `*.jsonl.gz`."""
+    """F3: a half-written record is `.NAME.tmp-HOST-PID`: hidden, and not matched by `*.jsonl.gz`."""
     final = tmp_path / "20261002-selfplay-ismcts-f6-q3.jsonl.gz"
     tmp = files.temp_path(final)
-    assert tmp.parent == tmp_path and tmp.name.startswith(".") and str(tmp).endswith(f".tmp-{__import__('os').getpid()}")
+    assert tmp.parent == tmp_path and tmp.name.startswith(".") and str(tmp).endswith(f".tmp-{files.host()}-{__import__('os').getpid()}")
     tmp.write_bytes(b"half a file")
     assert list(tmp_path.glob("*.jsonl.gz")) == []
-    files.remove_temps(tmp_path, final.name)
+    assert files.remove_dead_temps(tmp_path, final.name) == [tmp]
     assert list(tmp_path.iterdir()) == []
 
 
@@ -257,10 +257,12 @@ def test_file_helpers_replace_atomically(tmp_path):
     assert p.read_bytes() == b"two"
     files.atomic_copy(p, tmp_path / "y.txt")
     assert files.sha256_file(tmp_path / "y.txt") == hashlib.sha256(b"two").hexdigest()
-    (tmp_path / ".x.txt.tmp-1").write_text("left over")
-    (tmp_path / ".other.tmp-1").write_text("not ours")
-    files.remove_temps(tmp_path, "x.txt")
-    assert sorted(q.name for q in tmp_path.iterdir()) == [".other.tmp-1", "x.txt", "y.txt"]
+    files.temp_path(p).write_text("left over")  # this process's: no write of it is in progress
+    (tmp_path / ".x.txt.tmp-1").write_text("hostless: kept")
+    files.temp_path(tmp_path / "other").write_text("another name")
+    files.remove_dead_temps(tmp_path, "x.txt")
+    assert sorted(q.name for q in tmp_path.iterdir()) == [files.temp_path("other").name, ".x.txt.tmp-1", "x.txt",
+                                                          "y.txt"]
 
 
 def _selfplay_args(out):
