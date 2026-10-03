@@ -109,7 +109,7 @@ def _parser() -> argparse.ArgumentParser:
     lp.add_argument("--generations", type=int, required=True,
                     help="learned generations after the warm start (0: the warm start only)")
     lp.add_argument("--games", type=_positive_int, default=10_000, help="self-play games per learned generation")
-    lp.add_argument("--warm-games", type=_positive_int, default=20_000, help="self-play games of generation 0")
+    lp.add_argument("--warm-games", type=_positive_int, default=100_000, help="self-play games of generation 0")
     lp.add_argument("--chunk-games", type=_positive_int, default=500, help="games per self-play record file")
     lp.add_argument("--full-simulations", type=_positive_int, default=600)
     lp.add_argument("--fast-simulations", type=_positive_int, default=100)
@@ -297,7 +297,8 @@ def _train(args) -> int:
     for line in window.notices:
         print(f"notice: {line}")
     print(f"window: {window.data.games} games, {window.data.decisions} positions "
-          f"({window.data.full_decisions} full searches), {window.new_positions} new")
+          f"({window.data.full_decisions} full searches), {window.new_positions} new; "
+          f"{window.validation.games} held out ({window.validation.decisions} positions)")
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -308,7 +309,10 @@ def _train(args) -> int:
     except RuntimeError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    print(f"trained {s['steps']} steps on {s['device']} at lr {s['lr']:g}; "
+    best = s["best_held_out"]
+    kept = "the last step" if best is None else \
+        f"the best held-out score {best['score']} (policy {best['policy']}, value {best['value']}) after step {best['step'] + 1}"
+    print(f"trained {s['steps']} steps on {s['device']} at lr {s['lr']:g}; kept {kept}; "
           f"parity max error {s['parity_max_error']:.2e}; wrote {out}")
     return 0
 

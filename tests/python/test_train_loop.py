@@ -60,6 +60,14 @@ def test_a_full_run_writes_every_output_and_redoes_nothing(reference):
     assert (g1["train"]["window_size"], g1["train"]["steps_factor"]) == (4, 2.0)
     assert g1["gate"]["config"] == {"max_offers_per_turn": 0, "max_turns": 60}
     assert g1["train"]["parity_max_error"] <= 1e-5
+    for g, held_seed in ((g0, 0), (g1, 10_000_000)):  # each newest generation's seed divisible by 20
+        t = g["train"]
+        assert (t["validation_games"], t["held_out_every"]) == (1, 20) and t["validation_positions"] > 0
+        assert t["held_out"] and t["held_out"][-1]["step"] == t["steps"] - 1
+        assert t["best_held_out"] == min(t["held_out"], key=lambda r: r["score"])
+        assert t["best_step"] == t["best_held_out"]["step"]
+    # Generation 0 trains on seed 1 only; generation 1 on both of gen-000's (older) and its own seed 10,000,001.
+    assert (g0["train"]["games"], g1["train"]["games"]) == (1, 3)
     assert g1["gate"]["games"] == 4 and g1["gate"]["promoted"] == promoted(g1["gate"]["wins"], 4)
     assert g1["gate"]["belief_resets"] == 0
     assert m["best"] == (1 if g1["gate"]["promoted"] else 0)
@@ -280,6 +288,17 @@ def test_new_flags_apply_only_to_steps_not_yet_run(tmp_path, reference):
 def test_bad_settings_are_an_error_before_anything_is_written(tmp_path, change):
     with pytest.raises(ValueError):
         Loop(tmp_path / "run", replace(TINY, **change))
+    assert not (tmp_path / "run").exists()
+
+
+def test_the_warm_start_is_100000_games_inside_generation_0s_seed_range(tmp_path):
+    from alphasettler.cli import _parser
+    from alphasettler.train.loop import GATE_SEED_START, SEEDS_PER_GENERATION
+
+    assert LoopSettings(generations=0).warm_games == 100_000
+    assert _parser().parse_args(["train-loop", "--dir", "x", "--generations", "0"]).warm_games == 100_000
+    assert 100_000 <= SEEDS_PER_GENERATION < GATE_SEED_START
+    Loop(tmp_path / "run", LoopSettings(generations=0))  # the defaults pass every check
     assert not (tmp_path / "run").exists()
 
 

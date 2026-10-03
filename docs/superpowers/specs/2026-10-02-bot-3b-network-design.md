@@ -140,7 +140,7 @@ trading, ¼ each at the turn cap.
   the exploration settings. Fast-search decisions are recorded with their visit counts and
   `full_search: false`.
 
-**Generation 0: the warm start.** 3a's `ismcts` self-plays 20,000 games with the same playout cap
+**Generation 0: the warm start.** 3a's `ismcts` self-plays 100,000 games with the same playout cap
 randomization (with the heuristic evaluator this takes minutes). net₀ is trained on those records
 by supervision: the policy imitates the search's visit distribution and the value learns the
 outcomes. net₀ should play about as well as 3a, so the first learned generation starts from a
@@ -156,13 +156,21 @@ search that already beats AlphaBeta.
   `torch.frombuffer`, so no numpy and no per-sample Python objects. Nothing is held in memory per
   position, so the window size is limited only by disk.
 - Loss: policy cross-entropy against the normalised visit counts, on full-search positions only;
-  value cross-entropy against the outcome (one-hot winner, ¼ each at the turn cap); 0.25 × MSE of
-  the aux head against final VP / 10; L2 1e-4.
+  value cross-entropy against the outcome (one-hot winner, ¼ each at the turn cap) and 0.25 × MSE
+  of the aux head against final VP / 10, both on a random 1/16 of each batch's rows (at least one;
+  drawn from a generator seeded by the run's seed and the step); L2 1e-4.
+- Validation and early stopping: the newest generation's games whose seed is a multiple of 20 are
+  held out and not trained on (older generations in the window are all training data). Every 500 steps and
+  at the last, the held-out policy, value (every row) and aux losses are measured on 10 fixed
+  batches of 1,024, and the checkpoint with the lowest policy + value is the one exported. The
+  first warm start (20,000 games, value loss on every row) scored a held-out value cross-entropy
+  of 2.28, worse than a uniform guess (1.39), because about 240 positions per game share one
+  outcome and the trunk learned board → winner.
 - Optimiser: Adam, batch 1,024, learning rate 1e-3 for net₀ and 3e-4 afterwards. Each generation
   trains from the previous generation's weights (net₀ from scratch) for enough steps to draw each
   of the newest generation's positions twice on average (steps = 2 × new positions / 1,024). Then
-  it exports the weights file and checks it by running the parity test's positions through both
-  the Rust and PyTorch forward passes.
+  it exports the best held-out checkpoint's weights file and checks it by running the parity
+  test's positions through both the Rust and PyTorch forward passes.
 - Training on MPS is not bit-reproducible. The determinism guarantee covers self-play, search and
   arenas given a weights file, not training.
 

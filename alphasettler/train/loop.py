@@ -50,7 +50,7 @@ NOTICE_TEMPS = 5
 class LoopSettings:
     generations: int
     games: int = 10_000
-    warm_games: int = 20_000
+    warm_games: int = 100_000
     chunk_games: int = 500
     full_simulations: int = 600
     fast_simulations: int = 100
@@ -265,7 +265,7 @@ class Loop:
         return {**plan, **totals, "chunks": chunks}
 
     def _train(self, k: int) -> dict:
-        from alphasettler.train.data import load_window
+        from alphasettler.train.data import HELD_OUT_EVERY, load_window
         from alphasettler.train.train import TrainConfig, train
 
         gens = range(max(0, k - self.s.window + 1), k + 1)
@@ -295,12 +295,18 @@ class Loop:
             "games": window.data.games,
             "positions": window.data.decisions,
             "new_positions": window.new_positions,
+            "held_out_every": HELD_OUT_EVERY,
+            "validation_games": window.validation.games,
+            "validation_positions": window.validation.decisions,
             "init": None if k == 0 else gen_name(k - 1),
             "lr": cfg.lr,
             "steps": summary["steps"],
             "batch": cfg.batch,
             "device": summary["device"],
             "history": summary["history"],
+            "held_out": summary["held_out"],
+            "best_step": summary["best_step"],
+            "best_held_out": summary["best_held_out"],
             "parity_max_error": summary["parity_max_error"],
             "net": files.sha256_file(gdir / "net.bin"),
         }

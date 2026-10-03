@@ -6,7 +6,11 @@ garbled is kept up to the damage; one holding a record that does not replay (or 
 skipped whole; empty files and files without decisions are noted. Each case prints a notice.
 A seed already read in the same generation (a second writer playing the same seeds) is read
 once. Records stream into the `TrainingSet` a file at a time, so the window is never held as
-Python dicts; the Rust side checks every field of every record."""
+Python dicts; the Rust side checks every field of every record.
+
+The newest generation's games whose seed is a multiple of HELD_OUT_EVERY are held out: they go to
+a separate validation set (collected a file at a time, 1 game in 20), not the training set. Older
+generations in the window are all training data."""
 
 from __future__ import annotations
 
@@ -26,6 +30,8 @@ ACTIONS = action_space_size()
 SEATS = 4
 # Seeds a duplicate notice lists before it elides the rest.
 NOTICE_SEEDS = 5
+# The newest generation's games with seed % HELD_OUT_EVERY == 0 are the validation set (spec Section 4).
+HELD_OUT_EVERY = 20
 
 # What reading a cut-short or garbled file raises: gzip framing, deflate data, text, JSON. Only
 # these end a file early; anything else (an OSError such as a permission error, MemoryError, a
@@ -49,27 +55,47 @@ class _FileStats:
     bug: BaseException | None = None
 
 
-def _games(path: Path, seen: set[int], stats: _FileStats) -> Iterator[dict]:
+class _BadHeldOut(Exception):
+    """A held-out record that does not load. Raised at the end of the stream, so `extend` adds
+    nothing from the file and the file is skipped whole, as for a bad training record."""
+
+
+def held_out(seed: int) -> bool:
+    return seed % HELD_OUT_EVERY == 0
+
+
+def _games(path: Path, seen: set[int], stats: _FileStats, held: list[dict] | None = None) -> Iterator[dict]:
     """The file's records as read, minus seeds in `seen` or already streamed (collected in
     `stats.added`). A read error ends the stream and is kept in `stats.read_error`. Records are
-    passed on unexamined beyond their seed: the Rust side checks every field."""
+    passed on unexamined beyond their seed: the Rust side checks every field. With `held`, the
+    games whose seed is `held_out` go there instead, and are checked once the stream ends."""
     try:
         reader = records.read(path)
         while True:
             try:
                 g = next(reader)
             except StopIteration:
-                return
+                break
             except _READ_ERRORS as e:
                 stats.read_error = f"{type(e).__name__}: {e}"
-                return
+                break
             seed = g.get("seed") if isinstance(g, dict) else None
             if isinstance(seed, int) and (seed in seen or seed in stats.added):
                 stats.duplicates.append(seed)
                 continue
             if isinstance(seed, int):
                 stats.added.add(seed)
+                if held is not None and held_out(seed):
+                    held.append(g)
+                    continue
             yield g
+        if held:
+            try:
+                TrainingSet(held)  # the same checks the validation set's `extend` makes
+            except ValueError as e:
+                raise _BadHeldOut(f"held-out {e}") from e
+    except _BadHeldOut:
+        raise
     except Exception as e:
         stats.bug = e
         raise
@@ -80,22 +106,30 @@ def _seed_list(seeds: list[int]) -> str:
     return shown + (f", ... ({len(seeds) - NOTICE_SEEDS} more)" if len(seeds) > NOTICE_SEEDS else "")
 
 
-def _read_file(path: Path, gen_name: str, data: TrainingSet, seen: set[int], notices: list[str]) -> None:
+def _read_file(path: Path, gen_name: str, data: TrainingSet, seen: set[int], notices: list[str],
+               validation: TrainingSet | None) -> None:
     stats = _FileStats()
+    held: list[dict] | None = None if validation is None else []
     games, decisions = data.games, data.decisions
     failure = None
     try:
-        data.extend(_games(path, seen, stats))
+        data.extend(_games(path, seen, stats, held))
     except ValueError as e:
         failure = e
     if failure is not None:
         if stats.bug is not None and failure.__cause__ is stats.bug:
             raise stats.bug  # our own error inside the stream, not a bad record
+        if isinstance(failure.__cause__, _BadHeldOut):
+            failure = failure.__cause__
         # A record that is malformed or does not replay: `extend` added nothing from this file.
         notices.append(f"{path}: skipped the whole file: {failure}")
         return
     seen |= stats.added
     kept, new_decisions = data.games - games, data.decisions - decisions
+    if held:
+        before = validation.decisions
+        validation.extend(held)  # checked at the end of the stream, so it cannot fail here
+        kept, new_decisions = kept + len(held), new_decisions + validation.decisions - before
     if stats.duplicates:
         n = len(stats.duplicates)
         what = f"all {n} games duplicate earlier seeds" if kept == 0 and stats.read_error is None \
@@ -109,22 +143,25 @@ def _read_file(path: Path, gen_name: str, data: TrainingSet, seen: set[int], not
         notices.append(f"{path}: {kept} games but no decisions")
 
 
-def read_generation(gen_dir: str | Path, data: TrainingSet, notices: list[str]) -> list[Path]:
+def read_generation(gen_dir: str | Path, data: TrainingSet, notices: list[str],
+                    validation: TrainingSet | None = None) -> list[Path]:
     """Add every record file of `gen_dir` to `data`, one file at a time; returns the files read.
-    ValueError if `gen_dir` is not a directory."""
+    With `validation`, the held-out games go there instead of `data`. ValueError if `gen_dir` is
+    not a directory."""
     gen_dir = Path(gen_dir)
     if not gen_dir.is_dir():
         raise ValueError(f"generation directory {gen_dir} does not exist (or is not a directory)")
     seen: set[int] = set()
     paths = record_files(gen_dir)
     for path in paths:
-        _read_file(path, gen_dir.name, data, seen, notices)
+        _read_file(path, gen_dir.name, data, seen, notices, validation)
     return paths
 
 
 @dataclass
 class Window:
     data: TrainingSet
+    validation: TrainingSet  # the newest generation's held-out games; empty if it has none
     new_positions: int
     files: dict[str, str]
     notices: list[str]
@@ -132,26 +169,28 @@ class Window:
 
 def load_window(root: str | Path, gen_dirs: list[Path]) -> Window:
     """The training set over `gen_dirs` (oldest first; the last is the newest generation), the
-    newest generation's decision count, and every record file read (path relative to `root` ->
-    sha256). ValueError if there is nothing to train on."""
+    validation set (the newest generation's `held_out` games, not in the training set), the
+    newest generation's training decision count, and every record file read (path relative to
+    `root` -> sha256). ValueError if there is nothing to train on."""
     root = Path(root)
     gen_dirs = [Path(d) for d in gen_dirs]
     if not gen_dirs:
         raise ValueError("no generation directories to train on")
     notices: list[str] = []
-    data = TrainingSet()
+    data, validation = TrainingSet(), TrainingSet()
     read: dict[str, str] = {}
     new = 0
-    for d in gen_dirs:
+    for i, d in enumerate(gen_dirs):
         before = data.decisions
-        for p in read_generation(d, data, notices):
+        newest = i == len(gen_dirs) - 1
+        for p in read_generation(d, data, notices, validation if newest else None):
             read[str(p.relative_to(root))] = files.sha256_file(p)
         new = data.decisions - before
     if data.decisions == 0:
         raise ValueError(f"no training positions in {', '.join(str(d) for d in gen_dirs)}")
     if new == 0:
         raise ValueError(f"the newest generation {gen_dirs[-1]} has no decisions to train on")
-    return Window(data, new, read, notices)
+    return Window(data, validation, new, read, notices)
 
 
 @dataclass
