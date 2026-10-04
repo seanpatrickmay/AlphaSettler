@@ -76,25 +76,64 @@ or by a realistic maximum where the hard one is far out (hand total / 20, discar
 **Hidden block** (from the world, value head only): each opponent's hand (5) and dev cards by
 kind (5), seat-relative, 30 floats.
 
-**Network** (about 1.7M multiply-adds per position):
+**Network v2: an entity-structured graph net** (amended 2026-10-04; it replaces the flat MLP
+of the first draft).
+
+*Why.* The first network was a flat MLP: `public → 512 → 512 → 512`, with a 665-way policy head
+and a value head on `[trunk ‖ hidden]`. Trained on 100,000 `ismcts` games with the Section 4
+fixes, it held out well on the value (cross-entropy 0.864) but played badly: 0.077 against three
+`ismcts@1000` over 200 seeds. Hybrid evaluators at 100 simulations against three `ismcts@100`
+(50 seeds) isolated the prior: heuristic prior and value 0.250, net prior with heuristic value
+0.140, heuristic prior with net value 0.200. Over 3,954 full searches, the heuristic prior's top
+move matched the search's most-visited move 95% of the time; the MLP's matched 58%, and only
+9% on setup settlements, 11% on robber moves and 19% on roads. Policy loss was the same on
+training and held-out games, so the MLP underfits. A dense layer over flattened features shares
+nothing across the 54 nodes, 72 edges and 19 tiles, so it must learn "where" separately for
+each. Steals were at chance (0.51) for a second reason: `StealFrom(p)` named an absolute seat
+while the inputs are seat-relative.
+
+*Inputs.* The public vector is read as entities, using the encoder's existing blocks unchanged:
+54 nodes × 19, 72 edges × 4, 19 tiles × 8, and 91 global scalars. The hidden block (30) is as
+before. Static adjacency comes from the engine's topology: a node's tiles, edges and neighbouring
+nodes, an edge's two nodes, and a tile's nodes.
+
+*Network* (width `d`, `R` rounds, both in the weights header; defaults `d = 48`, `R = 2`, about
+3M multiply-adds per position):
 
 ```
-public features → 512 → 512 → 512   shared trunk, ReLU
-  policy head:  512 → 665 logits, masked to the legal moves, softmax → prior
-  value head:   [trunk 512 ‖ hidden 30] → 256 → 4, softmax → value (win probability per seat)
-  aux head:     value head's 256 → 4, each seat's final VP / 10 (training only)
+encoders (one per entity type, shared across that type's entities), ReLU:
+  node 19 → d,  edge 4 → d,  tile 8 → d,  global 91 → d
+R rounds, each with its own weights, residual (x ← x + ReLU(W·[...] + b)), in this order:
+  tile   ← [tile, mean of its nodes, global]
+  node   ← [node, mean of its tiles, mean of its edges, mean of its neighbouring nodes, global]
+  edge   ← [edge, sum of its two nodes, global]
+  global ← [global, mean of nodes, mean of edges, mean of tiles]
+policy (665 logits, masked to the legal moves, softmax):
+  BuildSettlement(n), BuildCity(n): a per-node linear map on [node n, global] → 2 logits
+  BuildRoad(e): a per-edge linear map on [edge e, global] → 1 logit
+  MoveRobber(t): a per-tile linear map on [tile t, global] → 1 logit
+  every other id: [global, mean of nodes, mean of edges, mean of tiles] → 4d → 466 logits
+value: [global, the three means, hidden 30] → 4d → 4, softmax (win probability per seat)
+aux:   the value head's 4d layer → 4 (final VP / 10, training only)
 ```
 
 - The prior depends only on the actor's observation by construction: the hidden block enters
-  only the value head. 3a's property test (resampling hidden cards leaves the prior unchanged)
-  runs against `NetEvaluator` too.
+  only the value head. 3a's property test still runs against `NetEvaluator`.
+- **Seat-relative player ids.** The policy treats `StealFrom(p)` and `ConfirmTrade(p)` as
+  `StealFrom(rel(p, actor))`, both in the training targets and in `NetEvaluator`'s masking, so
+  the policy sees players the same way the inputs do.
 - `OfferTrade` ids are always masked; 3b never trades.
+- *Acceptance gate before any learned generation:* a top-1 agreement diagnostic over at least
+  3,000 full searches of fresh `ismcts` self-play. net₀ must reach at least 0.5 on setup
+  settlements, robber moves and roads, and must beat the MLP's 0.140 with its prior in the
+  "net prior + heuristic value" hybrid at 100 simulations over 50 seeds.
 
-**Weights file.** Little-endian. Header: magic `ASNET\0\0\0`, format version (u32),
-`ENCODING_HASH` (u64, a hash of the encoder's layout constants, a canonical description of its
-block and slot order, and its version), layer count and each
-layer's shape. Then f32 weights and biases in layer order. Loading fails with a clear error on a
-wrong magic, version, hash or shape, or on a short file.
+**Weights file** (format version 2; a version 1 file is refused with a clear error).
+Little-endian. Header: magic `ASNET\0\0\0`, format version (u32), `ENCODING_HASH` (u64, a hash
+of the encoder's layout constants, a canonical description of its block and slot order, and its
+version), `d` and `R` (u32 each), layer count and each layer's shape. Then f32 weights and biases
+in layer order. Loading fails with a clear error on a wrong magic, version, hash, width, round
+count or shape, or on a short file.
 
 ## 3. Search with the network
 
@@ -104,7 +143,8 @@ pass, masks and softmaxes the policy over `legal`, and rotates the value back. T
 belief, sampler and turn-cap handling are 3a's, unchanged. Weights are loaded once per process and
 shared read-only (`Arc`) across threads.
 
-**Leaf batch size.** 3a used 8. A larger batch uses the matrix multiply better but weakens
+**Leaf batch size.** (The MLP measured no gain from batching: 4,628 / 4,709 / 4,070 simulations/s
+per core at 8 / 16 / 32. The sweep is rerun for network v2.) 3a used 8. A larger batch uses the matrix multiply better but weakens
 selection (more virtual loss). One measurement picks the default: 8, 16 and 32 compared on
 simulations/s and on a paired arena match at equal simulations (Section 5).
 
@@ -217,6 +257,9 @@ generation's directory before training. That is the scale-out path, and it needs
 2. Search throughput with the net is recorded in `docs/perf/`: simulations/s, evaluations/s and
    the 8/16/32 batch sweep.
 3. Warm start (recorded, not a gate): net₀ at 1,000 simulations vs three `ismcts@1000`, 200 seeds.
+3b. **Acceptance gate (Section 2)** before any learned generation: net₀'s prior reaches at least
+   0.5 top-1 agreement on setup settlements, robber moves and roads, and beats 0.140 in the
+   "net prior + heuristic value" hybrid.
 4. **Headline:** the best net at 1,000 simulations beats three `ismcts@1000` with z > 3 against the
    0.25 null over 200 seeds (native CRN arena, no trades), **and** against `catanatron:alphabeta`
    over 200 seeds it scores a win rate above 3a's 0.383 with z > 3 against 0.25.
