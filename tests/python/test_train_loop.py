@@ -15,10 +15,11 @@ from dataclasses import replace
 import pytest
 
 from alphasettler import files
+from alphasettler._engine import NET_MAX_ROUNDS, NET_MAX_WIDTH
 from alphasettler.train.loop import Loop, LoopSettings, json_float, promoted
 
 TINY = LoopSettings(generations=1, games=2, warm_games=2, chunk_games=1, full_simulations=4, fast_simulations=2,
-                    full_probability=0.5, batch=16, trunk=16, value=8, gate_seeds=1, gate_simulations=4,
+                    full_probability=0.5, batch=16, width=8, rounds=1, gate_seeds=1, gate_simulations=4,
                     max_turns=60, device="cpu", threads=2)
 
 
@@ -56,6 +57,8 @@ def test_a_full_run_writes_every_output_and_redoes_nothing(reference):
     assert g0["gate"]["promoted"] is True
     assert (g0["train"]["init"], g1["train"]["init"]) == (None, "gen-000")
     assert (g0["train"]["lr"], g1["train"]["lr"]) == (1e-3, 3e-4)
+    assert [(g["train"]["width"], g["train"]["rounds"]) for g in (g0, g1)] == [(8, 1), (8, 1)]
+    assert m["format"] == 2
     assert g1["train"]["window"] == ["gen-000", "gen-001"]
     assert (g1["train"]["window_size"], g1["train"]["steps_factor"]) == (4, 2.0)
     assert g1["gate"]["config"] == {"max_offers_per_turn": 0, "max_turns": 60}
@@ -284,7 +287,8 @@ def test_new_flags_apply_only_to_steps_not_yet_run(tmp_path, reference):
 
 @pytest.mark.parametrize("change", [{"generations": -1}, {"generations": 100}, {"lr": 0.0}, {"warm_lr": math.nan}, {"games": 0},
                                     {"window": 0}, {"gate_seeds": 0}, {"gate_simulations": 0}, {"device": "gpu"},
-                                    {"warm_games": 10_000_001}])
+                                    {"warm_games": 10_000_001}, {"width": 0}, {"rounds": 0},
+                                    {"width": NET_MAX_WIDTH + 1}, {"rounds": NET_MAX_ROUNDS + 1}, {"width": 2.5}])
 def test_bad_settings_are_an_error_before_anything_is_written(tmp_path, change):
     with pytest.raises(ValueError):
         Loop(tmp_path / "run", replace(TINY, **change))
@@ -347,6 +351,33 @@ def test_best_bin_follows_the_manifest_after_an_unsaved_promotion(tmp_path, monk
     assert (nets / "best.bin").read_bytes() == (nets / "gen-000.bin").read_bytes()
 
 
+def test_a_manifest_of_another_format_is_refused_before_anything_is_written(tmp_path):
+    """A format 1 run directory (the flat MLP's, such as runs/3b) is not resumed by network v2."""
+    (tmp_path / "manifest.json").write_text(json.dumps({"format": 1, "best": 0, "generations": []}))
+    with pytest.raises(ValueError, match="has format 1, expected 2: a format 1 run trained the flat MLP"):
+        Loop(tmp_path, TINY)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["manifest.json"]
+
+
+def test_linked_records_satisfy_a_new_runs_self_play_without_playing(tmp_path, reference, monkeypatch):
+    """Plan 5b's warm-start retrain: generation 0's plan and chunks hard-linked into a new run
+    directory complete that run's self-play step without a game, with the same manifest entry."""
+    import alphasettler.selfplay as selfplay_mod
+
+    gen = tmp_path / "run" / "gen-000"
+    gen.mkdir(parents=True)
+    for p in (reference / "gen-000").iterdir():
+        if p.name == "selfplay.json" or p.name.startswith("selfplay-local-"):
+            os.link(p, gen / p.name)
+
+    def no_games(*args, **kwargs):
+        raise AssertionError("a game was played")
+
+    monkeypatch.setattr(selfplay_mod, "write_explore", no_games)
+    assert Loop(tmp_path / "run", TINY).run(stop_after=1) == 1
+    assert manifest(tmp_path / "run")["generations"][0]["selfplay"] == manifest(reference)["generations"][0]["selfplay"]
+
+
 def test_a_changed_output_of_a_completed_step_is_an_error(tmp_path):
     """Generation 1's training reads generation 0's net.bin and both generations' chunks; each
     is checked against the manifest's sha256 first, and a mismatch names the file."""
@@ -373,8 +404,8 @@ def cli(*args):
 
 def test_cli_train_loop(tmp_path):
     args = ["train-loop", "--dir", str(tmp_path), "--generations", "0", "--warm-games", "2", "--chunk-games", "1",
-            "--full-simulations", "4", "--fast-simulations", "2", "--batch", "16", "--trunk", "16",
-            "--value-width", "8", "--max-turns", "60", "--device", "cpu", "--threads", "2"]
+            "--full-simulations", "4", "--fast-simulations", "2", "--batch", "16", "--width", "8",
+            "--rounds", "1", "--max-turns", "60", "--device", "cpu", "--threads", "2"]
     r = cli(*args)
     assert r.returncode == 0, r.stderr
     assert "3 steps run" in r.stdout and "best net: gen-000" in r.stdout
@@ -402,8 +433,8 @@ def test_cli_train_loop_ctrl_c_exits_130_and_the_rerun_resumes(tmp_path, monkeyp
     from alphasettler.cli import main
 
     args = ["train-loop", "--dir", str(tmp_path), "--generations", "0", "--warm-games", "2", "--chunk-games", "1",
-            "--full-simulations", "4", "--fast-simulations", "2", "--batch", "16", "--trunk", "16",
-            "--value-width", "8", "--max-turns", "60", "--device", "cpu", "--threads", "2"]
+            "--full-simulations", "4", "--fast-simulations", "2", "--batch", "16", "--width", "8",
+            "--rounds", "1", "--max-turns", "60", "--device", "cpu", "--threads", "2"]
     real = Loop._save
 
     def interrupting_save(self):

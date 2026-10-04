@@ -14,7 +14,7 @@ from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 
-from alphasettler._engine import DEFAULT_NETS_DIR, Bot, bot_names
+from alphasettler._engine import DEFAULT_NETS_DIR, NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, Bot, bot_names
 from alphasettler.arena import SEED_LIMIT, _write_records, check, format_summary, open_output, run
 from alphasettler.stats import paired, summarize
 
@@ -100,8 +100,10 @@ def _parser() -> argparse.ArgumentParser:
     t.add_argument("--seed", type=int, default=0)
     t.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
     t.add_argument("--threads", type=_positive_int, default=None)
-    t.add_argument("--trunk", type=_positive_int, default=512)
-    t.add_argument("--value-width", type=_positive_int, default=256)
+    t.add_argument("--width", type=_positive_int, default=NET_DEFAULT_WIDTH,
+                   help="network v2's width d, from scratch (an --init file brings its own)")
+    t.add_argument("--rounds", type=_positive_int, default=NET_DEFAULT_ROUNDS,
+                   help="network v2's message-passing rounds R, from scratch (an --init file brings its own)")
 
     lp = sub.add_parser("train-loop",
                         help="self-play, train and gate generations; rerun to resume (needs the train extra)")
@@ -119,8 +121,9 @@ def _parser() -> argparse.ArgumentParser:
     lp.add_argument("--lr", type=float, default=FINE_TUNE_LR, help="later generations' learning rate")
     lp.add_argument("--steps-factor", type=float, default=2.0, help="steps = factor x new positions / batch")
     lp.add_argument("--batch", type=_positive_int, default=1024)
-    lp.add_argument("--trunk", type=_positive_int, default=512)
-    lp.add_argument("--value-width", type=_positive_int, default=256)
+    lp.add_argument("--width", type=_positive_int, default=NET_DEFAULT_WIDTH, help="network v2's width d for net 0")
+    lp.add_argument("--rounds", type=_positive_int, default=NET_DEFAULT_ROUNDS,
+                    help="network v2's message-passing rounds R for net 0")
     lp.add_argument("--gate-seeds", type=_positive_int, default=200)
     lp.add_argument("--gate-simulations", type=_positive_int, default=600)
     lp.add_argument("--max-turns", type=_positive_int, default=1000)
@@ -286,7 +289,7 @@ def _train(args) -> int:
     init = Path(args.init) if args.init else None
     lr = args.lr if args.lr is not None else FINE_TUNE_LR if init is not None else SCRATCH_LR
     cfg = TrainConfig(lr=lr, steps=args.steps, batch=args.batch, seed=args.seed, device=args.device,
-                      threads=args.threads, trunk=args.trunk, value=args.value_width)
+                      threads=args.threads, width=args.width, rounds=args.rounds)
     cfg.check()
     if init is not None:
         model.load(init)  # a bad --init fails now, not after the window is read
@@ -326,7 +329,7 @@ def _train_loop(args) -> int:
         generations=args.generations, games=args.games, warm_games=args.warm_games, chunk_games=args.chunk_games,
         full_simulations=args.full_simulations, fast_simulations=args.fast_simulations,
         full_probability=args.full_probability, window=args.window, warm_lr=args.warm_lr, lr=args.lr,
-        steps_factor=args.steps_factor, batch=args.batch, trunk=args.trunk, value=args.value_width,
+        steps_factor=args.steps_factor, batch=args.batch, width=args.width, rounds=args.rounds,
         gate_seeds=args.gate_seeds, gate_simulations=args.gate_simulations, max_turns=args.max_turns,
         device=args.device, threads=args.threads,
     )

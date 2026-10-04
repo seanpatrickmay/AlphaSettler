@@ -14,14 +14,14 @@ fn no_trades() -> GameConfig {
     }
 }
 
-/// A fresh nets directory holding `tiny.bin` (random weights, trunk 16, value width 8).
+/// A fresh nets directory holding `tiny.bin` (random weights, width 8, 1 round).
 fn nets_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("settler-bots-nets-{}-{tag}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     Weights::random(
         Arch {
-            trunk: 16,
-            value: 8,
+            width: 8,
+            rounds: 1,
         },
         1,
     )
@@ -123,8 +123,8 @@ fn net_self_play_explores_deterministically() {
     use std::sync::Arc;
     let w = Arc::new(Weights::random(
         Arch {
-            trunk: 16,
-            value: 8,
+            width: 8,
+            rounds: 1,
         },
         3,
     ));

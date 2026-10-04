@@ -20,7 +20,7 @@ from pathlib import Path
 import torch
 
 from alphasettler import files
-from alphasettler._engine import NET_MAX_SAMPLE, TrainingSet, net_forward
+from alphasettler._engine import NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, NET_MAX_SAMPLE, TrainingSet, net_forward
 from alphasettler.train import model as model_mod
 from alphasettler.train.data import HELD_OUT_EVERY, Tensors, Window, to_tensors
 
@@ -48,8 +48,8 @@ class TrainConfig:
     seed: int = 0
     device: str = "auto"
     threads: int | None = None  # sampler threads (the batches do not depend on it)
-    trunk: int = 512  # for a net trained from scratch; an `init` file brings its own shape
-    value: int = 256
+    width: int = NET_DEFAULT_WIDTH  # network v2's d and R, for a net trained from scratch (an `init`
+    rounds: int = NET_DEFAULT_ROUNDS  # file brings its own)
     log_every: int = 200
     eval_every: int = EVAL_EVERY
     eval_batches: int = EVAL_BATCHES
@@ -59,6 +59,7 @@ class TrainConfig:
         """ValueError for a setting no run could use, before anything is trained or written."""
         if not (math.isfinite(self.lr) and self.lr > 0):
             raise ValueError(f"the learning rate must be finite and positive, got {self.lr}")
+        model_mod.check_arch(self.width, self.rounds)
         if not 1 <= self.batch <= NET_MAX_SAMPLE:
             raise ValueError(f"the batch must be 1..={NET_MAX_SAMPLE} positions, got {self.batch}")
         if self.steps is not None and self.steps < 1:
@@ -223,7 +224,7 @@ def train(window: Window, out: str | Path, cfg: TrainConfig, init: str | Path | 
     threads = cfg.threads or os.cpu_count() or 1
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(cfg.seed)
-        net = model_mod.load(init) if init is not None else model_mod.Net(cfg.trunk, cfg.value)
+        net = model_mod.load(init) if init is not None else model_mod.Net(cfg.width, cfg.rounds)
     net.to(device).train()
     opt = torch.optim.Adam(net.parameters(), lr=cfg.lr)
     steps = cfg.steps or auto_steps(window.new_positions, cfg.batch, cfg.steps_factor)
@@ -266,6 +267,6 @@ def train(window: Window, out: str | Path, cfg: TrainConfig, init: str | Path | 
         raise
     os.replace(tmp, out)
     return {"steps": steps, "lr": cfg.lr, "batch": cfg.batch, "init": None if init is None else str(init),
-            "device": device.type, "history": history, "held_out": held_out,
+            "width": net.width, "rounds": net.rounds, "device": device.type, "history": history, "held_out": held_out,
             "best_step": None if best_row is None else best_row["step"], "best_held_out": best_row,
             "parity_max_error": err}

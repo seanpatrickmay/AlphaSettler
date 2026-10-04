@@ -1,6 +1,6 @@
 //! Network and training helpers for Python (spec Section 4): encode a position, replay-and-sample
-//! training batches returned as raw little-endian buffers, the Rust forward pass, net lookup and
-//! test weights.
+//! training batches returned as raw little-endian buffers, the Rust forward pass, network v2's
+//! adjacency for the PyTorch twin, net lookup and test weights.
 //!
 //! Records are files someone else wrote: every field is type- and range-checked here, and
 //! `TrainingSet::extend` replays each game against its record, so a malformed record is a
@@ -14,9 +14,13 @@ use pyo3::types::{PyBytes, PyDict};
 use settler_bots::netbot::{load_net, net_path, DEFAULT_NETS_DIR};
 use settler_engine::{PlayerId, NUM_PLAYERS};
 use settler_net::data::{Batch, RecordedDecision, RecordedGame, TrainingSet};
-use settler_net::encode::{encode_state, ENCODING_HASH, HIDDEN_LEN, PUBLIC_LEN};
+use settler_net::encode::{
+    encode_state, EDGE_WIDTH, ENCODING_HASH, HIDDEN_LEN, NODE_WIDTH, PUBLIC_LEN, TILE_WIDTH,
+};
 use settler_net::forward::{Forward, Outputs};
-use settler_net::weights::{Arch, Weights, FORMAT_VERSION, MAX_WIDTH};
+use settler_net::graph::{graph, GLOBAL_WIDTH};
+use settler_net::policy::SETTLEMENT_BASE;
+use settler_net::weights::{Arch, Weights, FORMAT_VERSION, MAX_ROUNDS, MAX_WIDTH};
 use std::path::PathBuf;
 
 fn le_bytes(xs: &[f32]) -> Vec<u8> {
@@ -293,33 +297,47 @@ fn resolve_net(name: &str, nets_dir: Option<PathBuf>) -> PyResult<String> {
     Ok(net_path(&dir, name).to_string_lossy().into_owned())
 }
 
-/// Random weights (the default shape unless `trunk` / `value` are given) saved to `path`, for
-/// tests and measurements.
+/// Network v2's static adjacency, for the PyTorch twin: a dict of `node_tiles`, `node_edges`,
+/// `node_neighbours`, `edge_nodes` and `tile_nodes`, each a list (per entity) of index lists in
+/// the order the Rust forward pass sums them. `edge_nodes` is summed; the others are averaged.
 #[pyfunction]
-#[pyo3(signature = (path, seed, trunk=None, value=None))]
+fn net_adjacency(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
+    let g = graph();
+    let d = PyDict::new(py);
+    for (name, links) in [
+        ("node_tiles", &g.node_tiles),
+        ("node_edges", &g.node_edges),
+        ("node_neighbours", &g.node_neighbours),
+        ("edge_nodes", &g.edge_nodes),
+        ("tile_nodes", &g.tile_nodes),
+    ] {
+        d.set_item(name, links.lists())?;
+    }
+    Ok(d)
+}
+
+/// Random network v2 weights (width `NET_DEFAULT_WIDTH` and `NET_DEFAULT_ROUNDS` rounds unless
+/// given) saved to `path`, for tests and measurements.
+#[pyfunction]
+#[pyo3(signature = (path, seed, width=None, rounds=None))]
 fn write_random_net(
     path: PathBuf,
     seed: &Bound<'_, PyAny>,
-    trunk: Option<&Bound<'_, PyAny>>,
-    value: Option<&Bound<'_, PyAny>>,
+    width: Option<&Bound<'_, PyAny>>,
+    rounds: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<()> {
     let seed: u64 = int_arg(seed, "seed")?;
-    let width = |v: Option<&Bound<'_, PyAny>>, default: usize, what: &str| -> PyResult<usize> {
-        let w: usize = match v {
-            Some(v) => int_arg(v, what)?,
-            None => default,
-        };
-        if !(1..=MAX_WIDTH).contains(&w) {
-            return Err(value_error(format!(
-                "{what} must be 1..={MAX_WIDTH}, got {w}"
-            )));
+    let dim = |v: Option<&Bound<'_, PyAny>>, default: usize, what: &str| -> PyResult<usize> {
+        match v {
+            Some(v) => int_arg(v, what),
+            None => Ok(default),
         }
-        Ok(w)
     };
     let arch = Arch {
-        trunk: width(trunk, Arch::DEFAULT.trunk, "trunk")?,
-        value: width(value, Arch::DEFAULT.value, "value")?,
+        width: dim(width, Arch::DEFAULT.width, "width")?,
+        rounds: dim(rounds, Arch::DEFAULT.rounds, "rounds")?,
     };
+    arch.check().map_err(value_error)?;
     Weights::random(arch, seed).save(&path).map_err(value_error)
 }
 
@@ -329,11 +347,20 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(net_forward, m)?)?;
     m.add_function(wrap_pyfunction!(resolve_net, m)?)?;
     m.add_function(wrap_pyfunction!(write_random_net, m)?)?;
+    m.add_function(wrap_pyfunction!(net_adjacency, m)?)?;
     m.add("NET_PUBLIC_LEN", PUBLIC_LEN)?;
     m.add("NET_HIDDEN_LEN", HIDDEN_LEN)?;
     m.add("NET_ENCODING_HASH", ENCODING_HASH)?;
     m.add("NET_FORMAT_VERSION", FORMAT_VERSION)?;
     m.add("NET_MAX_SAMPLE", settler_net::data::MAX_SAMPLE)?;
     m.add("NET_MAX_WIDTH", MAX_WIDTH)?;
+    m.add("NET_MAX_ROUNDS", MAX_ROUNDS)?;
+    m.add("NET_DEFAULT_WIDTH", Arch::DEFAULT.width)?;
+    m.add("NET_DEFAULT_ROUNDS", Arch::DEFAULT.rounds)?;
+    m.add("NET_NODE_WIDTH", NODE_WIDTH)?;
+    m.add("NET_EDGE_WIDTH", EDGE_WIDTH)?;
+    m.add("NET_TILE_WIDTH", TILE_WIDTH)?;
+    m.add("NET_GLOBAL_WIDTH", GLOBAL_WIDTH)?;
+    m.add("NET_SETTLEMENT_BASE", SETTLEMENT_BASE)?;
     Ok(())
 }

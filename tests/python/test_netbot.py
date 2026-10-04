@@ -18,7 +18,7 @@ def cli(*args):
 def nets(tmp_path):
     d = tmp_path / "nets"
     d.mkdir()
-    write_random_net(str(d / "tiny.bin"), 1, 16, 8)
+    write_random_net(str(d / "tiny.bin"), 1, 8, 1)
     stale = bytearray((d / "tiny.bin").read_bytes())
     stale[12] ^= 1
     (d / "stale.bin").write_bytes(bytes(stale))
@@ -51,8 +51,15 @@ def test_bad_names_missing_files_and_stale_hashes_are_errors(nets):
         Bot("net:stale", 0, nets_dir=str(nets))
     with pytest.raises(ValueError, match="encoding hash"):
         run_match("net:stale", "greedy", 0, 1, 1, CONFIG, str(nets))
-    with pytest.raises(ValueError, match="trunk"):
-        write_random_net(str(nets / "x.bin"), 1, 0, 8)
+    with pytest.raises(ValueError, match="width 0 is out of range"):
+        write_random_net(str(nets / "x.bin"), 1, 0, 1)
+    with pytest.raises(ValueError, match="rounds 0 is out of range"):
+        write_random_net(str(nets / "x.bin"), 1, 8, 0)
+    mlp = bytearray((nets / "tiny.bin").read_bytes())
+    mlp[8:12] = (1).to_bytes(4, "little")  # a version 1 (flat MLP) file
+    (nets / "mlp.bin").write_bytes(bytes(mlp))
+    with pytest.raises(ValueError, match="format version 1, expected 2"):
+        Bot("net:mlp", 0, nets_dir=str(nets))
 
 
 def test_cli_arena_and_compare_take_net_names(nets, tmp_path):

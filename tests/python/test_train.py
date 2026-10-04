@@ -16,11 +16,14 @@ import pytest
 import torch
 
 from alphasettler import Bot, Game, files, records
-from alphasettler._engine import NET_HIDDEN_LEN, NET_MAX_WIDTH, NET_PUBLIC_LEN, encode, net_forward
+from alphasettler._engine import (
+    NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, NET_ENCODING_HASH, NET_HIDDEN_LEN, NET_MAX_ROUNDS, NET_MAX_WIDTH,
+    NET_PUBLIC_LEN, encode, net_forward,
+)
 from alphasettler.selfplay import write_explore
 from alphasettler.train import model
 from alphasettler.train.data import load_window, record_files, to_tensors
-from alphasettler.train.model import ACTIONS, HEADER_LEN, Net, from_bytes, to_bytes
+from alphasettler.train.model import ACTIONS, FIXED_HEADER_LEN, Net, from_bytes, shapes, to_bytes
 from alphasettler.train import train as train_mod
 from alphasettler.train.train import (
     VALUE_FRACTION, TrainConfig, auto_steps, held_out_batches, held_out_losses, losses, parity_check, parity_error,
@@ -69,11 +72,13 @@ def random_positions(n, seed=0):
     return b"".join(public), b"".join(hidden), mask
 
 
-def test_rust_and_pytorch_forward_passes_agree_on_random_weights(tmp_path):
+@pytest.mark.parametrize("width,rounds", [(NET_DEFAULT_WIDTH, NET_DEFAULT_ROUNDS), (5, 3)])
+def test_rust_and_pytorch_forward_passes_agree_on_random_weights(tmp_path, width, rounds):
     """Spec parity rule (preflight F9): the prior over legal moves and the value probabilities
-    agree within 1e-5 absolute; raw logits and the aux head within 1e-5 x max(1, |PyTorch|)."""
+    agree within 1e-5 absolute; raw logits and the aux head within 1e-5 x max(1, |PyTorch|). The
+    default net, and an odd width (not a multiple of Rust's 8-lane dot product) with 3 rounds."""
     torch.manual_seed(0)
-    net = Net().eval()
+    net = Net(width, rounds).eval()
     path = tmp_path / "r.bin"
     path.write_bytes(to_bytes(net))
     public, hidden, mask = random_positions(100)
@@ -111,53 +116,71 @@ def test_a_nan_anywhere_is_an_infinite_parity_error():
     assert parity_error(nan_ref, clean, mask) == float("inf")
 
 
+def test_the_default_net_is_width_48_with_2_rounds():
+    net = Net()
+    assert (net.width, net.rounds) == (NET_DEFAULT_WIDTH, NET_DEFAULT_ROUNDS) == (48, 2)
+    assert [(layer.out_features, layer.in_features) for layer in net.layers()] == shapes(48, 2)
+    assert sum(p.numel() for p in net.parameters()) == 247_294, "the same count as Rust's Arch::DEFAULT"
+    assert len(to_bytes(net)) == FIXED_HEADER_LEN + 8 * 20 + 4 * 247_294
+    assert not any("tile_nodes" in k or "edge_nodes" in k for k in net.state_dict()), "the adjacency is not a weight"
+
+
 def test_weights_round_trip_and_bad_files_are_errors():
     torch.manual_seed(1)
-    net = Net(16, 8)
+    net = Net(8, 1)
     data = to_bytes(net)
     back = from_bytes(data)
-    assert (back.trunk_width, back.value_width) == (16, 8)
+    assert (back.width, back.rounds) == (8, 1)
     assert all(torch.equal(a, b) for a, b in zip(net.state_dict().values(), back.state_dict().values()))
-    shape = bytearray(data)
-    shape[32:36] = (15).to_bytes(4, "little")
+
+    def patch(at, value):
+        b = bytearray(data)
+        struct.pack_into("<I", b, at, value)
+        return bytes(b)
+
     for bad, message in [(b"X" + data[1:], "magic"), (data[:12] + bytes([data[12] ^ 1]) + data[13:], "encoding hash"),
-                         (bytes(shape), "shapes"), (data[:-1], "truncated"), (data[:40], "truncated"),
+                         (patch(8, 1), "format version 1, expected 2; version 1 holds the flat MLP"),
+                         (patch(8, 3), "format version 3, expected 2$"),
+                         (patch(24, 2), "16 layers, expected 20 for 2 rounds"), (patch(28, 15), "15 layers, expected 16"),
+                         (patch(FIXED_HEADER_LEN + 8, 7), "shapes"), (data[:-1], "truncated"),
+                         (data[:40], "shorter than the 160-byte header"), (data[:20], "shorter than the 32-byte header"),
                          (data + b"\0", "trailing")]:
         with pytest.raises(ValueError, match=message):
             from_bytes(bad)
 
 
-def header(trunk, value):
-    """A weights-file header whose shapes are consistent for these widths (as Rust's Arch::shapes)."""
-    shapes = [(trunk, NET_PUBLIC_LEN), (trunk, trunk), (trunk, trunk), (ACTIONS, trunk),
-              (value, trunk + NET_HIDDEN_LEN), (4, value), (4, value)]
-    data = bytearray(to_bytes(Net(1, 1))[:24])
-    for rows, cols in shapes:
-        data += struct.pack("<II", rows, cols)
-    assert len(data) == HEADER_LEN
-    return bytes(data)
+def header(width, rounds):
+    """The 32-byte fixed header of a version 2 file declaring this width and round count."""
+    return b"ASNET\0\0\0" + struct.pack("<IQIII", 2, NET_ENCODING_HASH, width, rounds, (12 + 4 * rounds) % 2**32)
 
 
-def test_widths_are_checked_and_non_finite_weights_rejected_before_building_a_net(monkeypatch):
+def test_widths_and_rounds_are_checked_and_non_finite_weights_rejected_before_building_a_net(monkeypatch):
     """Preflight F4: same rules as the Rust loader, and no torch module is built from an
     unvalidated header."""
     torch.manual_seed(4)
     good = to_bytes(Net(3, 2))
+    assert good[:FIXED_HEADER_LEN] == header(3, 2)
 
     def no_net(*args, **kwargs):
         raise AssertionError("a Net was built before the file was validated")
 
     monkeypatch.setattr(model, "Net", no_net)
-    for trunk, value in [(NET_MAX_WIDTH + 1, 8), (8, NET_MAX_WIDTH + 1), (0, 8), (8, 0), (2**31, 8)]:
-        with pytest.raises(ValueError, match=f"widths must be 1..={NET_MAX_WIDTH}"):
-            from_bytes(header(trunk, value))
+    for width, rounds, message in [(NET_MAX_WIDTH + 1, 1, "width 1025 is out of range"), (0, 1, "width 0 is out"),
+                                   (2**31, 1, "width 2147483648 is out"), (8, 0, "rounds 0 is out of range"),
+                                   (8, NET_MAX_ROUNDS + 1, "rounds 17 is out of range")]:
+        with pytest.raises(ValueError, match=message):
+            from_bytes(header(width, rounds))
+    with pytest.raises(ValueError, match="do not fit network v2"):  # at the bound: accepted, then the shapes differ
+        from_bytes(header(NET_MAX_WIDTH, 2) + good[FIXED_HEADER_LEN:])
     for x in (float("nan"), float("inf"), float("-inf")):
         bad = bytearray(good)
-        struct.pack_into("<f", bad, HEADER_LEN + 4, x)
+        struct.pack_into("<f", bad, FIXED_HEADER_LEN + 8 * 20 + 4, x)
         with pytest.raises(ValueError, match="NaN or infinite"):
             from_bytes(bytes(bad))
-    with pytest.raises(ValueError, match=f"1..={NET_MAX_WIDTH}"):
-        Net(NET_MAX_WIDTH + 1, 8)  # the class itself, not the patched module name
+    with pytest.raises(ValueError, match=f"width 1025 is out of range 1..={NET_MAX_WIDTH}"):
+        Net(NET_MAX_WIDTH + 1, 1)  # the class itself, not the patched module name
+    with pytest.raises(ValueError, match=f"rounds 17 is out of range 1..={NET_MAX_ROUNDS}"):
+        Net(8, NET_MAX_ROUNDS + 1)
 
 
 def test_the_loss_is_the_spec_sum_with_l2_over_weights_only(tmp_path):
@@ -165,7 +188,7 @@ def test_the_loss_is_the_spec_sum_with_l2_over_weights_only(tmp_path):
     w = load_window(tmp_path, [generation(tmp_path)])
     t = to_tensors(w.data.sample(32, 7, 2), CPU)
     torch.manual_seed(6)
-    net = Net(16, 8)
+    net = Net(8, 1)
     rows = torch.zeros(32, dtype=torch.bool)
     rows[[3, 17, 30]] = True
     with torch.no_grad():
@@ -194,7 +217,7 @@ def test_value_and_aux_terms_use_only_the_value_rows(tmp_path):
     w = load_window(tmp_path, [generation(tmp_path)])
     t = to_tensors(w.data.sample(64, 11, 2), CPU)
     torch.manual_seed(8)
-    net = Net(16, 8)
+    net = Net(8, 1)
     rows = value_rows(64, 5, 9)
     assert 0 < rows.sum().item() < 64
     base = losses(net, t, rows)
@@ -237,7 +260,7 @@ def test_fast_searches_add_nothing_to_the_policy_loss(tmp_path):
     t = to_tensors(w.data.sample(64, 5, 2), CPU)
     assert 0 < t.full.sum().item() < 64
     torch.manual_seed(2)
-    net = Net(32, 16)
+    net = Net(16, 1)
     base = losses(net, t)["policy"]
     fast = t.full == 0
     noise = torch.rand(t.policy.shape) * t.mask
@@ -252,7 +275,7 @@ def test_a_tiny_dataset_can_be_overfit(tmp_path):
     w = load_window(tmp_path, [generation(tmp_path)])
     t = to_tensors(w.data.sample(32, 1, 2), CPU)
     torch.manual_seed(3)
-    net = Net(64, 32)
+    net = Net(32, 2)
     opt = torch.optim.Adam(net.parameters(), lr=3e-3)
     # Annealed so the last step settles: at a flat 3e-3, Adam against the L2 pull swings the aux
     # loss between 1e-4 and 6e-3 late on, and the final value depends on where it stops.
@@ -434,7 +457,7 @@ def test_a_bad_held_out_record_skips_its_whole_file(tmp_path):
     assert (w.data.decisions, w.validation.decisions) == (d[1], d[0])
 
 
-TINY_TRAIN = TrainConfig(lr=1e-3, steps=7, batch=16, device="cpu", trunk=16, value=8, threads=2,
+TINY_TRAIN = TrainConfig(lr=1e-3, steps=7, batch=16, device="cpu", width=8, rounds=1, threads=2,
                          eval_every=2, eval_batches=2, eval_batch=32)
 
 
@@ -499,25 +522,28 @@ def test_train_exports_a_net_the_rust_side_loads_and_checks_parity(tmp_path):
     w = load_window(tmp_path, [generation(tmp_path)])
     nets = tmp_path / "nets"
     nets.mkdir()
-    cfg = TrainConfig(lr=1e-3, steps=5, batch=16, device="cpu", trunk=16, value=8, threads=2)
+    cfg = TrainConfig(lr=1e-3, steps=5, batch=16, device="cpu", width=8, rounds=1, threads=2)
     s = train(w, nets / "t.bin", cfg)
     assert s["steps"] == 5 and s["device"] == "cpu" and s["parity_max_error"] <= 1e-5
+    assert (s["width"], s["rounds"]) == (8, 1)
     assert not [p for p in nets.iterdir() if p.name.startswith(".")], "no temp file left"
     assert Bot("net:t@5", 0, nets_dir=str(nets)).name == "net"
     train(w, nets / "u.bin", replace(cfg, threads=1))
     assert (nets / "u.bin").read_bytes() == (nets / "t.bin").read_bytes(), "CPU training is reproducible"
-    s = train(w, nets / "v.bin", replace(cfg, lr=3e-4, steps=2), init=nets / "t.bin")
-    assert s["init"] == str(nets / "t.bin") and from_bytes((nets / "v.bin").read_bytes()).trunk_width == 16
+    s = train(w, nets / "v.bin", replace(cfg, lr=3e-4, steps=2, width=4, rounds=2), init=nets / "t.bin")
+    assert s["init"] == str(nets / "t.bin") and (s["width"], s["rounds"]) == (8, 1), "the init file's shape"
+    assert from_bytes((nets / "v.bin").read_bytes()).width == 8
     with pytest.raises(RuntimeError, match="disagree"):
-        parity_check(Net(16, 8), nets / "t.bin", w)
+        parity_check(Net(8, 1), nets / "t.bin", w)
     nan_net = model.load(nets / "t.bin")
     with torch.no_grad():
-        nan_net.value1.weight[0, 0] = float("nan")
+        nan_net.value.weight[0, 0] = float("nan")
     with pytest.raises(RuntimeError, match="disagree"):
         parity_check(nan_net, nets / "t.bin", w)
     for bad in (replace(cfg, batch=2**16 + 1), replace(cfg, lr=float("nan")), replace(cfg, lr=0.0),
                 replace(cfg, eval_every=0), replace(cfg, eval_batches=0), replace(cfg, eval_batch=0),
-                replace(cfg, eval_batch=2**16 + 1)):
+                replace(cfg, eval_batch=2**16 + 1), replace(cfg, width=0), replace(cfg, width=NET_MAX_WIDTH + 1),
+                replace(cfg, rounds=NET_MAX_ROUNDS + 1)):
         with pytest.raises(ValueError):
             train(w, nets / "x.bin", bad)
     assert not (nets / "x.bin").exists()
@@ -527,7 +553,7 @@ def test_cli_train(tmp_path):
     gen = generation(tmp_path)
     out = tmp_path / "nets" / "c.bin"
     r = cli("train", str(gen), "--out", str(out), "--steps", "3", "--batch", "16", "--device", "cpu",
-            "--trunk", "16", "--value-width", "8")
+            "--width", "8", "--rounds", "1")
     assert r.returncode == 0, r.stderr
     assert f"wrote {out}" in r.stdout and "parity" in r.stdout
     assert "1 held out" in r.stdout and "kept the best held-out score" in r.stdout
@@ -536,9 +562,13 @@ def test_cli_train(tmp_path):
     empty.mkdir()
     r = cli("train", str(empty), "--out", str(out))
     assert r.returncode == 2 and "no training positions" in r.stderr
+    r = cli("train", str(gen), "--out", str(out), "--trunk", "16")
+    assert r.returncode == 2 and "unrecognized arguments: --trunk 16" in r.stderr, "network v2 has no trunk"
+    r = cli("train", str(gen), "--out", str(out), "--rounds", str(NET_MAX_ROUNDS + 1))
+    assert r.returncode == 2 and "rounds 17 is out of range" in r.stderr
 
 
-SMALL = ["--steps", "1", "--batch", "16", "--device", "cpu", "--trunk", "16", "--value-width", "8"]
+SMALL = ["--steps", "1", "--batch", "16", "--device", "cpu", "--width", "8", "--rounds", "1"]
 
 
 def test_cli_lr_defaults_to_1e3_from_scratch_and_3e4_from_an_init(tmp_path, capsys):
@@ -561,12 +591,18 @@ def test_cli_names_a_missing_generation_and_checks_init_before_reading_records(t
     r = cli("train", str(missing), "--out", out)
     assert r.returncode == 2 and "gen-404 does not exist" in r.stderr
     bad = tmp_path / "bad.bin"
-    bad.write_bytes(b"not a weights file at all, far too short")
+    bad.write_bytes(b"not a weights file")  # shorter than the 32-byte fixed header
     # The missing directory would fail too: the --init error coming first shows the order.
     r = cli("train", str(missing), "--out", out, "--init", str(bad))
     assert r.returncode == 2 and "bad.bin: truncated" in r.stderr and "gen-404" not in r.stderr
     r = cli("train", str(missing), "--out", out, "--init", str(tmp_path / "absent.bin"))
     assert r.returncode == 2 and "absent.bin" in r.stderr and "gen-404" not in r.stderr
+    mlp = bytearray(to_bytes(Net(4, 1)))
+    struct.pack_into("<I", mlp, 8, 1)  # a version 1 (flat MLP) file
+    (tmp_path / "mlp.bin").write_bytes(bytes(mlp))
+    r = cli("train", str(missing), "--out", out, "--init", str(tmp_path / "mlp.bin"))
+    assert r.returncode == 2 and "format version 1, expected 2" in r.stderr and "retrain" in r.stderr
+    assert "gen-404" not in r.stderr
 
 
 def test_cli_train_without_pytorch_says_how_to_install_it(tmp_path):

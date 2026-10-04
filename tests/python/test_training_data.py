@@ -51,7 +51,7 @@ def test_explore_records_carry_their_settings_and_no_observations(tmp_path):
 def test_net_self_play_records_the_net_and_its_hash(tmp_path):
     nets = tmp_path / "nets"
     nets.mkdir()
-    write_random_net(str(nets / "tiny.bin"), 1, 16, 8)
+    write_random_net(str(nets / "tiny.bin"), 1, 8, 1)
     (g,) = explore_games(tmp_path, 1, net="tiny", nets_dir=nets)
     assert g["selfplay"]["bot"] == "net:tiny" and g["selfplay"]["net"] == "tiny"
     assert g["selfplay"]["net_sha256"] == hashlib.sha256((nets / "tiny.bin").read_bytes()).hexdigest()
@@ -136,7 +136,7 @@ def test_a_record_that_does_not_replay_is_an_error(tmp_path):
 
 def test_net_forward_runs_the_rust_forward_pass(tmp_path):
     path = tmp_path / "r.bin"
-    write_random_net(str(path), 2, 16, 8)
+    write_random_net(str(path), 2, 8, 1)
     public, hidden = encode(Game(1, CONFIG))
     out = net_forward(str(path), public * 3, hidden * 3)
     assert (len(out["policy"]), len(out["value"]), len(out["aux"])) == (3 * A * 4, 3 * 16, 3 * 16)
@@ -147,7 +147,7 @@ def test_net_forward_runs_the_rust_forward_pass(tmp_path):
 
 
 def test_resolve_net_checks_the_name_and_the_file(tmp_path):
-    write_random_net(str(tmp_path / "tiny.bin"), 1, 16, 8)
+    write_random_net(str(tmp_path / "tiny.bin"), 1, 8, 1)
     assert resolve_net("tiny", str(tmp_path)) == str(tmp_path / "tiny.bin")
     for bad in ["../tiny", "a/b", "", "x" * 65]:
         with pytest.raises(ValueError, match="bad net name"):
@@ -163,7 +163,7 @@ def cli(*args):
 def test_cli_selfplay_with_a_net_or_pcr(tmp_path):
     nets = tmp_path / "nets"
     nets.mkdir()
-    write_random_net(str(nets / "tiny.bin"), 1, 16, 8)
+    write_random_net(str(nets / "tiny.bin"), 1, 8, 1)
     r = cli("selfplay", "--net", "tiny", "--nets-dir", str(nets), "--games", "2", "--full-simulations", "4",
             "--fast-simulations", "2", "--out-dir", str(tmp_path / "out"))
     assert r.returncode == 0, r.stderr

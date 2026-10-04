@@ -28,11 +28,13 @@ from pathlib import Path
 
 from alphasettler import files, records
 from alphasettler import selfplay as selfplay_mod
-from alphasettler._engine import MAX_SEEDS, MAX_SIMULATIONS, NET_MAX_WIDTH, resolve_config
+from alphasettler._engine import MAX_SEEDS, MAX_SIMULATIONS, NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, resolve_config
 from alphasettler.arena import run as arena_run
 
 MANIFEST = "manifest.json"
-MANIFEST_FORMAT = 1
+# 2: network v2 (train steps record the net's width and rounds). A format 1 run holds flat-MLP nets,
+# which no longer load.
+MANIFEST_FORMAT = 2
 STEPS = ("selfplay", "train", "gate")
 SEEDS_PER_GENERATION = 10_000_000
 GATE_SEED_START = 1_000_000_000
@@ -60,8 +62,8 @@ class LoopSettings:
     lr: float = 3e-4
     steps_factor: float = 2.0
     batch: int = 1024
-    trunk: int = 512
-    value: int = 256
+    width: int = NET_DEFAULT_WIDTH
+    rounds: int = NET_DEFAULT_ROUNDS
     gate_seeds: int = 200
     gate_simulations: int = 600
     max_turns: int = 1000
@@ -106,7 +108,7 @@ def _check(s: LoopSettings) -> None:
     if not 0 <= s.generations <= MAX_GENERATIONS:
         raise ValueError(f"--generations must be 0..={MAX_GENERATIONS} (generation k self-plays seeds from "
                          f"k x {SEEDS_PER_GENERATION}, below the gate's from {GATE_SEED_START}), got {s.generations}")
-    for name in ("games", "warm_games", "chunk_games", "window", "trunk", "value", "gate_seeds",
+    for name in ("games", "warm_games", "chunk_games", "window", "width", "rounds", "gate_seeds",
                  "gate_simulations", "max_turns"):
         v = getattr(s, name)
         if not (isinstance(v, int) and v >= 1):
@@ -115,9 +117,6 @@ def _check(s: LoopSettings) -> None:
         if getattr(s, name) > SEEDS_PER_GENERATION:
             raise ValueError(f"{name} must be at most {SEEDS_PER_GENERATION} (a generation's seed range), "
                              f"got {getattr(s, name)}")
-    for name in ("trunk", "value"):
-        if getattr(s, name) > NET_MAX_WIDTH:
-            raise ValueError(f"{name} must be at most {NET_MAX_WIDTH}, got {getattr(s, name)}")
     if s.gate_seeds > MAX_SEEDS:
         raise ValueError(f"gate_seeds must be at most {MAX_SEEDS}, got {s.gate_seeds}")
     if s.gate_simulations > MAX_SIMULATIONS:
@@ -127,7 +126,8 @@ def _check(s: LoopSettings) -> None:
     # No net is loaded here: generation 0's bot is checked, later ones load when their step runs.
     selfplay_mod.settings(None, ".", s.full_simulations, s.fast_simulations, s.full_probability)
     for lr in (s.warm_lr, s.lr):
-        TrainConfig(lr=lr, steps_factor=s.steps_factor, batch=s.batch, threads=s.threads).check()
+        TrainConfig(lr=lr, steps_factor=s.steps_factor, batch=s.batch, threads=s.threads, width=s.width,
+                    rounds=s.rounds).check()
 
 
 class Loop:
@@ -146,7 +146,8 @@ class Loop:
             return {"format": MANIFEST_FORMAT, "best": None, "generations": []}
         m = json.loads(path.read_text())
         if m.get("format") != MANIFEST_FORMAT:
-            raise ValueError(f"{path} has format {m.get('format')!r}, expected {MANIFEST_FORMAT}")
+            raise ValueError(f"{path} has format {m.get('format')!r}, expected {MANIFEST_FORMAT}: a format 1 run "
+                             "trained the flat MLP, whose nets no longer load; start network v2 in a new directory")
         return m
 
     def _save(self) -> None:
@@ -283,7 +284,7 @@ class Loop:
         gdir = self.root / gen_name(k)
         cfg = TrainConfig(lr=self.s.warm_lr if k == 0 else self.s.lr, steps_factor=self.s.steps_factor,
                           batch=self.s.batch, seed=k, device=self.s.device, threads=self.s.threads,
-                          trunk=self.s.trunk, value=self.s.value)
+                          width=self.s.width, rounds=self.s.rounds)
         summary = train(window, gdir / "net.bin", cfg, init)  # temp-then-rename after the parity check
         self.nets.mkdir(parents=True, exist_ok=True)
         files.atomic_copy(gdir / "net.bin", self.nets / f"{gen_name(k)}.bin")
@@ -300,6 +301,8 @@ class Loop:
             "validation_positions": window.validation.decisions,
             "init": None if k == 0 else gen_name(k - 1),
             "lr": cfg.lr,
+            "width": summary["width"],
+            "rounds": summary["rounds"],
             "steps": summary["steps"],
             "batch": cfg.batch,
             "device": summary["device"],

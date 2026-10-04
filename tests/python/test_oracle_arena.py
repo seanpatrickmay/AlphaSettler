@@ -128,7 +128,7 @@ def test_net_names_inside_catanatron(tmp_path):
 
     nets = tmp_path / "nets"
     nets.mkdir()
-    write_random_net(str(nets / "tiny.bin"), 1, 16, 8)
+    write_random_net(str(nets / "tiny.bin"), 1, 8, 1)
     stale = bytearray((nets / "tiny.bin").read_bytes())
     stale[12] ^= 1
     (nets / "stale.bin").write_bytes(bytes(stale))
