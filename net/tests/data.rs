@@ -6,16 +6,24 @@ use settler_engine::rng::Rng;
 use settler_engine::*;
 use settler_net::data::{Batch, RecordedDecision, RecordedGame, TrainingSet, MAX_SAMPLE};
 use settler_net::encode::{encode_state, HIDDEN_LEN, PUBLIC_LEN};
+use settler_net::evaluator::masked_prior;
+use settler_net::policy::policy_id;
+use settler_search::search_actions;
 
 /// A finished random game recorded with a decision at every 5th move: random visit counts (some
 /// all zero), alternating full and fast searches.
 fn recorded(seed: u64, config: GameConfig) -> RecordedGame {
+    recorded_every(seed, config, 5)
+}
+
+/// `recorded` with a decision at every `every`-th move.
+fn recorded_every(seed: u64, config: GameConfig, every: usize) -> RecordedGame {
     let mut s = State::new(seed, config);
     let mut rng = Rng::new(seed ^ 0xDA7A);
     let (mut actions, mut decisions, mut buf) = (Vec::new(), Vec::new(), Vec::new());
     while !s.is_over() {
         legal_actions(&s, &mut buf);
-        if actions.len() % 5 == 0 {
+        if actions.len() % every == 0 {
             decisions.push(RecordedDecision {
                 index: actions.len() as u32,
                 actor: s.current_actor(),
@@ -89,8 +97,8 @@ fn a_position_equals_the_encoder_on_the_replayed_state() {
                     vec![0.0f32; ACTION_SPACE_SIZE],
                 );
                 for &(a, v) in &searchable {
-                    mask[a.encode() as usize] = 1;
-                    policy[a.encode() as usize] = if total > 0 {
+                    mask[policy_id(a, d.actor)] = 1;
+                    policy[policy_id(a, d.actor)] = if total > 0 {
                         v as f32 / total as f32
                     } else {
                         1.0 / searchable.len() as f32
@@ -264,4 +272,56 @@ fn visit_counts_near_the_u32_limit_normalise_without_overflow() {
     let total: f32 = b.policy.iter().sum();
     assert!((total - 1.0).abs() < 1e-5, "{total}");
     assert!(b.policy.iter().all(|&p| p.is_finite() && p >= 0.0));
+}
+
+/// Seat-relative ids in both places (spec Section 2). With finite logits only in the slots the
+/// sampler's mask marks, `masked_prior` must give every searchable move its softmax share of the
+/// logit at that move's `policy_id`: the evaluator reads exactly the slots the training targets
+/// fill, at every decision of three games, steals by every seat included.
+#[test]
+fn the_sampler_and_the_evaluator_use_the_same_policy_ids() {
+    let config = GameConfig {
+        max_turns: 150,
+        ..no_trades()
+    };
+    let games: Vec<RecordedGame> = (1..4).map(|seed| recorded_every(seed, config, 1)).collect();
+    let set = TrainingSet::new(games.clone()).unwrap();
+    let (mut checked, mut relative_steals) = (0, 0);
+    let mut legal = Vec::new();
+    for (gi, g) in games.iter().enumerate() {
+        let mut s = State::new(g.seed, g.config);
+        for (di, d) in g.decisions.iter().enumerate() {
+            assert_eq!(d.index as usize, di, "a decision at every move");
+            let mut b = Batch::default();
+            set.position(gi, di, &mut b);
+            search_actions(&s.legal_actions(), &mut legal);
+            let slots: Vec<usize> = (0..ACTION_SPACE_SIZE).filter(|&k| b.mask[k] == 1).collect();
+            assert_eq!(slots.len(), legal.len(), "one slot per searchable move");
+            let logit = |k: usize| k as f32 / 100.0;
+            let mut logits = vec![f32::NEG_INFINITY; ACTION_SPACE_SIZE];
+            for &k in &slots {
+                logits[k] = logit(k);
+            }
+            let z: f32 = slots.iter().map(|&k| logit(k).exp()).sum();
+            let prior = masked_prior(&logits, &legal, d.actor);
+            for (a, p) in legal.iter().zip(&prior) {
+                let k = policy_id(*a, d.actor);
+                assert!(slots.contains(&k), "{a:?} by seat {}", d.actor);
+                assert!(
+                    (p - logit(k).exp() / z).abs() < 1e-5,
+                    "{a:?} by seat {}",
+                    d.actor
+                );
+                relative_steals +=
+                    (matches!(a, Action::StealFrom(_)) && k != a.encode() as usize) as u32;
+            }
+            checked += 1;
+            s.apply(g.actions[di]);
+        }
+    }
+    assert!(checked > 1000, "{checked} decisions");
+    assert!(
+        relative_steals > 0,
+        "steals by seats other than 0 were checked"
+    );
 }

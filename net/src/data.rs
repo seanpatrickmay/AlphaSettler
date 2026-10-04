@@ -5,6 +5,7 @@
 //! it is used: a record that does not replay is an error, never a panic or a bad index.
 
 use crate::encode::{abs, encode_state, rel, HIDDEN_LEN, PUBLIC_LEN};
+use crate::policy::policy_id;
 use settler_engine::legal::legal_actions;
 use settler_engine::rng::Rng;
 use settler_engine::{Action, GameConfig, PlayerId, State, ACTION_SPACE_SIZE, NUM_PLAYERS};
@@ -42,9 +43,11 @@ pub struct Batch {
     pub public: Vec<f32>,
     /// n × HIDDEN_LEN.
     pub hidden: Vec<f32>,
-    /// n × ACTION_SPACE_SIZE: 1 for each legal move except domestic offers.
+    /// n × ACTION_SPACE_SIZE: 1 at the policy id (`policy::policy_id`, seat-relative for steals
+    /// and trade confirmations) of each legal move except domestic offers.
     pub mask: Vec<u8>,
-    /// n × ACTION_SPACE_SIZE: root visits normalised over the mask (uniform if none).
+    /// n × ACTION_SPACE_SIZE: root visits normalised over the mask (uniform if none), at the same
+    /// policy ids.
     pub policy: Vec<f32>,
     /// n: 1 for a full search with at least one visit (a policy target).
     pub full: Vec<u8>,
@@ -74,7 +77,7 @@ impl Batch {
         let total: u64 = searchable().map(|(_, &v)| v as u64).sum();
         let count = searchable().count();
         for (a, &v) in searchable() {
-            let k = m0 + a.encode() as usize;
+            let k = m0 + policy_id(*a, actor);
             self.mask[k] = 1;
             self.policy[k] = if total > 0 {
                 v as f32 / total as f32

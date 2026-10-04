@@ -68,12 +68,21 @@ def test_record_files_are_byte_identical_for_the_same_games(tmp_path):
     assert (tmp_path / "a.jsonl.gz").read_bytes() == (tmp_path / "b.jsonl.gz").read_bytes()
 
 
+def policy_id(action: int, actor: int) -> int:
+    """`settler_net::policy::policy_id` on engine ids: a steal (224..228) or a trade confirmation
+    (660..664) names its player relative to the actor."""
+    for base in (224, 660):
+        if base <= action < base + 4:
+            return base + (action - base - actor) % 4
+    return action
+
+
 def test_a_batch_equals_the_encoder_on_the_replayed_state(tmp_path):
     games = explore_games(tmp_path, 2)
     ts = TrainingSet(games)
     assert ts.games == 2 and ts.decisions == sum(len(g["decisions"]) for g in games)
     assert 0 < ts.full_decisions < ts.decisions
-    checked = 0
+    checked = moved = 0
     for gi, g in enumerate(games):
         for di, d in enumerate(g["decisions"][:40]):
             b = ts.position(gi, di)
@@ -84,14 +93,17 @@ def test_a_batch_equals_the_encoder_on_the_replayed_state(tmp_path):
             public, hidden = encode(game)
             assert b["n"] == 1 and b["public"] == public and b["hidden"] == hidden
             mask = list(b["mask"])
-            assert [i for i in range(A) if mask[i]] == sorted(game.legal_actions())
+            slots = [policy_id(a, d["actor"]) for a in game.legal_actions()]
+            assert [i for i in range(A) if mask[i]] == sorted(slots)
+            moved += slots != game.legal_actions()
             policy = floats(b["policy"])
             total = sum(d["visits"])
             for a, v in zip(d["legal"], d["visits"]):
-                assert policy[a] == pytest.approx(v / total, rel=1e-6)
+                assert policy[policy_id(a, d["actor"])] == pytest.approx(v / total, rel=1e-6)
             assert list(b["full"]) == [int(d["full_search"])]
             checked += 1
     assert checked > 40
+    assert moved > 0, "a steal by a seat other than 0 sits at its seat-relative slot"
     batch = ts.sample(50, 3, 2)
     assert batch == ts.sample(50, 3, 1)
     assert (len(batch["public"]), len(batch["mask"]), len(batch["outcome"])) == (50 * len(public), 50 * A, 50 * 16)

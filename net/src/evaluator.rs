@@ -4,6 +4,7 @@
 
 use crate::encode::{encode_state, rel, HIDDEN_LEN, PUBLIC_LEN};
 use crate::forward::{softmax, Forward, Outputs};
+use crate::policy::policy_id;
 use crate::weights::Weights;
 use settler_engine::legal::legal_actions;
 use settler_engine::{Action, Observation, PlayerId, State, ACTION_SPACE_SIZE, NUM_PLAYERS};
@@ -17,18 +18,19 @@ fn is_offer(a: &Action) -> bool {
     matches!(a, Action::OfferTrade { .. })
 }
 
-/// The prior over `legal`: a softmax of the policy logits at their action ids. Domestic offers
-/// always get 0 (3b never trades); if `legal` holds nothing else the prior is uniform. With no
-/// finite maximum (every logit -inf, or some +inf) it is the softmax's limit: uniform over the
-/// moves at the maximum, never NaN.
-pub fn masked_prior(logits: &[f32], legal: &[Action]) -> Vec<f32> {
+/// The prior over `legal` for `actor`: a softmax of the policy logits at the moves' policy ids
+/// (`policy::policy_id`: steals and trade confirmations seat-relative, as in the training
+/// targets). Domestic offers always get 0 (3b never trades); if `legal` holds nothing else the
+/// prior is uniform. With no finite maximum (every logit -inf, or some +inf) it is the softmax's
+/// limit: uniform over the moves at the maximum, never NaN.
+pub fn masked_prior(logits: &[f32], legal: &[Action], actor: PlayerId) -> Vec<f32> {
     let mut p: Vec<f32> = legal
         .iter()
         .map(|a| {
             if is_offer(a) {
                 f32::NEG_INFINITY
             } else {
-                logits[a.encode() as usize]
+                logits[policy_id(*a, actor)]
             }
         })
         .collect();
@@ -161,6 +163,7 @@ impl Evaluator for NetEvaluator {
                 prior: masked_prior(
                     &self.out.policy[i * ACTION_SPACE_SIZE..(i + 1) * ACTION_SPACE_SIZE],
                     l.legal,
+                    l.actor,
                 ),
             })
             .collect();

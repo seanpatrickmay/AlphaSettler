@@ -112,7 +112,7 @@ fn a_single_legal_move_gets_all_the_prior_and_offers_get_none() {
     assert_eq!(e[0].prior[1], 0.0);
     assert!((e[0].prior[0] + e[0].prior[2] - 1.0).abs() < 1e-6);
     assert_eq!(
-        masked_prior(&vec![0.0; ACTION_SPACE_SIZE], &[offer]),
+        masked_prior(&vec![0.0; ACTION_SPACE_SIZE], &[offer], 0),
         vec![1.0]
     );
 }
@@ -122,16 +122,31 @@ fn a_prior_with_no_finite_logit_is_uniform_over_the_moves_it_may_play() {
     let offer = Action::OfferTrade { give: 0, get: 1 };
     let dead = vec![f32::NEG_INFINITY; ACTION_SPACE_SIZE];
     assert_eq!(
-        masked_prior(&dead, &[Action::EndTurn, offer, Action::BuyDev]),
+        masked_prior(&dead, &[Action::EndTurn, offer, Action::BuyDev], 0),
         vec![0.5, 0.0, 0.5]
     );
-    assert_eq!(masked_prior(&dead, &[offer, offer]), vec![0.5, 0.5]);
+    assert_eq!(masked_prior(&dead, &[offer, offer], 0), vec![0.5, 0.5]);
     let mut huge = vec![0.0; ACTION_SPACE_SIZE];
     huge[Action::EndTurn.encode() as usize] = f32::INFINITY;
-    let p = masked_prior(&huge, &[Action::EndTurn, offer, Action::BuyDev]);
+    let p = masked_prior(&huge, &[Action::EndTurn, offer, Action::BuyDev], 0);
     assert_eq!(p, vec![1.0, 0.0, 0.0], "the softmax's limit, not NaN");
 }
 
+#[test]
+fn a_steal_reads_the_slot_of_the_victim_relative_to_the_actor() {
+    let mut logits = vec![0.0f32; ACTION_SPACE_SIZE];
+    logits[225] = 10.0; // steal from the player after the actor
+    for actor in 0..NUM_PLAYERS as PlayerId {
+        let next = (actor + 1) % NUM_PLAYERS as PlayerId;
+        let across = (actor + 2) % NUM_PLAYERS as PlayerId;
+        let p = masked_prior(
+            &logits,
+            &[Action::StealFrom(across), Action::StealFrom(next)],
+            actor,
+        );
+        assert!(p[1] > 0.99, "actor {actor}: {p:?}");
+    }
+}
 #[test]
 fn values_are_rotated_back_to_absolute_seats() {
     let logits = [0.0f32, 1.0, 2.0, 3.0];
