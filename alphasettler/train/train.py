@@ -1,4 +1,5 @@
-"""One training run (spec Section 4): Adam on batches from the Rust sampler, with the value and
+"""One training run (spec Section 4): Adam on batches from the Rust sampler, NEWEST_SHARE of each
+drawn from the newest generation and the rest from the older ones, with the value and
 aux losses on a seeded VALUE_FRACTION of each batch's rows; held-out losses on fixed batches of the
 validation set every EVAL_EVERY steps and at the last; then export of the checkpoint with the best
 held-out score, and a parity check of the exported file's Rust forward pass against PyTorch before
@@ -7,7 +8,11 @@ the file is put in place. Training on MPS is not bit-reproducible; on the CPU it
 Why the value subsampling and the early stopping: about 240 positions of a game share its
 outcome and every board is unique, so a value head trained on every row learns board -> winner.
 On the first warm start (20,000 games) it scored a held-out value cross-entropy of 2.28, worse
-than a uniform guess (1.39); on 1/16 of the rows its best was 0.93."""
+than a uniform guess (1.39); on 1/16 of the rows its best was 0.93.
+
+Why the newest share: drawn uniformly over the window, generation 1's batches would be 92% the
+24.5M-decision warm start (generation 0) and 8% its own 2.1M, so each new position would be drawn
+0.16 times instead of twice."""
 
 from __future__ import annotations
 
@@ -37,12 +42,16 @@ EVAL_EVERY = 500
 EVAL_BATCHES = 10
 EVAL_BATCH = 1024
 EVAL_SEED = 0xE7A1
+# The share of each batch drawn from the newest generation when the window holds older ones.
+NEWEST_SHARE = 0.5
+# XORed into the older draw's seed: high bits only, so within a run it never equals a newest draw's.
+OLDER_SEED_SALT = 0x01DE_5EED << 32
 
 
 @dataclass(frozen=True)
 class TrainConfig:
     lr: float
-    steps: int | None = None  # None: steps_factor x new positions / batch, rounded up
+    steps: int | None = None  # None: `auto_steps`
     steps_factor: float = 2.0
     batch: int = 1024
     seed: int = 0
@@ -100,9 +109,36 @@ def pick_device(name: str) -> torch.device:
     return torch.device("cpu")
 
 
-def auto_steps(new_positions: int, batch: int, factor: float = 2.0) -> int:
-    """Enough steps to draw each of the newest generation's positions `factor` times on average."""
-    return max(1, math.ceil(factor * new_positions / batch))
+def auto_steps(new_positions: int, batch: int, factor: float = 2.0, share: float = 1.0) -> int:
+    """Enough steps to draw each of the newest generation's positions `factor` times on average,
+    when `share` of each batch comes from it."""
+    return max(1, math.ceil(factor * new_positions / (batch * share)))
+
+
+def newest_share(window: Window) -> float:
+    """The share of each batch drawn from the newest generation: all of it without older data."""
+    return NEWEST_SHARE if window.older.decisions else 1.0
+
+
+def batch_split(batch: int, has_older: bool) -> tuple[int, int]:
+    """A batch's rows from the newest generation and from the older ones: round(batch x
+    NEWEST_SHARE) (at least 1) and the rest, or every row from the newest without older data."""
+    if not has_older:
+        return batch, 0
+    newest = min(batch, max(1, round(batch * NEWEST_SHARE)))
+    return newest, batch - newest
+
+
+def sample_batch(window: Window, batch: int, seed: int, step: int, threads: int) -> dict:
+    """Step `step`'s batch: the newest generation's rows (drawn from (`seed`, `step`)) then the
+    older generations' (from the same, salted with OLDER_SEED_SALT), concatenated as one sampler
+    batch. Without older data it is the single draw from the newest generation."""
+    newest, older = batch_split(batch, window.older.decisions > 0)
+    first = window.newest.sample(newest, _seed(seed, step), threads)
+    if not older:
+        return first
+    second = window.older.sample(older, _seed(seed, step) ^ OLDER_SEED_SALT, threads)
+    return {key: first[key] + second[key] for key in first}  # "n" adds; the buffers concatenate
 
 
 def _seed(seed: int, step: int) -> int:
@@ -201,7 +237,7 @@ def parity_check(net: model_mod.Net, path: str | Path, window: Window) -> float:
     """The parity error (`parity_error`) between the Rust forward pass of the file at `path` and
     `net` (on the CPU) over `PARITY_POSITIONS` sampled positions; RuntimeError above
     `PARITY_TOLERANCE`."""
-    batch = window.data.sample(PARITY_POSITIONS, PARITY_SEED, 1)
+    batch = window.newest.sample(PARITY_POSITIONS, PARITY_SEED, 1)
     cpu = copy.deepcopy(net).to("cpu").eval()
     t = to_tensors(batch, torch.device("cpu"))
     with torch.no_grad():
@@ -227,7 +263,8 @@ def train(window: Window, out: str | Path, cfg: TrainConfig, init: str | Path | 
         net = model_mod.load(init) if init is not None else model_mod.Net(cfg.width, cfg.rounds)
     net.to(device).train()
     opt = torch.optim.Adam(net.parameters(), lr=cfg.lr)
-    steps = cfg.steps or auto_steps(window.new_positions, cfg.batch, cfg.steps_factor)
+    share = newest_share(window)
+    steps = cfg.steps or auto_steps(window.new_positions, cfg.batch, cfg.steps_factor, share)
     eval_batches = held_out_batches(window.validation, cfg, device, threads)
     if not eval_batches:
         print(f"notice: no held-out positions (the newest generation has no game with seed % {HELD_OUT_EVERY} == 0); "
@@ -235,7 +272,7 @@ def train(window: Window, out: str | Path, cfg: TrainConfig, init: str | Path | 
     history, held_out = [], []
     best_score, best_row, best_state = math.inf, None, None
     for step in range(steps):
-        batch = window.data.sample(cfg.batch, _seed(cfg.seed, step), threads)
+        batch = sample_batch(window, cfg.batch, cfg.seed, step, threads)
         parts = losses(net, to_tensors(batch, device), value_rows(batch["n"], cfg.seed, step))
         opt.zero_grad()
         parts["total"].backward()
@@ -266,7 +303,8 @@ def train(window: Window, out: str | Path, cfg: TrainConfig, init: str | Path | 
         tmp.unlink(missing_ok=True)
         raise
     os.replace(tmp, out)
-    return {"steps": steps, "lr": cfg.lr, "batch": cfg.batch, "init": None if init is None else str(init),
+    return {"steps": steps, "lr": cfg.lr, "batch": cfg.batch, "newest_share": share,
+            "older_positions": window.older.decisions, "init": None if init is None else str(init),
             "width": net.width, "rounds": net.rounds, "device": device.type, "history": history, "held_out": held_out,
             "best_step": None if best_row is None else best_row["step"], "best_held_out": best_row,
             "parity_max_error": err}

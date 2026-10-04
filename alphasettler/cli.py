@@ -299,8 +299,8 @@ def _train(args) -> int:
     window = load_window(root, dirs)
     for line in window.notices:
         print(f"notice: {line}")
-    print(f"window: {window.data.games} games, {window.data.decisions} positions "
-          f"({window.data.full_decisions} full searches), {window.new_positions} new; "
+    print(f"window: {window.games} games, {window.decisions} positions "
+          f"({window.full_decisions} full searches), {window.new_positions} new; "
           f"{window.validation.games} held out ({window.validation.decisions} positions)")
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

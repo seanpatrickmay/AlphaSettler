@@ -208,8 +208,12 @@ search that already beats AlphaBeta.
   outcome and the trunk learned board → winner.
 - Optimiser: Adam, batch 1,024, learning rate 1e-3 for net₀ and 3e-4 afterwards. Each generation
   trains from the previous generation's weights (net₀ from scratch) for enough steps to draw each
-  of the newest generation's positions twice on average (steps = 2 × new positions / 1,024). Then
-  it exports the best held-out checkpoint's weights file and checks it by running the parity
+  of the newest generation's positions twice on average. Half of every batch comes from the
+  newest generation and the rest uniformly from the older ones in the window (net₀, with no older
+  data, draws all of it from its own), so steps = 2 × new positions / (1,024 × ½), or / 1,024 for
+  net₀, and each new position is still drawn twice on average. Drawn uniformly over the window,
+  generation 1's batches would have been 92% net₀'s 24.5M warm-start decisions, drawing each of its
+  own 2.1M positions 0.16 times instead of twice. Then it exports the best held-out checkpoint's weights file and checks it by running the parity
   test's positions through both the Rust and PyTorch forward passes.
 - Training on MPS is not bit-reproducible. The determinism guarantee covers self-play, search and
   arenas given a weights file, not training.

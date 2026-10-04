@@ -26,8 +26,8 @@ from alphasettler.train.data import load_window, record_files, to_tensors
 from alphasettler.train.model import ACTIONS, FIXED_HEADER_LEN, Net, from_bytes, shapes, to_bytes
 from alphasettler.train import train as train_mod
 from alphasettler.train.train import (
-    VALUE_FRACTION, TrainConfig, auto_steps, held_out_batches, held_out_losses, losses, parity_check, parity_error,
-    pick_device, train, value_rows,
+    NEWEST_SHARE, VALUE_FRACTION, TrainConfig, auto_steps, batch_split, held_out_batches, held_out_losses, losses,
+    parity_check, parity_error, pick_device, sample_batch, train, value_rows,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -186,7 +186,7 @@ def test_widths_and_rounds_are_checked_and_non_finite_weights_rejected_before_bu
 def test_the_loss_is_the_spec_sum_with_l2_over_weights_only(tmp_path):
     """Policy over full-search rows, value and 0.25 x aux over the value rows only, L2 over weights."""
     w = load_window(tmp_path, [generation(tmp_path)])
-    t = to_tensors(w.data.sample(32, 7, 2), CPU)
+    t = to_tensors(w.newest.sample(32, 7, 2), CPU)
     torch.manual_seed(6)
     net = Net(8, 1)
     rows = torch.zeros(32, dtype=torch.bool)
@@ -215,7 +215,7 @@ def test_value_and_aux_terms_use_only_the_value_rows(tmp_path):
     """Changing the outcome or final VP of a row outside the value rows leaves the loss exactly as
     it was; changing one inside moves it."""
     w = load_window(tmp_path, [generation(tmp_path)])
-    t = to_tensors(w.data.sample(64, 11, 2), CPU)
+    t = to_tensors(w.newest.sample(64, 11, 2), CPU)
     torch.manual_seed(8)
     net = Net(8, 1)
     rows = value_rows(64, 5, 9)
@@ -253,11 +253,96 @@ def test_steps_are_twice_the_new_positions_over_the_batch():
     assert auto_steps(1, 1024) == 1
     assert auto_steps(5000, 1024) == 10
     assert auto_steps(5000, 1024, 3.0) == 15
+    # The warm start (generation 0, no older data): every row from the newest, the count unchanged.
+    assert auto_steps(23_292_888, 1024, 2.0) == auto_steps(23_292_888, 1024, 2.0, 1.0) == 45_494
+    # With older data half of each batch is new, so twice the steps draw each new position twice.
+    assert NEWEST_SHARE == 0.5
+    assert auto_steps(23_292_888, 1024, 2.0, NEWEST_SHARE) == 90_988
+    assert auto_steps(5000, 1024, 2.0, 0.5) == 20
+
+
+def rows(batch):
+    """A sampler batch's rows as (public, hidden) byte strings."""
+    pub, hid = 4 * NET_PUBLIC_LEN, 4 * NET_HIDDEN_LEN
+    return [(batch["public"][i * pub:(i + 1) * pub], batch["hidden"][i * hid:(i + 1) * hid]) for i in range(batch["n"])]
+
+
+def every_row(data):
+    """Every position of a training set, as `rows` gives them."""
+    out, game, decision = set(), 0, 0
+    while game < data.games:
+        try:
+            out.update(rows(data.position(game, decision)))
+            decision += 1
+        except ValueError:  # past the game's last decision
+            game, decision = game + 1, 0
+    return out
+
+
+def two_generations(tmp_path):
+    old = generation(tmp_path, "gen-000", seed_start=1, games=2)
+    new = generation(tmp_path, "gen-001", seed_start=21, games=2)
+    return load_window(tmp_path, [old, new])
+
+
+def test_half_of_every_batch_comes_from_the_newest_generation(tmp_path):
+    """Final-review fix: round(batch x NEWEST_SHARE) rows from the newest generation's training
+    games, first, and the rest from the older generations, whatever the step; each row is told
+    apart by its encoded position (the two generations share none)."""
+    w = two_generations(tmp_path)
+    newest, older = every_row(w.newest), every_row(w.older)
+    assert len(newest) > 0 and len(older) > 0 and not newest & older
+    for batch in (64, 15, 13, 2):
+        for step in range(3):
+            got = rows(sample_batch(w, batch, 4, step, 2))
+            k = round(batch * NEWEST_SHARE)
+            assert batch_split(batch, True) == (k, batch - k)
+            assert len(got) == batch
+            assert all(r in newest for r in got[:k]), (batch, step)
+            assert all(r in older for r in got[k:]), (batch, step)
+    assert batch_split(1, True) == (1, 0), "a one-row batch is the newest generation's"
+    assert rows(sample_batch(w, 1, 4, 0, 2))[0] in newest
+    t = to_tensors(sample_batch(w, 64, 4, 0, 2), CPU)
+    assert t.public.shape == (64, NET_PUBLIC_LEN) and t.mask.shape == (64, ACTIONS) and t.outcome.shape == (64, 4)
+
+
+def test_without_older_generations_every_row_is_the_newest_and_the_draw_is_unchanged(tmp_path):
+    w = load_window(tmp_path, [generation(tmp_path)])
+    assert w.older.decisions == 0 and batch_split(64, False) == (64, 0)
+    for step in range(3):
+        # The single draw a window of one generation always made: seed (seed, step) packed by `_seed`.
+        assert sample_batch(w, 64, 4, step, 2) == w.newest.sample(64, train_mod._seed(4, step), 2)
+
+
+def test_the_same_seed_gives_byte_identical_batches(tmp_path):
+    w = two_generations(tmp_path)
+    a = sample_batch(w, 64, 4, 9, 2)
+    assert a == sample_batch(two_generations(tmp_path / "again"), 64, 4, 9, 2), "a window read again"
+    assert a == sample_batch(w, 64, 4, 9, 1), "the thread count does not matter"
+    assert a != sample_batch(w, 64, 4, 10, 2) and a != sample_batch(w, 64, 5, 9, 2)
+    k = round(64 * NEWEST_SHARE)
+    assert rows(a)[:k] == rows(w.newest.sample(k, train_mod._seed(4, 9), 2))
+    # The two draws use distinct seeds: the older draw does not reuse the newest draw's.
+    assert rows(a)[k:] != rows(w.older.sample(64 - k, train_mod._seed(4, 9), 2))
+
+
+def test_training_on_two_generations_draws_each_new_position_twice_and_records_the_split(tmp_path):
+    w = two_generations(tmp_path)
+    cfg = replace(TINY_TRAIN, steps=None, batch=512)
+    s = train(w, tmp_path / "a.bin", cfg)
+    assert s["steps"] == auto_steps(w.new_positions, 512, 2.0, NEWEST_SHARE) == math.ceil(4 * w.new_positions / 512)
+    assert (s["newest_share"], s["older_positions"]) == (NEWEST_SHARE, w.older.decisions)
+    train(w, tmp_path / "b.bin", replace(cfg, threads=1))
+    assert (tmp_path / "a.bin").read_bytes() == (tmp_path / "b.bin").read_bytes(), "CPU training is reproducible"
+    one = load_window(tmp_path / "one", [generation(tmp_path / "one")])
+    s = train(one, tmp_path / "c.bin", replace(cfg, batch=256))
+    assert s["steps"] == auto_steps(one.new_positions, 256, 2.0)
+    assert (s["newest_share"], s["older_positions"]) == (1.0, 0)
 
 
 def test_fast_searches_add_nothing_to_the_policy_loss(tmp_path):
     w = load_window(tmp_path, [generation(tmp_path)])
-    t = to_tensors(w.data.sample(64, 5, 2), CPU)
+    t = to_tensors(w.newest.sample(64, 5, 2), CPU)
     assert 0 < t.full.sum().item() < 64
     torch.manual_seed(2)
     net = Net(16, 1)
@@ -273,7 +358,7 @@ def test_fast_searches_add_nothing_to_the_policy_loss(tmp_path):
 
 def test_a_tiny_dataset_can_be_overfit(tmp_path):
     w = load_window(tmp_path, [generation(tmp_path)])
-    t = to_tensors(w.data.sample(32, 1, 2), CPU)
+    t = to_tensors(w.newest.sample(32, 1, 2), CPU)
     torch.manual_seed(3)
     net = Net(32, 2)
     opt = torch.optim.Adam(net.parameters(), lr=3e-3)
@@ -364,7 +449,8 @@ def test_unreadable_empty_and_decisionless_files_are_skipped_with_a_notice(tmp_p
     assert "malformed.jsonl.gz: skipped the whole file" in text and "vp needs 4 entries" in text
     assert ".half" not in text and not any(".tmp-" in k for k in w.files)
     assert w.validation.games == 2, "seeds 0 and 200 (which has no decisions) are held out"
-    assert w.data.games >= 1 and w.new_positions == w.data.decisions > 0
+    assert w.newest.games >= 1 and w.new_positions == w.newest.decisions == w.decisions > 0
+    assert w.older.games == 0
 
 
 @pytest.mark.parametrize("error", [AttributeError("a bug"), TypeError("a bug"), MemoryError(), PermissionError("no")])
@@ -400,7 +486,7 @@ def test_two_writers_in_one_generation_are_read_once_each(tmp_path):
     write_games(gen / "selfplay-elsewhere.jsonl.gz", 0, 2)
     write_games(gen / "selfplay-more.jsonl.gz", 1, 2)
     w = load_window(tmp_path, [gen])
-    assert (w.data.games, w.validation.games) == (2, 1)
+    assert (w.newest.games, w.validation.games) == (2, 1)
     dup = [n for n in w.notices if "already in gen-000" in n]
     assert len(dup) == 2, "one notice per file, not per seed"
     assert any(n.endswith("selfplay-elsewhere.jsonl.gz: all 2 games duplicate earlier seeds (already in gen-000: 0, 1)")
@@ -428,17 +514,20 @@ def test_the_newest_generation_holds_out_its_seeds_divisible_by_20(tmp_path):
     new = generation(tmp_path, "gen-001", seed_start=39, games=3)  # seed 40 is held out
     old_d, new_d = seed_decisions(old), seed_decisions(new)
     w = load_window(tmp_path, [old, new])
-    assert (w.data.games, w.validation.games) == (4, 1)
+    assert (w.games, w.newest.games, w.older.games, w.validation.games) == (4, 2, 2, 1)
     assert w.validation.decisions == new_d[40] > 0
-    assert w.data.decisions == sum(old_d.values()) + new_d[39] + new_d[41]
-    assert w.new_positions == new_d[39] + new_d[41]
+    assert w.older.decisions == sum(old_d.values())
+    assert w.new_positions == w.newest.decisions == new_d[39] + new_d[41]
+    assert w.decisions == w.older.decisions + w.newest.decisions
+    assert w.full_decisions == w.older.full_decisions + w.newest.full_decisions
     again = load_window(tmp_path, [old, new])
     assert again.validation.sample(64, 1, 2) == w.validation.sample(64, 1, 2)
-    assert again.data.sample(64, 1, 2) == w.data.sample(64, 1, 2)
+    assert again.newest.sample(64, 1, 2) == w.newest.sample(64, 1, 2)
+    assert again.older.sample(64, 1, 2) == w.older.sample(64, 1, 2)
     flipped = load_window(tmp_path, [new, old])  # gen-000 the newest: seed 0 held out, seed 40 trained on
     assert flipped.validation.decisions == old_d[0]
-    assert flipped.data.decisions == sum(new_d.values()) + old_d[1]
-    assert flipped.new_positions == old_d[1]
+    assert flipped.older.decisions == sum(new_d.values())
+    assert flipped.new_positions == flipped.newest.decisions == old_d[1]
 
 
 def test_a_bad_held_out_record_skips_its_whole_file(tmp_path):
@@ -453,8 +542,8 @@ def test_a_bad_held_out_record_skips_its_whole_file(tmp_path):
     (notice,) = [n for n in w.notices if "bad.jsonl.gz" in n]
     assert "skipped the whole file" in notice and "held-out" in notice and "vp needs 4 entries" in notice
     d = seed_decisions(gen)
-    assert (w.data.games, w.validation.games) == (1, 1)
-    assert (w.data.decisions, w.validation.decisions) == (d[1], d[0])
+    assert (w.newest.games, w.validation.games) == (1, 1)
+    assert (w.newest.decisions, w.validation.decisions) == (d[1], d[0])
 
 
 TINY_TRAIN = TrainConfig(lr=1e-3, steps=7, batch=16, device="cpu", width=8, rounds=1, threads=2,
@@ -511,7 +600,7 @@ def test_held_out_losses_are_recorded_and_the_best_is_the_lowest_policy_plus_val
 
 def test_without_held_out_games_early_stopping_is_off_with_a_notice(tmp_path, capsys):
     w = load_window(tmp_path, [generation(tmp_path, seed_start=1)])
-    assert w.validation.games == 0 and w.data.games == 2
+    assert w.validation.games == 0 and w.newest.games == 2
     s = train(w, tmp_path / "n.bin", TINY_TRAIN)
     assert "notice: no held-out positions" in capsys.readouterr().out
     assert s["held_out"] == [] and s["best_step"] is None and s["best_held_out"] is None

@@ -8,9 +8,11 @@ A seed already read in the same generation (a second writer playing the same see
 once. Records stream into the `TrainingSet` a file at a time, so the window is never held as
 Python dicts; the Rust side checks every field of every record.
 
-The newest generation's games whose seed is a multiple of HELD_OUT_EVERY are held out: they go to
-a separate validation set (collected a file at a time, 1 game in 20), not the training set. Older
-generations in the window are all training data."""
+The newest generation's training games and the older generations' go to two training sets, so a
+batch can draw a fixed share from the newest (`train.NEWEST_SHARE`). The newest generation's games
+whose seed is a multiple of HELD_OUT_EVERY are held out: they go to a separate validation set
+(collected a file at a time, 1 game in 20), not a training set. Older generations in the window are
+all training data."""
 
 from __future__ import annotations
 
@@ -160,37 +162,47 @@ def read_generation(gen_dir: str | Path, data: TrainingSet, notices: list[str],
 
 @dataclass
 class Window:
-    data: TrainingSet
+    newest: TrainingSet  # the newest generation's training games (not its held-out ones)
+    older: TrainingSet  # every older generation's games in the window; empty for a window of one
     validation: TrainingSet  # the newest generation's held-out games; empty if it has none
-    new_positions: int
+    new_positions: int  # the newest training set's decisions
     files: dict[str, str]
     notices: list[str]
 
+    @property
+    def games(self) -> int:
+        return self.newest.games + self.older.games
+
+    @property
+    def decisions(self) -> int:
+        return self.newest.decisions + self.older.decisions
+
+    @property
+    def full_decisions(self) -> int:
+        return self.newest.full_decisions + self.older.full_decisions
+
 
 def load_window(root: str | Path, gen_dirs: list[Path]) -> Window:
-    """The training set over `gen_dirs` (oldest first; the last is the newest generation), the
-    validation set (the newest generation's `held_out` games, not in the training set), the
-    newest generation's training decision count, and every record file read (path relative to
-    `root` -> sha256). ValueError if there is nothing to train on."""
+    """The training sets over `gen_dirs` (oldest first; the last is the newest generation): the
+    newest generation's training games and the older generations' games; the validation set (the
+    newest generation's `held_out` games, in neither training set); and every record file read
+    (path relative to `root` -> sha256). ValueError if there is nothing to train on."""
     root = Path(root)
     gen_dirs = [Path(d) for d in gen_dirs]
     if not gen_dirs:
         raise ValueError("no generation directories to train on")
     notices: list[str] = []
-    data, validation = TrainingSet(), TrainingSet()
+    newest, older, validation = TrainingSet(), TrainingSet(), TrainingSet()
     read: dict[str, str] = {}
-    new = 0
     for i, d in enumerate(gen_dirs):
-        before = data.decisions
-        newest = i == len(gen_dirs) - 1
-        for p in read_generation(d, data, notices, validation if newest else None):
+        last = i == len(gen_dirs) - 1
+        for p in read_generation(d, newest if last else older, notices, validation if last else None):
             read[str(p.relative_to(root))] = files.sha256_file(p)
-        new = data.decisions - before
-    if data.decisions == 0:
+    if newest.decisions + older.decisions == 0:
         raise ValueError(f"no training positions in {', '.join(str(d) for d in gen_dirs)}")
-    if new == 0:
+    if newest.decisions == 0:
         raise ValueError(f"the newest generation {gen_dirs[-1]} has no decisions to train on")
-    return Window(data, validation, new, read, notices)
+    return Window(newest, older, validation, newest.decisions, read, notices)
 
 
 @dataclass

@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -71,6 +72,11 @@ def test_a_full_run_writes_every_output_and_redoes_nothing(reference):
         assert t["best_step"] == t["best_held_out"]["step"]
     # Generation 0 trains on seed 1 only; generation 1 on both of gen-000's (older) and its own seed 10,000,001.
     assert (g0["train"]["games"], g1["train"]["games"]) == (1, 3)
+    # Half of each of generation 1's batches is its own; generation 0 has no older data.
+    assert (g0["train"]["newest_share"], g0["train"]["older_positions"]) == (1.0, 0)
+    assert g0["train"]["positions"] == g0["train"]["new_positions"]
+    assert g1["train"]["newest_share"] == 0.5 and g1["train"]["older_positions"] > 0
+    assert g1["train"]["positions"] == g1["train"]["older_positions"] + g1["train"]["new_positions"]
     assert g1["gate"]["games"] == 4 and g1["gate"]["promoted"] == promoted(g1["gate"]["wins"], 4)
     assert g1["gate"]["belief_resets"] == 0
     assert m["best"] == (1 if g1["gate"]["promoted"] else 0)
@@ -376,6 +382,24 @@ def test_linked_records_satisfy_a_new_runs_self_play_without_playing(tmp_path, r
     monkeypatch.setattr(selfplay_mod, "write_explore", no_games)
     assert Loop(tmp_path / "run", TINY).run(stop_after=1) == 1
     assert manifest(tmp_path / "run")["generations"][0]["selfplay"] == manifest(reference)["generations"][0]["selfplay"]
+
+
+def test_a_run_whose_generation_0_was_trained_before_the_newest_share_resumes(tmp_path, reference):
+    """runs/3b-v2's state when the fix landed: generation 0 complete with a train entry that has
+    no `newest_share` or `older_positions`, generation 1's self-play part way. The rerun finishes
+    generation 1 as an uninterrupted run does and leaves generation 0's entry as it was."""
+    d = tmp_path / "run"
+    shutil.copytree(reference, d)
+    m = manifest(reference)
+    g0 = {**m["generations"][0], "train": {k: v for k, v in m["generations"][0]["train"].items()
+                                          if k not in ("newest_share", "older_positions")}}
+    (d / "manifest.json").write_text(json.dumps({"format": 2, "best": 0, "generations": [g0]}, indent=1))
+    for name in ("selfplay-local-00001.jsonl.gz", "net.bin", "gate.jsonl", "gate.json"):
+        (d / "gen-001" / name).unlink()
+    (d / "nets" / "gen-001.bin").unlink()
+    assert Loop(d, TINY).run() == 3
+    resumed = manifest(d)
+    assert resumed["generations"] == [g0, m["generations"][1]] and resumed["best"] == m["best"]
 
 
 def test_a_changed_output_of_a_completed_step_is_an_error(tmp_path):
