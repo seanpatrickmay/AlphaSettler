@@ -1,7 +1,8 @@
-"""Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic`, `train`
-and `train-loop`. `selfplay --simulations S` writes 3a records; `selfplay --pcr` and `selfplay --net
+"""Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic`, `train`,
+`fast-train`, `fast-score` and `train-loop`. `selfplay --simulations S` writes 3a records; `selfplay --pcr` and `selfplay --net
 NAME` write 3b exploration records; `train` (the train extra) trains a network on them; `train-loop`
-(the train extra) runs the resumable self-play, train and gate generations."""
+(the train extra) runs the resumable self-play, train and gate generations; `fast-train` and
+`fast-score` (the train extra) train and score candidate nets on a fixed pool of generations."""
 
 from __future__ import annotations
 
@@ -104,6 +105,28 @@ def _parser() -> argparse.ArgumentParser:
                    help="network v2's width d, from scratch (an --init file brings its own)")
     t.add_argument("--rounds", type=_positive_int, default=NET_DEFAULT_ROUNDS,
                    help="network v2's message-passing rounds R, from scratch (an --init file brings its own)")
+
+    ft = sub.add_parser("fast-train",
+                        help="train a candidate net for a wall-clock budget on a pool of generations (train extra)")
+    ft.add_argument("records", nargs="+", help="generation directories to pool")
+    ft.add_argument("--out", required=True, help="weights file to write (its summary goes to OUT.json)")
+    ft.add_argument("--minutes", type=float, required=True, help="the wall-clock training budget")
+    ft.add_argument("--init", default=None, help="weights file to start from (default: from scratch)")
+    ft.add_argument("--lr", type=float, default=SCRATCH_LR, help="the peak learning rate (cosine over the budget)")
+    ft.add_argument("--warmup", type=int, default=200, help="linear warmup steps")
+    ft.add_argument("--policy-batch", type=_positive_int, default=256, help="policy-target rows per step")
+    ft.add_argument("--value-batch", type=_positive_int, default=64, help="value and aux rows per step")
+    ft.add_argument("--width", type=_positive_int, default=NET_DEFAULT_WIDTH)
+    ft.add_argument("--rounds", type=_positive_int, default=NET_DEFAULT_ROUNDS)
+    ft.add_argument("--seed", type=int, default=0)
+    ft.add_argument("--eval-seconds", type=float, default=60.0, help="held-out evaluation interval")
+    ft.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
+    ft.add_argument("--threads", type=_positive_int, default=None)
+
+    fs = sub.add_parser("fast-score", help="held-out losses of weights files on a pool's held-out set (train extra)")
+    fs.add_argument("records", nargs="+", help="generation directories to pool")
+    fs.add_argument("--nets", nargs="+", required=True, help="weights files to score")
+    fs.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
 
     lp = sub.add_parser("train-loop",
                         help="self-play, train and gate generations; rerun to resume (needs the train extra)")
@@ -320,6 +343,61 @@ def _train(args) -> int:
     return 0
 
 
+def _pool(records: list[str]):
+    from alphasettler.train.fast import load_pool
+
+    dirs = [Path(d).resolve() for d in records]
+    pool = load_pool(Path(os.path.commonpath([str(d.parent) for d in dirs])), dirs)
+    for line in pool.notices:
+        print(f"notice: {line}")
+    print(f"pool: {pool.train.games} games, {pool.train.decisions} positions "
+          f"({pool.train.policy_decisions} policy targets); {pool.validation.games} held out "
+          f"({pool.validation.decisions} positions)", flush=True)
+    return pool
+
+
+def _fast_train(args) -> int:
+    if _train_missing():
+        return 2
+    from alphasettler.train import model
+    from alphasettler.train.fast import FastConfig, fast_train
+
+    cfg = FastConfig(minutes=args.minutes, lr=args.lr, warmup=args.warmup, policy_batch=args.policy_batch,
+                     value_batch=args.value_batch, width=args.width, rounds=args.rounds, seed=args.seed,
+                     eval_seconds=args.eval_seconds, device=args.device, threads=args.threads)
+    cfg.check()
+    if args.init:
+        model.load(args.init)  # a bad --init fails now, not after the pool is read
+    pool = _pool(args.records)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        s = fast_train(pool, out, cfg, args.init)
+    except KeyboardInterrupt:
+        print("interrupted: nothing written", file=sys.stderr)
+        return 130
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    b = s["best"]
+    print(f"trained {s['steps']} steps in {s['seconds']:.0f} s ({s['steps_per_second']} steps/s) on {s['device']}; "
+          f"best held-out score {b['score']} (policy {b['policy']}, value {b['value']}) after {b['step']} steps; "
+          f"parity max error {s['parity_max_error']:.2e}; wrote {out}")
+    return 0
+
+
+def _fast_score(args) -> int:
+    if _train_missing():
+        return 2
+    from alphasettler.train.fast import score_net
+
+    pool = _pool(args.records)
+    for net in args.nets:
+        h = score_net(pool, net, args.device)
+        print(f"{net}: score {h['score']:.4f} (policy {h['policy']:.4f}, value {h['value']:.4f}, aux {h['aux']:.5f})")
+    return 0
+
+
 def _train_loop(args) -> int:
     if _train_missing():
         return 2
@@ -431,6 +509,10 @@ def main(argv: list[str] | None = None) -> int:
             return _fit_heuristic(args)
         elif args.command == "train":
             return _train(args)
+        elif args.command == "fast-train":
+            return _fast_train(args)
+        elif args.command == "fast-score":
+            return _fast_score(args)
         elif args.command == "train-loop":
             return _train_loop(args)
         else:

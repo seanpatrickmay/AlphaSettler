@@ -110,16 +110,19 @@ impl Batch {
 }
 
 /// Replay `g` once, checking it against its record.
-fn check_game(g: &RecordedGame, buf: &mut Vec<Action>) -> Result<(), String> {
+/// Checks that `g` replays, and returns the indices of its decisions that are policy targets
+/// (`Batch::full` 1: a full search with a visit on a move other than a domestic offer).
+fn check_game(g: &RecordedGame, buf: &mut Vec<Action>) -> Result<Vec<u32>, String> {
+    let mut targets = Vec::new();
     g.config.validate()?;
     let mut s = State::new(g.seed, g.config);
-    let mut next = g.decisions.iter().peekable();
+    let mut next = g.decisions.iter().enumerate().peekable();
     for (i, &a) in g.actions.iter().enumerate() {
         if s.is_over() {
             return Err(format!("move {i} comes after the game ended"));
         }
         legal_actions(&s, buf);
-        if let Some(d) = next.next_if(|d| d.index as usize == i) {
+        if let Some((k, d)) = next.next_if(|(_, d)| d.index as usize == i) {
             if d.actor != s.current_actor() {
                 return Err(format!(
                     "move {i}: the record says actor {}, the replay has {}",
@@ -134,13 +137,20 @@ fn check_game(g: &RecordedGame, buf: &mut Vec<Action>) -> Result<(), String> {
                     buf.len()
                 ));
             }
+            let visited = buf
+                .iter()
+                .zip(&d.visits)
+                .any(|(a, &v)| v > 0 && !matches!(a, Action::OfferTrade { .. }));
+            if d.full_search && visited {
+                targets.push(k as u32);
+            }
         }
         if !buf.contains(&a) {
             return Err(format!("move {i}: {a:?} is illegal"));
         }
         s.apply(a);
     }
-    if let Some(d) = next.next() {
+    if let Some((_, d)) = next.next() {
         return Err(format!(
             "the decision at move {} is out of order or past the last move",
             d.index
@@ -163,7 +173,7 @@ fn check_game(g: &RecordedGame, buf: &mut Vec<Action>) -> Result<(), String> {
             g.vp
         ));
     }
-    Ok(())
+    Ok(targets)
 }
 
 /// Recorded games, checked once, from which training batches are replayed.
@@ -173,6 +183,8 @@ pub struct TrainingSet {
     /// `starts[g]` is the global index of game g's first decision; the last entry is the total.
     starts: Vec<usize>,
     full: usize,
+    /// (game, decision) of every policy target (`check_game`).
+    targets: Vec<(u32, u32)>,
 }
 
 /// The empty set.
@@ -182,6 +194,7 @@ impl Default for TrainingSet {
             games: Vec::new(),
             starts: vec![0],
             full: 0,
+            targets: Vec::new(),
         }
     }
 }
@@ -198,9 +211,12 @@ impl TrainingSet {
     /// names the game by its index in the whole set and leaves the set unchanged.
     pub fn extend(&mut self, games: Vec<RecordedGame>) -> Result<(), String> {
         let mut buf = Vec::new();
+        let mut targets = Vec::new();
         for (i, g) in games.iter().enumerate() {
-            check_game(g, &mut buf)
-                .map_err(|e| format!("game {} (seed {}): {e}", self.games.len() + i, g.seed))?;
+            let game = (self.games.len() + i) as u32;
+            let found = check_game(g, &mut buf)
+                .map_err(|e| format!("game {} (seed {}): {e}", game, g.seed))?;
+            targets.extend(found.into_iter().map(|k| (game, k)));
         }
         let mut total = self.decisions();
         self.starts.pop();
@@ -209,6 +225,7 @@ impl TrainingSet {
             total += g.decisions.len();
             self.full += g.decisions.iter().filter(|d| d.full_search).count();
         }
+        self.targets.extend(targets);
         self.starts.push(total);
         self.games.extend(games);
         Ok(())
@@ -230,6 +247,11 @@ impl TrainingSet {
     }
 
     /// Panics unless `game < games()`.
+    /// Decisions that are policy targets (`Batch::full` 1): full searches with at least one visit.
+    pub fn policy_decisions(&self) -> usize {
+        self.targets.len()
+    }
+
     pub fn game_decisions(&self, game: usize) -> usize {
         self.games[game].decisions.len()
     }
@@ -303,6 +325,29 @@ impl TrainingSet {
         let mut rng = Rng::new(seed);
         let picks: Vec<(usize, usize)> = (0..n)
             .map(|_| self.locate(((rng.next_u64() as u128 * total as u128) >> 64) as usize))
+            .collect();
+        Ok(self.batch(&picks, threads))
+    }
+
+    /// `n` positions drawn uniformly over the policy targets alone (`policy_decisions`), from
+    /// `seed`; the result does not depend on `threads`.
+    pub fn sample_full(&self, n: usize, seed: u64, threads: usize) -> Result<Batch, String> {
+        let total = self.targets.len();
+        if total == 0 {
+            return Err("no full-search decisions with visits to sample".into());
+        }
+        if n > MAX_SAMPLE {
+            return Err(format!(
+                "at most {MAX_SAMPLE} positions per sample, asked for {n}"
+            ));
+        }
+        let mut rng = Rng::new(seed);
+        let picks: Vec<(usize, usize)> = (0..n)
+            .map(|_| {
+                let (g, d) =
+                    self.targets[((rng.next_u64() as u128 * total as u128) >> 64) as usize];
+                (g as usize, d as usize)
+            })
             .collect();
         Ok(self.batch(&picks, threads))
     }

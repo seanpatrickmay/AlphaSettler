@@ -233,11 +233,11 @@ def parity_error(ref: tuple[torch.Tensor, torch.Tensor, torch.Tensor], rust: dic
     return max(errors)
 
 
-def parity_check(net: model_mod.Net, path: str | Path, window: Window) -> float:
+def parity_check(net: model_mod.Net, path: str | Path, data: TrainingSet) -> float:
     """The parity error (`parity_error`) between the Rust forward pass of the file at `path` and
-    `net` (on the CPU) over `PARITY_POSITIONS` sampled positions; RuntimeError above
+    `net` (on the CPU) over `PARITY_POSITIONS` positions sampled from `data`; RuntimeError above
     `PARITY_TOLERANCE`."""
-    batch = window.newest.sample(PARITY_POSITIONS, PARITY_SEED, 1)
+    batch = data.sample(PARITY_POSITIONS, PARITY_SEED, 1)
     cpu = copy.deepcopy(net).to("cpu").eval()
     t = to_tensors(batch, torch.device("cpu"))
     with torch.no_grad():
@@ -297,7 +297,7 @@ def train(window: Window, out: str | Path, cfg: TrainConfig, init: str | Path | 
     tmp = files.temp_path(out)
     try:
         tmp.write_bytes(model_mod.to_bytes(net))
-        err = parity_check(net, tmp, window)
+        err = parity_check(net, tmp, window.newest)
         files.fsync_file(tmp)
     except BaseException:
         tmp.unlink(missing_ok=True)

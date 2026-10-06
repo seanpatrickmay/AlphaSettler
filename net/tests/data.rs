@@ -325,3 +325,36 @@ fn the_sampler_and_the_evaluator_use_the_same_policy_ids() {
         "steals by seats other than 0 were checked"
     );
 }
+
+#[test]
+fn sample_full_draws_only_policy_targets() {
+    let set = TrainingSet::new(vec![recorded(1, decided()), recorded(3, drawn())]).unwrap();
+    let mut every = Batch::default();
+    for g in 0..set.games() {
+        for d in 0..set.game_decisions(g) {
+            set.position(g, d, &mut every);
+        }
+    }
+    let marked = every.full.iter().filter(|&&f| f == 1).count();
+    assert!(marked > 0 && marked < every.n);
+    assert_eq!(set.policy_decisions(), marked);
+    let a = set.sample_full(256, 9, 1).unwrap();
+    assert_eq!(a, set.sample_full(256, 9, 4).unwrap());
+    assert_ne!(a, set.sample_full(256, 10, 1).unwrap());
+    assert_eq!(a.n, 256);
+    assert!(
+        a.full.iter().all(|&f| f == 1),
+        "every row is a policy target"
+    );
+    let mut none = recorded(1, decided());
+    for d in &mut none.decisions {
+        d.full_search = false;
+    }
+    let e = TrainingSet::new(vec![none])
+        .unwrap()
+        .sample_full(1, 0, 1)
+        .unwrap_err();
+    assert!(e.contains("no full-search"), "{e}");
+    let e = set.sample_full(MAX_SAMPLE + 1, 0, 1).unwrap_err();
+    assert!(e.contains("at most"), "{e}");
+}

@@ -237,6 +237,33 @@ impl PyTrainingSet {
         batch_dict(py, &b)
     }
 
+    /// Decisions that are policy targets (full searches with a visit off domestic offers).
+    #[getter]
+    fn policy_decisions(&self) -> usize {
+        self.inner.policy_decisions()
+    }
+
+    /// As `sample`, drawn uniformly over the policy targets alone.
+    fn sample_full<'py>(
+        &self,
+        py: Python<'py>,
+        n: &Bound<'py, PyAny>,
+        seed: &Bound<'py, PyAny>,
+        threads: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let n: usize = int_arg(n, "n")?;
+        let seed: u64 = int_arg(seed, "seed")?;
+        let threads: usize = int_arg(threads, "threads")?;
+        if n == 0 {
+            return Err(value_error("n must be positive"));
+        }
+        let inner = &self.inner;
+        let b = py
+            .detach(|| inner.sample_full(n, seed, threads))
+            .map_err(value_error)?;
+        batch_dict(py, &b)
+    }
+
     /// Decision `decision` of game `game` as a one-position batch.
     fn position<'py>(
         &self,

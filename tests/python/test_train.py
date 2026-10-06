@@ -623,12 +623,12 @@ def test_train_exports_a_net_the_rust_side_loads_and_checks_parity(tmp_path):
     assert s["init"] == str(nets / "t.bin") and (s["width"], s["rounds"]) == (8, 1), "the init file's shape"
     assert from_bytes((nets / "v.bin").read_bytes()).width == 8
     with pytest.raises(RuntimeError, match="disagree"):
-        parity_check(Net(8, 1), nets / "t.bin", w)
+        parity_check(Net(8, 1), nets / "t.bin", w.newest)
     nan_net = model.load(nets / "t.bin")
     with torch.no_grad():
         nan_net.value.weight[0, 0] = float("nan")
     with pytest.raises(RuntimeError, match="disagree"):
-        parity_check(nan_net, nets / "t.bin", w)
+        parity_check(nan_net, nets / "t.bin", w.newest)
     for bad in (replace(cfg, batch=2**16 + 1), replace(cfg, lr=float("nan")), replace(cfg, lr=0.0),
                 replace(cfg, eval_every=0), replace(cfg, eval_batches=0), replace(cfg, eval_batch=0),
                 replace(cfg, eval_batch=2**16 + 1), replace(cfg, width=0), replace(cfg, width=NET_MAX_WIDTH + 1),
