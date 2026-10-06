@@ -1,8 +1,9 @@
 """Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic`, `train`,
-`fast-train`, `fast-score` and `train-loop`. `selfplay --simulations S` writes 3a records; `selfplay --pcr` and `selfplay --net
-NAME` write 3b exploration records; `train` (the train extra) trains a network on them; `train-loop`
-(the train extra) runs the resumable self-play, train and gate generations; `fast-train` and
-`fast-score` (the train extra) train and score candidate nets on a fixed pool of generations."""
+`fast-train`, `fast-score`, `fast-loop` and `train-loop`. `selfplay --simulations S` writes 3a
+records; `selfplay --pcr` and `selfplay --net NAME` write 3b exploration records; `train` (the train
+extra) trains a network on them; `train-loop` (the train extra) runs the resumable self-play, train
+and gate generations; `fast-train` and `fast-score` (the train extra) train and score candidate nets
+on a fixed pool of generations, and `fast-loop` runs small generations trained that way."""
 
 from __future__ import annotations
 
@@ -127,6 +128,22 @@ def _parser() -> argparse.ArgumentParser:
     fs.add_argument("records", nargs="+", help="generation directories to pool")
     fs.add_argument("--nets", nargs="+", required=True, help="weights files to score")
     fs.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
+
+    fl = sub.add_parser("fast-loop", help="small self-play generations trained with fast-train (train extra)")
+    fl.add_argument("--dir", required=True, help="the run directory")
+    fl.add_argument("--generations", type=int, required=True, help="the last generation number to run")
+    fl.add_argument("--seed-dirs", nargs="+", default=None,
+                    help="first run only: record directories to start from, oldest first")
+    fl.add_argument("--start-net", default=None, help="first run only: the starting best net")
+    fl.add_argument("--first", type=int, default=None, help="first run only: the first generation's number")
+    fl.add_argument("--games", type=_positive_int, default=2000)
+    fl.add_argument("--window-games", type=_positive_int, default=40_000)
+    fl.add_argument("--minutes", type=float, default=10.0)
+    fl.add_argument("--lr", type=float, default=5e-4)
+    fl.add_argument("--gate-seeds", type=_positive_int, default=100)
+    fl.add_argument("--gate-simulations", type=_positive_int, default=100)
+    fl.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
+    fl.add_argument("--threads", type=_positive_int, default=None)
 
     lp = sub.add_parser("train-loop",
                         help="self-play, train and gate generations; rerun to resume (needs the train extra)")
@@ -398,6 +415,30 @@ def _fast_score(args) -> int:
     return 0
 
 
+def _fast_loop(args) -> int:
+    if _train_missing():
+        return 2
+    from alphasettler.train.fastloop import STATE, FastLoop, FastLoopSettings
+
+    root = Path(args.dir)
+    if not (root / STATE).exists():
+        if not (args.seed_dirs and args.start_net and args.first is not None):
+            print("error: a new fast loop needs --seed-dirs, --start-net and --first", file=sys.stderr)
+            return 2
+        FastLoop.init(root, args.seed_dirs, args.start_net, args.first)
+    s = FastLoopSettings(generations=args.generations, games=args.games, window_games=args.window_games,
+                         minutes=args.minutes, lr=args.lr, gate_seeds=args.gate_seeds,
+                         gate_simulations=args.gate_simulations, device=args.device, threads=args.threads)
+    loop = FastLoop(root, s)
+    try:
+        n = loop.run()
+    except KeyboardInterrupt:
+        print("interrupted: rerun the same command to resume", file=sys.stderr)
+        return 130
+    print(f"{n} generations run; the best net is {loop.state['best']} ({root / 'nets' / 'best.bin'})")
+    return 0
+
+
 def _train_loop(args) -> int:
     if _train_missing():
         return 2
@@ -513,6 +554,8 @@ def main(argv: list[str] | None = None) -> int:
             return _fast_train(args)
         elif args.command == "fast-score":
             return _fast_score(args)
+        elif args.command == "fast-loop":
+            return _fast_loop(args)
         elif args.command == "train-loop":
             return _train_loop(args)
         else:
