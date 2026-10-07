@@ -5,6 +5,10 @@ on the seed (seating is forced after Catanatron draws it, so every rotation sees
 map). Dice, steals and Catanatron's bots share one random stream, so common random numbers
 hold only for the board and the early rolls (spec, Section 3). AlphaBeta has a 20 s
 wall-clock search limit, so its games are not exactly reproducible.
+
+With trades on (`run_match(..., trades=True)`, `arena --trades`) our candidate plays the trading
+game: a `+t` candidate may offer, Catanatron's bots answer (AlphaBeta by its own search, see
+`let_alphabeta_answer_offers`), and our bot confirms or cancels.
 """
 
 from __future__ import annotations
@@ -15,17 +19,33 @@ import os
 import catanatron.game as catan_game
 from catanatron import Color, Game as CatanGame, Player, RandomPlayer
 from catanatron.models.actions import generate_playable_actions
-from catanatron.players import AlphaBetaPlayer, ValueFunctionPlayer, WeightedRandomPlayer
+from catanatron.models.enums import ActionPrompt, ActionType
+from catanatron.players import AlphaBetaPlayer, ValueFunctionPlayer, WeightedRandomPlayer, tree_search_utils
 
-from alphasettler import Bot, Game
+from alphasettler import Bot
+from alphasettler.arena import TRADES
 from oracle import hash_seed_zero
 from oracle.events import record_events, redact
 from oracle.translate import (
-    SETUP_TURNS, Untranslatable, action_token, catan_snapshot, move_robber, seat, steal_from,
+    SETUP_TURNS, Untranslatable, action_token, catan_snapshot, is_offer, move_robber, offer_action, our_game, seat,
+    steal_from,
 )
 
 COLORS = [Color.RED, Color.BLUE, Color.ORANGE, Color.WHITE]
 CONFIG = {"max_offers_per_turn": 0}
+# AlphaBeta expands only the action types its search knows how to execute, and raises on the
+# answers to a domestic offer: Catanatron's own bots never offer, so they never meet one. The
+# answers and confirmations are deterministic (no dice, no hidden draw), so with our offers on they
+# join that set, and AlphaBeta answers by its own search (spec 3c Section 6). Catanatron's source is
+# not changed; the set is extended at run time in the processes that play trading games.
+TRADE_ANSWERS = (ActionType.ACCEPT_TRADE, ActionType.REJECT_TRADE, ActionType.CONFIRM_TRADE,
+                 ActionType.CANCEL_TRADE)
+
+
+def let_alphabeta_answer_offers() -> None:
+    tree_search_utils.DETERMINISTIC_ACTIONS.update(TRADE_ANSWERS)
+
+
 BASELINES = {
     "random": RandomPlayer,
     "weighted": WeightedRandomPlayer,
@@ -40,13 +60,19 @@ class AlphaSettlerPlayer(Player):
     Catanatron does not offer, or a position that will not import, falls back to Catanatron's
     first playable action and is counted in ``fallbacks``."""
 
-    def __init__(self, color, bot_name: str, seed: int, nets_dir: str | None = None):
+    def __init__(self, color, bot_name: str, seed: int, nets_dir: str | None = None, config: dict | None = None):
         super().__init__(color)
         self.bot = Bot(bot_name, seed, nets_dir)
         self.seed = seed
+        self.config = CONFIG if config is None else config
         self.fallbacks = 0
 
     def decide(self, game, playable_actions):
+        st = game.state
+        if st.current_prompt == ActionPrompt.DECIDE_TRADE and st.current_trade[10] == seat(st, self.color):
+            # Catanatron asks us about our own offer (see `answers_own_offer`): no decision of
+            # ours, so we decline it, the answer that leaves the offer as it stands.
+            return next(a for a in playable_actions if a.action_type == ActionType.REJECT_TRADE)
         by_token = {}
         for a in playable_actions:
             try:
@@ -54,7 +80,13 @@ class AlphaSettlerPlayer(Player):
             except Untranslatable:  # an action we cannot express is simply not choosable
                 pass
         try:
-            ours = Game.from_snapshot(self.seed, catan_snapshot(game), CONFIG)
+            ours = our_game(self.seed, game, self.config)
+            if ours.phase == "main":
+                # Catanatron lists no offers (any one is valid in PLAY_TURN after the roll): ours
+                # are the ones our rules allow, none when the config turns offers off.
+                for a in ours.legal_actions():
+                    if is_offer(a):
+                        by_token[a] = offer_action(self.color, a)
             a = self.bot.act(ours)
             if ours.phase == "move_robber":
                 after = ours.copy()
@@ -89,9 +121,13 @@ def _force_seating(game, players) -> None:
     game.playable_actions = generate_playable_actions(st)
 
 
-def play_game(seed: int, candidate: str, baseline: str, candidate_seat: int, nets_dir: str | None = None) -> dict:
+def play_game(seed: int, candidate: str, baseline: str, candidate_seat: int, nets_dir: str | None = None,
+              trades: bool = False) -> dict:
+    if trades:
+        let_alphabeta_answer_offers()
     players = [
-        AlphaSettlerPlayer(COLORS[i], candidate, seed * 4 + i, nets_dir) if i == candidate_seat else BASELINES[baseline](COLORS[i])
+        AlphaSettlerPlayer(COLORS[i], candidate, seed * 4 + i, nets_dir, TRADES if trades else CONFIG)
+        if i == candidate_seat else BASELINES[baseline](COLORS[i])
         for i in range(4)
     ]
     game = CatanGame(players, seed=seed)
@@ -136,9 +172,10 @@ def check(candidate: str, baseline: str, seeds: int, seed_start: int = 0, nets_d
 
 
 def run_match(candidate: str, baseline: str, seeds: int, seed_start: int = 0, workers: int | None = None,
-              nets_dir: str | None = None) -> list[dict]:
+              nets_dir: str | None = None, trades: bool = False) -> list[dict]:
     check(candidate, baseline, seeds, seed_start, nets_dir)
-    jobs = [(s, candidate, baseline, k, nets_dir) for s in range(seed_start, seed_start + seeds) for k in range(4)]
+    jobs = [(s, candidate, baseline, k, nets_dir, trades)
+            for s in range(seed_start, seed_start + seeds) for k in range(4)]
     with hash_seed_zero():
         pool = mp.get_context("spawn").Pool(min(workers or os.cpu_count() or 1, len(jobs)))
     with pool:

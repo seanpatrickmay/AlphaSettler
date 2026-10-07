@@ -10,7 +10,7 @@ from catanatron.models.enums import ActionType
 
 from oracle.tables import CAT_NODE_TO_OUR_NODE
 from oracle.translate import (
-    CAT_DEV, CUBE_TO_OUR_TILE, DEV_NAMES, RESOURCE_NAMES, Untranslatable, _res, our_edge, seat,
+    CAT_DEV, CUBE_TO_OUR_TILE, DEV_NAMES, RESOURCE_NAMES, Untranslatable, _res, answers_own_offer, our_edge, seat,
 )
 
 
@@ -75,6 +75,18 @@ def record_events(before: dict, after: dict, record, state) -> list[dict]:
         ev.append({"type": "discarded", "player": p, "resource": RESOURCE_NAMES[_res(v)]})
     elif t == ActionType.END_TURN:
         ev.append({"type": "turn_ended", "player": p})
+    elif t == ActionType.OFFER_TRADE:
+        ev.append({"type": "trade_offered", "player": p, "give": list(v[:5]), "get": list(v[5:10])})
+    elif t in (ActionType.ACCEPT_TRADE, ActionType.REJECT_TRADE):
+        if not answers_own_offer(state, a):  # Catanatron asks some offerers too: no answer of ours
+            ev.append({"type": "trade_responded", "player": p, "accepted": t == ActionType.ACCEPT_TRADE})
+        if not state.is_resolving_trade:  # the last answer, and nobody accepted
+            ev.append({"type": "trade_cancelled", "player": state.current_turn_index})
+    elif t == ActionType.CONFIRM_TRADE:
+        ev.append({"type": "trade_confirmed", "offerer": p, "partner": seat(state, v[10]),
+                   "offerer_gave": list(v[:5]), "partner_gave": list(v[5:10])})
+    elif t == ActionType.CANCEL_TRADE:
+        ev.append({"type": "trade_cancelled", "player": p})
     else:
         raise Untranslatable("domestic-trade", f"{t} has no event translation")
     if after["phase"] == "game_over" and before["phase"] != "game_over":

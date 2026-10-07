@@ -1,13 +1,14 @@
-"""Translation between Catanatron 3.3 and AlphaSettler: boards, seats, actions, legal sets and
-full positions. Catanatron seat i (index in ``state.colors``) is our player i."""
+"""Translation between Catanatron 3.3 and AlphaSettler: boards, seats, actions (domestic trades
+included), legal sets and full positions. Catanatron seat i (index in ``state.colors``) is our player i."""
 
 from __future__ import annotations
 
 from collections import Counter
 
 import catanatron.game as catan_game
-from catanatron.models.enums import CITY, RESOURCES, SETTLEMENT, ActionPrompt, ActionType
+from catanatron.models.enums import CITY, RESOURCES, SETTLEMENT, Action, ActionPrompt, ActionType
 
+from alphasettler import Game
 from oracle.tables import (
     CAT_EDGE_TO_OUR_EDGE, CAT_NODE_TO_OUR_NODE, CAT_PORT_ID_TO_OUR_EDGE, OUR_EDGE_TO_CAT_EDGE,
     OUR_TILE_TO_CAT_CUBE,
@@ -35,6 +36,43 @@ def discard(r): return 228 + r
 def maritime(give, get): return 233 + 5 * give + get
 
 
+# Domestic trades (engine/src/action.rs): an offer is OFFER_BASE + 20 x give bundle + get bundle,
+# where bundles 0..5 are one card of a resource and 5..20 the PAIRS.
+OFFER_BASE, ACCEPT_TRADE, REJECT_TRADE, CONFIRM_BASE, CANCEL_TRADE = 258, 658, 659, 660, 664
+
+
+def confirm_trade(p): return CONFIRM_BASE + p
+def offer_trade(give, get): return OFFER_BASE + 20 * give + get
+def is_offer(a): return OFFER_BASE <= a < ACCEPT_TRADE
+
+
+def bundle(i: int) -> list[int]:
+    """Bundle `i` as counts per resource."""
+    counts = [0] * 5
+    for r in ((i,) if i < 5 else PAIRS[i - 5]):
+        counts[r] += 1
+    return counts
+
+
+def bundle_index(counts) -> int:
+    cards = [r for r in range(5) for _ in range(counts[r])]
+    if len(cards) == 1:
+        return cards[0]
+    if len(cards) == 2:
+        return 5 + PAIRS.index((cards[0], cards[1]))
+    raise Untranslatable("domestic-trade", f"a side of {len(cards)} cards (ours holds 1 or 2)")
+
+
+def offer_value(a: int) -> tuple[int, ...]:
+    """Catanatron's OFFER_TRADE value for our offer id: the give counts, then the get counts."""
+    k = a - OFFER_BASE
+    return tuple(bundle(k // 20) + bundle(k % 20))
+
+
+def offer_action(color, a: int):
+    return Action(color, ActionType.OFFER_TRADE, offer_value(a))
+
+
 class Untranslatable(Exception):
     """A Catanatron action with no AlphaSettler equivalent; ``kind`` names the allowlist entry."""
 
@@ -49,6 +87,16 @@ def _res(name: str) -> int:
 
 def seat(state, color) -> int:
     return state.color_to_index[color]
+
+
+def answers_own_offer(state, action) -> bool:
+    """An answer by the offerer to its own offer. Catanatron 3.3 asks one of an offerer outside
+    seat 0: `apply_accept_trade` and `apply_reject_trade` pick the next responder skipping only
+    the player who just answered. It is no answer in our rules (only the offerer's opponents
+    answer), so it has no step of our engine and no event. An answer's value ends with the
+    offerer's seat."""
+    return (action.action_type in (ActionType.ACCEPT_TRADE, ActionType.REJECT_TRADE)
+            and action.value[10] == seat(state, action.color))
 
 
 def our_edge(edge) -> int:
@@ -102,7 +150,17 @@ def action_token(state, action):
         return discard(_res(v))
     if t == ActionType.MARITIME_TRADE:
         return maritime(_res(v[0]), _res(v[4]))
-    raise Untranslatable("domestic-trade", f"{t} is outside the differential test")
+    if t == ActionType.OFFER_TRADE:
+        return offer_trade(bundle_index(v[:5]), bundle_index(v[5:10]))
+    if t == ActionType.ACCEPT_TRADE:
+        return ACCEPT_TRADE
+    if t == ActionType.REJECT_TRADE:
+        return REJECT_TRADE
+    if t == ActionType.CONFIRM_TRADE:
+        return confirm_trade(seat(state, v[10]))
+    if t == ActionType.CANCEL_TRADE:
+        return CANCEL_TRADE
+    raise Untranslatable("domestic-trade", f"{t} has no translation")
 
 
 def catan_tokens(state, playable) -> set:
@@ -133,6 +191,8 @@ def our_steps(state, record) -> list[tuple[int, dict | None]]:
         return [(ROLL, {"roll": list(result)})]
     if t == ActionType.BUY_DEVELOPMENT_CARD:
         return [(BUY_DEV, {"dev": DEV_NAMES[CAT_DEV.index(result)]})]
+    if answers_own_offer(state, action):
+        return []
     token = action_token(state, action)
     if t == ActionType.MOVE_ROBBER:
         _, tile, victim = token
@@ -170,6 +230,10 @@ def _phase(game) -> tuple[str, dict]:
             return "road_building", {"roads_left": min(st.free_roads_available, pieces)}
         rolled = st.player_state[f"P{st.current_turn_index}_HAS_ROLLED"]
         return ("main" if rolled else "pre_roll"), {}
+    if prompt in (ActionPrompt.DECIDE_TRADE, ActionPrompt.DECIDE_ACCEPTEES):
+        # A pending domestic offer: the snapshot is the Main position it was made from
+        # (`our_game` replays the offer and its answers onto it).
+        return "main", {}
     raise Untranslatable("domestic-trade", f"prompt {prompt}")
 
 
@@ -186,6 +250,20 @@ def _bought_this_turn(st) -> list[int]:
         if t == ActionType.BUY_DEVELOPMENT_CARD and record.action.color == color:
             out[CAT_DEV.index(record.result)] += 1
     return out
+
+
+def _offers_made(st) -> int:
+    """Domestic offers the current player made this turn, not counting one still pending (a
+    snapshot is the position an offer was made from), read from the action records."""
+    color = st.colors[st.current_turn_index]
+    n = 0
+    for record in reversed(st.action_records):
+        t = record.action.action_type
+        if t == ActionType.END_TURN:
+            break
+        if t == ActionType.OFFER_TRADE and record.action.color == color:
+            n += 1
+    return n - int(st.is_resolving_trade)
 
 
 def catan_snapshot(game) -> dict:
@@ -229,12 +307,32 @@ def catan_snapshot(game) -> dict:
         "turn": 0 if st.is_initial_build_phase else st.num_turns - SETUP_TURNS,
         "setup_step": len(board.roads) // 2 if st.is_initial_build_phase else 8,
         "dev_played_this_turn": ps[f"P{cur}_HAS_PLAYED_DEVELOPMENT_CARD_IN_TURN"],
-        "offers_this_turn": 0,  # Catanatron's bots never offer domestic trades
+        "offers_this_turn": _offers_made(st),
         "longest_road_owner": None if board.road_color is None else seat(st, board.road_color),
         "largest_army_owner": next((i for i in range(len(st.colors)) if ps[f"P{i}_HAS_ARMY"]), None),
     }
     snap.update(extra)
     return snap
+
+
+def our_game(seed: int, game, config: dict) -> Game:
+    """Catanatron's position as our engine's ``Game`` under ``config``. Our snapshots cannot hold
+    a pending domestic offer, so one is replayed onto the position it was made from: the offer,
+    then every opponent's answer in our seat order (which leaves the same position as
+    Catanatron's order). Only an offer every opponent has answered (DECIDE_ACCEPTEES: the offerer
+    to confirm) is a position we play; one still collecting answers raises Untranslatable."""
+    ours = Game.from_snapshot(seed, catan_snapshot(game), config)
+    st = game.state
+    if not st.is_resolving_trade:
+        return ours
+    if st.current_prompt != ActionPrompt.DECIDE_ACCEPTEES:
+        raise Untranslatable("domestic-trade", "an offer still collecting answers")
+    v = st.current_trade
+    ours.apply(offer_trade(bundle_index(v[:5]), bundle_index(v[5:10])))
+    offerer = st.current_turn_index
+    for k in range(1, 4):
+        ours.apply(ACCEPT_TRADE if st.acceptees[(offerer + k) % 4] else REJECT_TRADE)
+    return ours
 
 
 def compare(ours: dict, theirs: dict) -> list[str]:

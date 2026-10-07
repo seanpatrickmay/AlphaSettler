@@ -569,8 +569,9 @@ def _oracle_diff(args) -> int:
 
 
 def _catanatron_arena(args, out: Path) -> int:
-    """Our candidate inside Catanatron against three of its bots. `--no-trades` is moot here:
-    Catanatron's bots never trade, and ours plays with offers disabled."""
+    """Our candidate inside Catanatron against three of its bots. `--trades` plays the trading game
+    (a `+t` candidate offers, Catanatron's bots answer); otherwise ours plays with offers off, and
+    `--no-trades` is moot: Catanatron's bots never offer."""
     import oracle
 
     if not oracle.catanatron_available():
@@ -582,7 +583,8 @@ def _catanatron_arena(args, out: Path) -> int:
     oracle.arena.check(args.candidate, baseline, args.seeds, args.seed_start, nets_dir)
     # Open the output before the run, so a bad path fails before any game is played.
     with open_output(out) as f:
-        records = oracle.arena.run_match(args.candidate, baseline, args.seeds, args.seed_start, args.threads, nets_dir)
+        records = oracle.arena.run_match(args.candidate, baseline, args.seeds, args.seed_start, args.threads, nets_dir,
+                                         trades=args.trades)
         _write_records(f, args.candidate, args.baseline, records)
     print(format_summary(f"{args.candidate} vs {args.baseline}", summarize(records)))
     print(f"fallbacks: {sum(r['fallbacks'] for r in records)}")
