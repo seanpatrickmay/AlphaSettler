@@ -36,7 +36,7 @@ fn the_header_and_the_layer_shapes_follow_the_arch() {
     assert_eq!(a.header_len(), 32 + 8 * 20);
     #[rustfmt::skip]
     let want = vec![
-        (3, 19), (3, 4), (3, 8), (3, 91),
+        (3, 19), (3, 4), (3, 8), (3, 115),
         (3, 9), (3, 15), (3, 9), (3, 12),
         (3, 9), (3, 15), (3, 9), (3, 12),
         (2, 6), (1, 6), (1, 6), (12, 12), (466, 12), (12, 42), (4, 12), (4, 12),
@@ -52,8 +52,8 @@ fn the_header_and_the_layer_shapes_follow_the_arch() {
         (4, 10, 12, 18)
     );
     let w = Weights::random(Arch::DEFAULT, 1);
-    assert_eq!(w.param_count(), 247_294);
-    assert_eq!(w.to_bytes().len(), Arch::DEFAULT.header_len() + 4 * 247_294);
+    assert_eq!(w.param_count(), 248_446);
+    assert_eq!(w.to_bytes().len(), Arch::DEFAULT.header_len() + 4 * 248_446);
     let (n, public, hidden) = inputs(301);
     let mut out = Outputs::default();
     Forward::new().run(&w, &public, &hidden, n, &mut out);
@@ -190,10 +190,10 @@ fn a_hand_computed_tiny_network() {
     let other_b: Vec<f32> = (0..466).map(|j| j as f32 / 1000.0).collect();
     let other: Vec<(usize, usize, f32)> = (0..466).map(|j| (j, j % 8, 1.0)).collect();
     let layers = vec![
-        sparse(d, 19, &[], &[1.0, 2.0]), // every node (1, 2)
-        sparse(d, 4, &[], &[3.0, 4.0]),  // every edge (3, 4)
-        sparse(d, 8, &[], &[5.0, 6.0]),  // every tile (5, 6)
-        sparse(d, 91, &[], &[7.0, 8.0]), // global (7, 8)
+        sparse(d, 19, &[], &[1.0, 2.0]),  // every node (1, 2)
+        sparse(d, 4, &[], &[3.0, 4.0]),   // every edge (3, 4)
+        sparse(d, 8, &[], &[5.0, 6.0]),   // every tile (5, 6)
+        sparse(d, 115, &[], &[7.0, 8.0]), // global (7, 8)
         // tile + ReLU([mean node 0, global 1 - 10]) = (5, 6) + (1, 0) = (6, 6)
         sparse(d, 3 * d, &[(0, 2, 1.0), (1, 5, 1.0)], &[0.0, -10.0]),
         // node + ReLU([mean tile 0 + 0.5, mean edge 1 + 10 x mean neighbour 1]) = (1, 2) + (6.5, 24)

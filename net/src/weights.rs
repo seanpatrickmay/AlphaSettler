@@ -21,7 +21,7 @@
 //! | 0 | node encoder | d × 19 | a node's 19 features |
 //! | 1 | edge encoder | d × 4 | an edge's 4 features |
 //! | 2 | tile encoder | d × 8 | a tile's 8 features |
-//! | 3 | global encoder | d × 91 | the 91 global scalars (`graph::GLOBAL_BASE..PUBLIC_LEN`) |
+//! | 3 | global encoder | d × 115 | the 115 global scalars (`graph::GLOBAL_BASE..PUBLIC_LEN`) |
 //! | 4 + 4r | round r, tile | d × 3d | [tile, mean of its 6 nodes, global] |
 //! | 5 + 4r | round r, node | d × 5d | [node, mean of its tiles, mean of its edges, mean of its neighbouring nodes, global] |
 //! | 6 + 4r | round r, edge | d × 3d | [edge, sum of its 2 nodes, global] |

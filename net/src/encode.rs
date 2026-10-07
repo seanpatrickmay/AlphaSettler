@@ -6,9 +6,9 @@
 
 use settler_engine::topology::{topo, NUM_EDGES, NUM_NODES, NUM_TILES};
 use settler_engine::types::*;
-use settler_engine::{Observation, Phase, State, ACTION_SPACE_SIZE};
+use settler_engine::{Observation, Phase, Response, State, ACTION_SPACE_SIZE};
 
-pub const ENCODER_VERSION: u32 = 2;
+pub const ENCODER_VERSION: u32 = 3;
 
 pub const NODE_WIDTH: usize = 19;
 pub const EDGE_WIDTH: usize = 4;
@@ -36,7 +36,19 @@ pub const CURRENT: usize = DEV_PLAYED + 1;
 pub const RETURN_PHASE: usize = CURRENT + NUM_PLAYERS;
 /// Free roads left in Road Building (0 outside it).
 pub const FREE_ROADS: usize = RETURN_PHASE + 2;
-pub const PUBLIC_LEN: usize = FREE_ROADS + 1;
+/// The pending domestic offer (all 0 when none): what the offerer gives, then what it asks for,
+/// per resource, each over `max_trade_cards`.
+pub const TRADE_GIVE: usize = FREE_ROADS + 1;
+pub const TRADE_GET: usize = TRADE_GIVE + NUM_RESOURCES;
+/// Each seat's answer to the pending offer, seat-relative, one-hot: pending, accepted, rejected
+/// (all 0 when no offer is pending; the offerer's own seat stays pending).
+pub const TRADE_RESPONSES: usize = TRADE_GET + NUM_RESOURCES;
+pub const RESPONSE_WIDTH: usize = 3;
+/// Offers the player on turn has made this turn / `max_offers_per_turn` (0 when offers are off).
+pub const OFFERS_MADE: usize = TRADE_RESPONSES + NUM_PLAYERS * RESPONSE_WIDTH;
+/// 1 when the game allows domestic offers (`max_offers_per_turn > 0`).
+pub const OFFERS_ALLOWED: usize = OFFERS_MADE + 1;
+pub const PUBLIC_LEN: usize = OFFERS_ALLOWED + 1;
 
 /// Per opponent (relative seats 1..=3): hand by resource, then dev cards held by kind.
 pub const HIDDEN_WIDTH: usize = 10;
@@ -112,7 +124,7 @@ pub const LAYOUT: [u32; 27] = [
 /// `encode_public` and `encode_hidden_from`: `net/tests/encode.rs` checks its offsets, widths,
 /// scales and version against the constants.
 pub const LAYOUT_DESCRIPTION: &str = "\
-settler-net features v2
+settler-net features v3
 seats relative to the viewer: r0 is the viewer, then r1 r2 r3 in turn order
 resources: wood brick sheep wheat ore
 dev kinds: knight victory_point road_building year_of_plenty monopoly
@@ -143,6 +155,13 @@ public dev_played x1: dev_played
 public current x1: r0 r1 r2 r3
 public return_phase x1: pre_roll main
 public free_roads x1: roads_left/free_roads
+public trade_give x1: wood/max_trade_cards brick/max_trade_cards sheep/max_trade_cards \
+wheat/max_trade_cards ore/max_trade_cards
+public trade_get x1: wood/max_trade_cards brick/max_trade_cards sheep/max_trade_cards \
+wheat/max_trade_cards ore/max_trade_cards
+public trade_response x4: pending accepted rejected
+public offers_made x1: offers/max_offers_per_turn
+public offers_allowed x1: allowed
 hidden opponent x3: wood/card brick/card sheep/card wheat/card ore/card \
 knight/dev_knight victory_point/dev_victory_point road_building/dev_road_building \
 year_of_plenty/dev_year_of_plenty monopoly/dev_monopoly
@@ -320,6 +339,26 @@ pub fn encode_public(obs: &Observation, out: &mut [f32]) {
     out[RETURN_PHASE + return_phase_index(obs.return_phase)] = 1.0;
     if let Phase::RoadBuilding { roads_left } = obs.phase {
         out[FREE_ROADS] = scaled(roads_left as u32, FREE_ROAD_DEN);
+    }
+    if let Some(t) = obs.trade {
+        let cap = obs.config.max_trade_cards as u32;
+        for res in 0..NUM_RESOURCES {
+            out[TRADE_GIVE + res] = scaled(t.give[res] as u32, cap);
+            out[TRADE_GET + res] = scaled(t.get[res] as u32, cap);
+        }
+        for p in 0..NUM_PLAYERS {
+            let answer = match t.responses[p] {
+                Response::Pending => 0,
+                Response::Accepted => 1,
+                Response::Rejected => 2,
+            };
+            out[TRADE_RESPONSES + rel(p as PlayerId, v) * RESPONSE_WIDTH + answer] = 1.0;
+        }
+    }
+    let max_offers = obs.config.max_offers_per_turn as u32;
+    if max_offers > 0 {
+        out[OFFERS_MADE] = scaled(obs.offers_this_turn as u32, max_offers);
+        out[OFFERS_ALLOWED] = 1.0;
     }
 }
 

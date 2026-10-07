@@ -1,5 +1,5 @@
 """The PyTorch twin of net/src/forward.rs, network v2 (spec Section 2): an entity-structured graph
-net over the encoder's 54 nodes, 72 edges, 19 tiles and 91 global scalars. Also the weights file
+net over the encoder's 54 nodes, 72 edges, 19 tiles and 115 global scalars (encoder v3). Also the weights file
 format of net/src/weights.rs, version 2: little-endian, a 32-byte fixed header (magic, format
 version, ENCODING_HASH, width d, rounds R, layer count), each layer's rows and columns, then each
 layer's f32 weights (row-major, rows = outputs) and biases. The layer order, byte for byte, is the

@@ -12,6 +12,15 @@ pub fn no_trades() -> GameConfig {
     }
 }
 
+/// The trading game (spec 3c Section 2): two offers a turn, one card a side.
+pub fn trading() -> GameConfig {
+    GameConfig {
+        max_offers_per_turn: 2,
+        max_trade_cards: 1,
+        ..GameConfig::default()
+    }
+}
+
 /// Every `every`-th position (never a finished one) of uniformly random games from `seeds`, at
 /// most 3,000 moves each.
 pub fn random_positions(

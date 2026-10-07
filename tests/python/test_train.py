@@ -120,8 +120,8 @@ def test_the_default_net_is_width_48_with_2_rounds():
     net = Net()
     assert (net.width, net.rounds) == (NET_DEFAULT_WIDTH, NET_DEFAULT_ROUNDS) == (48, 2)
     assert [(layer.out_features, layer.in_features) for layer in net.layers()] == shapes(48, 2)
-    assert sum(p.numel() for p in net.parameters()) == 247_294, "the same count as Rust's Arch::DEFAULT"
-    assert len(to_bytes(net)) == FIXED_HEADER_LEN + 8 * 20 + 4 * 247_294
+    assert sum(p.numel() for p in net.parameters()) == 248_446, "the same count as Rust's Arch::DEFAULT"
+    assert len(to_bytes(net)) == FIXED_HEADER_LEN + 8 * 20 + 4 * 248_446
     assert not any("tile_nodes" in k or "edge_nodes" in k for k in net.state_dict()), "the adjacency is not a weight"
 
 

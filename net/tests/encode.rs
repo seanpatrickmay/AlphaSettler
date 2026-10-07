@@ -21,6 +21,7 @@ fn golden_state() -> State {
     s.bank = [10, 12, 9, 15, 11];
     s.dev_deck_pos = 9;
     s.dev_played_this_turn = true;
+    s.offers_this_turn = 1;
     s.longest_road_owner = Some(3);
     let p2 = &mut s.players[2];
     p2.settlements = 1 << 10;
@@ -45,7 +46,7 @@ fn golden_state() -> State {
 
 #[test]
 fn the_layout_adds_up() {
-    assert_eq!(PUBLIC_LEN, 1557);
+    assert_eq!(PUBLIC_LEN, 1581);
     assert_eq!(HIDDEN_LEN, 30);
     assert_eq!(
         (
@@ -64,7 +65,19 @@ fn the_layout_adds_up() {
         (DEV_PLAYED, CURRENT, RETURN_PHASE, FREE_ROADS),
         (1549, 1550, 1554, 1556)
     );
+    assert_eq!(
+        (
+            TRADE_GIVE,
+            TRADE_GET,
+            TRADE_RESPONSES,
+            OFFERS_MADE,
+            OFFERS_ALLOWED
+        ),
+        (1557, 1562, 1567, 1579, 1580)
+    );
+    assert_eq!(ENCODER_VERSION, 3);
     assert_eq!(ENCODING_HASH, layout_hash(&LAYOUT, LAYOUT_DESCRIPTION));
+    assert_ne!(ENCODING_HASH, 0x28dd_1f78_0ff2_a1b3, "encoder v2's hash");
 }
 
 #[test]
@@ -110,6 +123,8 @@ fn reordering_slots_or_blocks_in_the_description_changes_the_hash() {
         exchange(LAYOUT_DESCRIPTION, "port_generic", "port_wood"),
         exchange(LAYOUT_DESCRIPTION, "public_vp/vp", "discard_owed/discard"),
         exchange(LAYOUT_DESCRIPTION, "trade_response", "trade_confirm"),
+        exchange(LAYOUT_DESCRIPTION, "accepted", "rejected"),
+        exchange(LAYOUT_DESCRIPTION, "public trade_give", "public trade_get"),
         // Two whole blocks.
         exchange(
             LAYOUT_DESCRIPTION,
@@ -180,6 +195,17 @@ fn the_description_matches_the_constants() {
         ("public", "current", 1, NUM_PLAYERS, CURRENT),
         ("public", "return_phase", 1, 2, RETURN_PHASE),
         ("public", "free_roads", 1, 1, FREE_ROADS),
+        ("public", "trade_give", 1, NUM_RESOURCES, TRADE_GIVE),
+        ("public", "trade_get", 1, NUM_RESOURCES, TRADE_GET),
+        (
+            "public",
+            "trade_response",
+            NUM_PLAYERS,
+            RESPONSE_WIDTH,
+            TRADE_RESPONSES,
+        ),
+        ("public", "offers_made", 1, 1, OFFERS_MADE),
+        ("public", "offers_allowed", 1, 1, OFFERS_ALLOWED),
         ("hidden", "opponent", NUM_PLAYERS - 1, HIDDEN_WIDTH, 0),
     ];
     let mut got = Vec::new();
@@ -196,8 +222,11 @@ fn the_description_matches_the_constants() {
         let slots: Vec<&str> = slots.split(' ').collect();
         for slot in &slots {
             if let Some((_, scale)) = slot.split_once('/') {
+                // Scales the game's config sets rather than a constant.
+                let from_config =
+                    ["max_turns", "max_trade_cards", "max_offers_per_turn"].contains(&scale);
                 assert!(
-                    scale == "max_turns" || want_scales.iter().any(|&(k, _)| k == scale),
+                    from_config || want_scales.iter().any(|&(k, _)| k == scale),
                     "slot {slot} names a declared scale"
                 );
             }
@@ -309,6 +338,8 @@ fn the_golden_position_encodes_exactly() {
     want[CURRENT] = 1.0; // player 2 is the viewer
     want[RETURN_PHASE] = 1.0; // PreRoll
     want[FREE_ROADS] = 1.0 / 2.0;
+    want[OFFERS_MADE] = 1.0 / 3.0; // one of the default config's three offers this turn
+    want[OFFERS_ALLOWED] = 1.0;
     for i in 0..PUBLIC_LEN {
         assert_eq!(got[i], want[i], "feature {i}");
     }
@@ -409,4 +440,47 @@ fn the_features_are_relative_to_the_viewer() {
         differ += (public(&seats_only) != public(&obs)) as u32;
     }
     assert!(differ > 0);
+}
+
+/// The trade block of a hand-built TradeConfirm position in the trading game (one card a side,
+/// two offers a turn): player 1 offered a brick for an ore, its second offer this turn; players
+/// 2 accepted, 3 and 0 rejected. Seen by player 3, so player 3 is r0, 0 is r1, 1 is r2, 2 is r3.
+/// Without offers the block is all zero.
+#[test]
+fn the_trade_block_encodes_exactly() {
+    let mut s = State::new(42, trading());
+    s.setup_step = 8;
+    s.phase = Phase::TradeConfirm;
+    s.current = 1;
+    s.offers_this_turn = 2;
+    s.trade = Some(PendingTrade {
+        give: [0, 1, 0, 0, 0],
+        get: [0, 0, 0, 0, 1],
+        responses: [
+            Response::Rejected,
+            Response::Pending,
+            Response::Accepted,
+            Response::Rejected,
+        ],
+        next_responder: 0,
+    });
+    let mut got = vec![f32::NAN; PUBLIC_LEN];
+    encode_public(&s.observation(3), &mut got);
+    #[rustfmt::skip]
+    let want: Vec<f32> = vec![
+        0.0, 1.0, 0.0, 0.0, 0.0, // give: a brick / 1
+        0.0, 0.0, 0.0, 0.0, 1.0, // get: an ore / 1
+        0.0, 0.0, 1.0, // r0 = player 3 rejected
+        0.0, 0.0, 1.0, // r1 = player 0 rejected
+        1.0, 0.0, 0.0, // r2 = player 1, the offerer, stays pending
+        0.0, 1.0, 0.0, // r3 = player 2 accepted
+        1.0, // 2 of 2 offers made
+        1.0, // offers allowed
+    ];
+    assert_eq!(&got[TRADE_GIVE..PUBLIC_LEN], &want[..]);
+
+    let quiet = State::new(42, no_trades());
+    let mut zero = vec![f32::NAN; PUBLIC_LEN];
+    encode_public(&quiet.observation(0), &mut zero);
+    assert!(zero[TRADE_GIVE..PUBLIC_LEN].iter().all(|&x| x == 0.0));
 }

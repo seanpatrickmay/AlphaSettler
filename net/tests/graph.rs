@@ -9,8 +9,8 @@ fn lists(v: &[Vec<u8>]) -> Vec<Vec<usize>> {
 }
 
 #[test]
-fn the_global_block_is_the_91_scalars_after_the_tiles() {
-    assert_eq!((GLOBAL_BASE, GLOBAL_WIDTH), (OWN_HAND, 91));
+fn the_global_block_is_the_115_scalars_after_the_tiles() {
+    assert_eq!((GLOBAL_BASE, GLOBAL_WIDTH), (OWN_HAND, 115));
     assert_eq!(GLOBAL_BASE + GLOBAL_WIDTH, PUBLIC_LEN);
 }
 

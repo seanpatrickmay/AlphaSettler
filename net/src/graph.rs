@@ -8,7 +8,7 @@ use crate::encode::{
 use settler_engine::topology::{topo, NUM_EDGES, NUM_NODES, NUM_TILES};
 use std::sync::LazyLock;
 
-/// The global scalars: every slot after the tile block, from the actor's own hand on (91).
+/// The global scalars: every slot after the tile block, from the actor's own hand on (115: encoder v3's globals, the trade block included).
 pub const GLOBAL_BASE: usize = OWN_HAND;
 pub const GLOBAL_WIDTH: usize = PUBLIC_LEN - GLOBAL_BASE;
 
