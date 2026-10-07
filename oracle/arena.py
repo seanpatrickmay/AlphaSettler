@@ -7,8 +7,9 @@ hold only for the board and the early rolls (spec, Section 3). AlphaBeta has a 2
 wall-clock search limit, so its games are not exactly reproducible.
 
 With trades on (`run_match(..., trades=True)`, `arena --trades`) our candidate plays the trading
-game: a `+t` candidate may offer, Catanatron's bots answer (AlphaBeta by its own search, see
-`let_alphabeta_answer_offers`), and our bot confirms or cancels.
+game: a `+t` candidate may offer, Catanatron's bots answer (AlphaBeta by a one-ply rule on its own
+value function, see `TradingAlphaBeta`), and our bot confirms or cancels. The records count our
+offers, the opponents' acceptances and our confirmations.
 """
 
 from __future__ import annotations
@@ -19,8 +20,9 @@ import os
 import catanatron.game as catan_game
 from catanatron import Color, Game as CatanGame, Player, RandomPlayer
 from catanatron.models.actions import generate_playable_actions
-from catanatron.models.enums import ActionPrompt, ActionType
+from catanatron.models.enums import Action, ActionPrompt, ActionType
 from catanatron.players import AlphaBetaPlayer, ValueFunctionPlayer, WeightedRandomPlayer, tree_search_utils
+from catanatron.players.value import get_value_fn
 
 from alphasettler import Bot
 from alphasettler.arena import TRADES
@@ -36,8 +38,9 @@ CONFIG = {"max_offers_per_turn": 0}
 # AlphaBeta expands only the action types its search knows how to execute, and raises on the
 # answers to a domestic offer: Catanatron's own bots never offer, so they never meet one. The
 # answers and confirmations are deterministic (no dice, no hidden draw), so with our offers on they
-# join that set, and AlphaBeta answers by its own search (spec 3c Section 6). Catanatron's source is
-# not changed; the set is extended at run time in the processes that play trading games.
+# join that set, and a plain AlphaBetaPlayer can answer by its own search (the arena's
+# `TradingAlphaBeta` answers by its one-ply rule instead). Catanatron's source is not changed; the
+# set is extended at run time in the processes that play trading games.
 TRADE_ANSWERS = (ActionType.ACCEPT_TRADE, ActionType.REJECT_TRADE, ActionType.CONFIRM_TRADE,
                  ActionType.CANCEL_TRADE)
 
@@ -46,11 +49,41 @@ def let_alphabeta_answer_offers() -> None:
     tree_search_utils.DETERMINISTIC_ACTIONS.update(TRADE_ANSWERS)
 
 
+class TradingAlphaBeta(AlphaBetaPlayer):
+    """Catanatron's AlphaBeta, except when it is asked to answer an offer of ours. Its paranoid
+    minimax can never accept one (accepting moves no card, and the offerer, a min node, can always
+    cancel), so it answers by a one-ply rule on its own value function: accept iff it can give the
+    asked cards and the position with the trade confirmed scores strictly higher for it than the
+    position now. Every other decision is AlphaBeta's search, unchanged."""
+
+    def decide(self, game, playable_actions):
+        st = game.state
+        if st.current_prompt == ActionPrompt.DECIDE_TRADE and st.colors[st.current_trade[10]] != self.color:
+            return self.answer_offer(game, playable_actions)
+        return super().decide(game, playable_actions)
+
+    def answer_offer(self, game, playable_actions):
+        st = game.state
+        reject = next(a for a in playable_actions if a.action_type == ActionType.REJECT_TRADE)
+        accept = next((a for a in playable_actions if a.action_type == ActionType.ACCEPT_TRADE), None)
+        if accept is None:  # Catanatron offers ACCEPT_TRADE only to a seat holding the asked cards
+            return reject
+        # The leaf evaluation of AlphaBetaPlayer.alphabeta, built the same way.
+        value_fn = get_value_fn(self.value_fn_builder_name, self.params.weights,
+                                self.value_function if self.use_value_function else None)
+        after = game.copy()
+        offerer = st.colors[st.current_trade[10]]
+        after.execute(Action(offerer, ActionType.CONFIRM_TRADE, (*st.current_trade[:10], self.color)),
+                      validate_action=False)
+        return accept if value_fn(after, self.color) > value_fn(game, self.color) else reject
+
+
 BASELINES = {
     "random": RandomPlayer,
     "weighted": WeightedRandomPlayer,
     "value": ValueFunctionPlayer,
-    "alphabeta": AlphaBetaPlayer,
+    # Our offers are the only ones in a Catanatron game, so with trades off this is AlphaBeta itself.
+    "alphabeta": TradingAlphaBeta,
 }
 
 
@@ -157,6 +190,18 @@ def play_game(seed: int, candidate: str, baseline: str, candidate_seat: int, net
         "actions": len(st.action_records),
         "fallbacks": me.fallbacks,
         "belief_resets": me.bot.diagnostics().get("belief_resets", 0),
+        **trade_counts(st.action_records, me.color),
+    }
+
+
+def trade_counts(action_records, color) -> dict:
+    """Our offers, the opponents' acceptances of them (one per accepting seat) and our confirmations.
+    Catanatron's bots never offer, so every offer, answer and confirmation is about one of ours."""
+    types = [(r.action.action_type, r.action.color == color) for r in action_records]
+    return {
+        "offers": types.count((ActionType.OFFER_TRADE, True)),
+        "accepted": types.count((ActionType.ACCEPT_TRADE, False)),
+        "confirmed": types.count((ActionType.CONFIRM_TRADE, True)),
     }
 
 

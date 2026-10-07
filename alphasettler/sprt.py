@@ -68,6 +68,8 @@ def run_sprt(candidate: str, baseline: str, *, p0: float = 0.25, p1: float = 0.3
         raise ValueError("alpha and beta must be in (0, 1)")
     if batch < 1 or max_seeds < 1:
         raise ValueError("batch and max_seeds must be positive")
+    if max_seeds < MIN_SEEDS:  # `decide` waits for MIN_SEEDS, so the run could only end undecided
+        raise ValueError(f"max_seeds {max_seeds} is below the {MIN_SEEDS} seeds a decision needs")
     f = None if out is None else open_output(out)
     records: list[dict] = []
     decision, x = None, 0.0

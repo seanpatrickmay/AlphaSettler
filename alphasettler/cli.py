@@ -589,6 +589,8 @@ def _catanatron_arena(args, out: Path) -> int:
     print(format_summary(f"{args.candidate} vs {args.baseline}", summarize(records)))
     print(f"fallbacks: {sum(r['fallbacks'] for r in records)}")
     print(_resets_line(records))
+    offers, accepted, confirmed = (sum(r[k] for r in records) for k in ("offers", "accepted", "confirmed"))
+    print(f"trades: {offers} offers, {accepted} accepted, {confirmed} confirmed")
     print(f"wrote {out}")
     return 0
 

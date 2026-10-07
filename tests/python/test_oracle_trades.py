@@ -156,6 +156,9 @@ def test_a_trading_bot_plays_whole_games_inside_catanatron(tmp_path):
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     assert "fallbacks: 0" in r.stdout and "belief resets: 0" in r.stdout
+    assert all({"offers", "accepted", "confirmed"} <= set(rec) for rec in records), records
+    totals = {k: sum(rec[k] for rec in records) for k in ("offers", "accepted", "confirmed")}
+    assert "trades: {offers} offers, {accepted} accepted, {confirmed} confirmed".format(**totals) in r.stdout, r.stdout
 
 
 def _trading_table_at(ours_seat, seed=5):
@@ -266,3 +269,95 @@ def test_whole_games_with_offers_play_through_the_arena_loop(monkeypatch, seed, 
     r = arena.play_game(seed, "ismcts@10+t", baseline, seat, trades=True)
     assert seen.count("trade_offered") > 0 and seen.count("trade_responded") == 3 * seen.count("trade_offered")
     assert r["fallbacks"] == 0 and r["belief_resets"] == 0, r
+
+
+def _offer_to_alphabeta(hand, player_class=None):
+    """`_trading_table` with seat 1 an accept-rule AlphaBeta holding `hand`, asked about our offer
+    of one wood for one brick."""
+    from oracle.arena import TradingAlphaBeta
+
+    ours, game = _trading_table()
+    st = game.state
+    st.players[1] = (player_class or TradingAlphaBeta)(Color.BLUE)
+    _set_hand(st, Color.BLUE, hand)
+    game.playable_actions = generate_playable_actions(st)
+    ours.bot = StubBot(offer_trade(0, 1))
+    game.execute(ours.decide(game, game.playable_actions))
+    assert st.current_prompt == ActionPrompt.DECIDE_TRADE and st.current_color() == Color.BLUE
+    return st.players[1], game
+
+
+def _value(game, color):
+    """AlphaBeta's default leaf evaluation (players/minimax.py: get_value_fn("base_fn", ...))."""
+    from catanatron.players.value import DEFAULT_WEIGHTS, get_value_fn
+
+    return get_value_fn("base_fn", DEFAULT_WEIGHTS)(game, color)
+
+
+@pytest.mark.parametrize("hand, accepts", [
+    ([0, 2, 0, 0, 0], True),   # a second brick for the wood it lacks: nearer a settlement
+    ([1, 1, 0, 0, 0], False),  # its only brick for a second wood: further from one
+    ([0, 1, 0, 0, 0], False),  # a brick for a wood: no better, and only a strict gain accepts
+    ([0, 0, 0, 0, 0], False),  # no brick to give
+])
+def test_alphabeta_accepts_an_offer_iff_its_value_after_the_trade_is_higher(hand, accepts):
+    player, game = _offer_to_alphabeta(hand)
+    choice = player.decide(game, game.playable_actions)
+    assert choice.action_type == (ActionType.ACCEPT_TRADE if accepts else ActionType.REJECT_TRADE)
+    if hand[1]:  # the rule's comparison, by AlphaBeta's own value function
+        after = game.copy()
+        _set_hand(after.state, Color.BLUE, [hand[0] + 1, hand[1] - 1, *hand[2:]])
+        _set_hand(after.state, Color.RED, [0, 1, 0, 0, 0])
+        assert (_value(after, Color.BLUE) > _value(game, Color.BLUE)) == accepts
+    assert get_player_freqdeck(game.state, Color.BLUE) == hand, "the answer changes no hand"
+
+
+def test_the_accept_rule_uses_the_players_own_value_function():
+    """A subclass with its own value function (the hook AlphaBeta's search uses) decides by it."""
+    from oracle.arena import TradingAlphaBeta
+
+    class WantsWood(TradingAlphaBeta):
+        use_value_function = True
+
+        def value_function(self, game, p0_color):
+            return get_player_freqdeck(game.state, p0_color)[0]
+
+    player, game = _offer_to_alphabeta([1, 1, 0, 0, 0], WantsWood)
+    assert player.decide(game, game.playable_actions).action_type == ActionType.ACCEPT_TRADE
+
+
+class Confirming(Offering):
+    """`Offering`, and it confirms with the first acceptee whenever one accepted."""
+
+    def act(self, game):
+        if game.phase == "trade_confirm":
+            confirms = [a for a in game.legal_actions() if a != CANCEL_TRADE]
+            if confirms:
+                return confirms[0]
+        return super().act(game)
+
+
+def test_a_whole_game_against_alphabeta_confirms_accepted_trades(monkeypatch):
+    """play_game's loop against three accept-rule AlphaBetas: some of our offers are accepted and
+    confirmed, the records count them, and our bot's belief sees the trades without a reset."""
+    import random
+
+    import oracle.arena as arena
+
+    seen = []
+    init, observe = AlphaSettlerPlayer.__init__, AlphaSettlerPlayer.observe
+
+    def confirming_init(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        self.bot = Confirming(self.bot, random.Random(7))
+
+    def recording_observe(self, state, events):
+        seen.extend(e["type"] for e in events)
+        observe(self, state, events)
+
+    monkeypatch.setattr(AlphaSettlerPlayer, "__init__", confirming_init)
+    monkeypatch.setattr(AlphaSettlerPlayer, "observe", recording_observe)
+    r = arena.play_game(16, "ismcts@10+t", "alphabeta", 0, trades=True)
+    assert r["offers"] > 0 and r["accepted"] > 0 and r["confirmed"] > 0, r
+    assert r["fallbacks"] == 0 and r["belief_resets"] == 0, r
+    assert seen.count("trade_offered") == r["offers"] and seen.count("trade_confirmed") == r["confirmed"] > 0

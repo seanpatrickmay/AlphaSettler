@@ -50,3 +50,15 @@ def test_cli_sprt(tmp_path):
             "--seed-start", "0", "--threads", "2", "--out", str(out))
     assert r.returncode == 0, r.stderr
     assert "sprt: H1" in r.stdout and "seeds: win rate" in r.stdout
+
+
+def test_max_seeds_below_the_minimum_is_refused(tmp_path):
+    from test_train import cli
+
+    with pytest.raises(ValueError, match="max_seeds"):
+        run_sprt("ismcts@60", "random", max_seeds=MIN_SEEDS - 1, out=tmp_path / "s.jsonl")
+    assert not (tmp_path / "s.jsonl").exists(), "refused before any game"
+    r = cli("sprt", "--candidate", "ismcts@60", "--baseline", "random", "--max-seeds", str(MIN_SEEDS - 1),
+            "--out", str(tmp_path / "c.jsonl"))
+    assert r.returncode == 2 and "max_seeds" in r.stderr, r.stderr
+    assert not (tmp_path / "c.jsonl").exists()
