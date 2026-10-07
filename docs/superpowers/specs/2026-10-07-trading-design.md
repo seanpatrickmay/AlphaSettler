@@ -18,8 +18,8 @@ gates), four seat rotations per seed:
    but never make them, in the trading game (Section 2): win rate above 0.25 with z > 3. `T` is the
    trained trading net.
 2. **Trading pays against AlphaBeta.** `net:T@1000+t` against three Catanatron AlphaBeta with domestic
-   trades on (AlphaBeta answers our offers with its own search): win rate above `net:T@1000`'s
-   (no offers) on the same seeds, paired per seed, z > 2.
+   trades on (AlphaBeta answers our offers with its own value function, Section 6): win rate above
+   `net:T@1000`'s (no offers) on the same seeds, paired per seed, z > 2.
 3. **No regression without trades.** `net:T@600` against three `net:gen-004@600` with trades off: z > −2.
 
 **Ruling:** criterion 1 uses answer-only opponents rather than a symmetric table. Three copies of the
@@ -126,6 +126,16 @@ The oracle translation refuses domestic trades (`oracle/translate.py`, `oracle/e
 AlphaBeta never offers, so our bot is never asked to answer inside Catanatron. The Catanatron arena
 gets `--trades`, which turns on the Section 2 rules for our bot's offers. Catanatron's own rules
 accept any 1-for-1 offer.
+
+**Amendment (2026-10-07, from the final review):** AlphaBeta's search can never accept. It is a
+paranoid minimax, and accepting is never strictly better than rejecting, because only the offerer's
+confirmation moves cards and the offerer can always cancel; ties go to the first listed move,
+REJECT (a probe: 76 of 76 offers rejected, equal values). **Ruling:** inside our arena an AlphaBeta
+seat answers our offers by one ply of its own value function (the `get_value_fn` call its search
+uses at the leaves): it accepts when it holds the asked cards and the position after the trade
+scores strictly higher for it than the position now. Every other AlphaBeta decision is unchanged.
+Criterion 2 therefore measures trading against this AlphaBeta-with-a-trade-rule, not stock
+AlphaBeta, which would refuse every offer.
 
 ## 7. Out of scope
 
