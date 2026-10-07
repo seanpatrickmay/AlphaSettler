@@ -10,7 +10,9 @@ over per-seed win rates with their sample variance (the generalized SPRT of Stoc
     LLR = n (p1 - p0) (2 mean - p0 - p1) / (2 var)
 
 It stops at H1 when LLR >= log((1 - beta) / alpha), at H0 when LLR <= log(beta / (1 - alpha)), and
-never before MIN_SEEDS seeds (the variance needs a few)."""
+never before MIN_SEEDS seeds. The variance is floored at p0 (1 - p0) / VARIANCE_FLOOR_DIV, half of
+what four independent games at p0 would give: over a dozen seeds that all land on 0.25 the sample
+variance is near 0, which made the LLR leap past a bound on a streak."""
 
 from __future__ import annotations
 
@@ -21,7 +23,8 @@ from pathlib import Path
 from alphasettler.arena import open_output, run
 from alphasettler.stats import Summary, per_seed_win_rates, summarize
 
-MIN_SEEDS = 8
+MIN_SEEDS = 24
+VARIANCE_FLOOR_DIV = 8
 
 
 def bounds(alpha: float, beta: float) -> tuple[float, float]:
@@ -31,10 +34,8 @@ def bounds(alpha: float, beta: float) -> tuple[float, float]:
 def llr(rates: list[float], p0: float, p1: float) -> float:
     n = len(rates)
     mean = sum(rates) / n
-    var = sum((x - mean) ** 2 for x in rates) / n
+    var = max(sum((x - mean) ** 2 for x in rates) / n, p0 * (1 - p0) / VARIANCE_FLOOR_DIV)
     drift = (p1 - p0) * (2 * mean - p0 - p1)
-    if var == 0:
-        return 0.0 if drift == 0 else math.copysign(math.inf, drift)
     return n * drift / (2 * var)
 
 
