@@ -54,6 +54,10 @@ pub const FIXED_HEADER_LEN: usize = 8 + 4 + 8 + 4 + 4 + 4;
 pub const MAX_WIDTH: usize = 1024;
 /// Most rounds a file may declare.
 pub const MAX_ROUNDS: usize = 16;
+/// Encoder v2's `ENCODING_HASH` (3b's nets, before the trade block) and its global width. The
+/// loader refuses such a file; `alphasettler net-upgrade` rewrites it for this encoder.
+pub const V2_ENCODING_HASH: u64 = 0x28dd_1f78_0ff2_a1b3;
+pub const V2_GLOBAL_WIDTH: usize = 91;
 
 pub const NODE_ENCODER: usize = 0;
 pub const EDGE_ENCODER: usize = 1;
@@ -242,9 +246,15 @@ impl Weights {
         }
         let hash = u64::from_le_bytes(bytes[12..20].try_into().unwrap());
         if hash != ENCODING_HASH {
+            let why = if hash == V2_ENCODING_HASH {
+                "; it is an encoder v2 net (before the trade block): convert it with \
+                 `alphasettler net-upgrade OLD NEW`"
+            } else {
+                ""
+            };
             return Err(format!(
                 "encoding hash {hash:#018x} does not match this encoder's {ENCODING_HASH:#018x}: \
-                 the file was trained on a different feature layout"
+                 the file was trained on a different feature layout{why}"
             ));
         }
         let arch = Arch {

@@ -20,7 +20,9 @@ use settler_net::encode::{
 use settler_net::forward::{Forward, Outputs};
 use settler_net::graph::{graph, GLOBAL_WIDTH};
 use settler_net::policy::SETTLEMENT_BASE;
-use settler_net::weights::{Arch, Weights, FORMAT_VERSION, MAX_ROUNDS, MAX_WIDTH};
+use settler_net::weights::{
+    Arch, Weights, FORMAT_VERSION, MAX_ROUNDS, MAX_WIDTH, V2_ENCODING_HASH, V2_GLOBAL_WIDTH,
+};
 use std::path::PathBuf;
 
 fn le_bytes(xs: &[f32]) -> Vec<u8> {
@@ -388,6 +390,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("NET_EDGE_WIDTH", EDGE_WIDTH)?;
     m.add("NET_TILE_WIDTH", TILE_WIDTH)?;
     m.add("NET_GLOBAL_WIDTH", GLOBAL_WIDTH)?;
+    m.add("NET_V2_ENCODING_HASH", V2_ENCODING_HASH)?;
+    m.add("NET_V2_GLOBAL_WIDTH", V2_GLOBAL_WIDTH)?;
     m.add("NET_SETTLEMENT_BASE", SETTLEMENT_BASE)?;
     Ok(())
 }

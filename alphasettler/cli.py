@@ -1,9 +1,10 @@
 """Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic`, `train`,
-`sprt`, `fast-train`, `fast-score`, `fast-loop` and `train-loop`. `selfplay --simulations S` writes 3a
-records; `selfplay --pcr` and `selfplay --net NAME` write 3b exploration records; `train` (the train
-extra) trains a network on them; `train-loop` (the train extra) runs the resumable self-play, train
-and gate generations; `fast-train` and `fast-score` (the train extra) train and score candidate nets
-on a fixed pool of generations, and `fast-loop` runs small generations trained that way."""
+`sprt`, `fast-train`, `fast-score`, `fast-loop`, `train-loop` and `net-upgrade`; `net-upgrade`
+rewrites a 3b (encoder v2) net for encoder v3. `selfplay --simulations S` writes 3a records;
+`selfplay --pcr` and `selfplay --net NAME` write 3b exploration records; `train` (the train extra)
+trains a network on them; `train-loop` (the train extra) runs the resumable self-play, train and
+gate generations; `fast-train` and `fast-score` (the train extra) train and score candidate nets on
+a fixed pool of generations, and `fast-loop` runs small generations trained that way."""
 
 from __future__ import annotations
 
@@ -160,6 +161,10 @@ def _parser() -> argparse.ArgumentParser:
     fl.add_argument("--gate-simulations", type=_positive_int, default=100)
     fl.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
     fl.add_argument("--threads", type=_positive_int, default=None)
+
+    nu = sub.add_parser("net-upgrade", help="rewrite an encoder v2 net (3b's) for encoder v3, same no-trade moves")
+    nu.add_argument("old", help="the encoder v2 weights file")
+    nu.add_argument("new", help="the weights file to write (must not exist)")
 
     lp = sub.add_parser("train-loop",
                         help="self-play, train and gate generations; rerun to resume (needs the train extra)")
@@ -504,6 +509,18 @@ def _train_loop(args) -> int:
     return 0
 
 
+def _net_upgrade(args) -> int:
+    from alphasettler import netupgrade
+
+    # Written to a temp file, read back by the Rust loader as every bot will read it, then renamed
+    # to NEW: a file that fails any step is never left at NEW.
+    s = netupgrade.upgrade_file(args.old, args.new)
+    print(f"upgraded {args.old} (encoder v2) to encoder v3: width {s['width']}, {s['rounds']} rounds; "
+          f"{s['zero_inputs']} new global inputs and {s['trade_rows']} trade policy rows zeroed "
+          f"(offer bias {netupgrade.OFFER_BIAS:g}); wrote {args.new}")
+    return 0
+
+
 def _oracle_missing() -> int:
     from oracle import CATANATRON_REQUIREMENT
 
@@ -596,6 +613,8 @@ def main(argv: list[str] | None = None) -> int:
             return _fast_loop(args)
         elif args.command == "train-loop":
             return _train_loop(args)
+        elif args.command == "net-upgrade":
+            return _net_upgrade(args)
         else:
             for name in (args.a, args.b, args.baseline):
                 _check_bot_name(name, args.nets_dir)

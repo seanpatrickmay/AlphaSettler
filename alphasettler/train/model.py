@@ -1,8 +1,7 @@
 """The PyTorch twin of net/src/forward.rs, network v2 (spec Section 2): an entity-structured graph
-net over the encoder's 54 nodes, 72 edges, 19 tiles and 115 global scalars (encoder v3). Also the weights file
-format of net/src/weights.rs, version 2: little-endian, a 32-byte fixed header (magic, format
-version, ENCODING_HASH, width d, rounds R, layer count), each layer's rows and columns, then each
-layer's f32 weights (row-major, rows = outputs) and biases. The layer order, byte for byte, is the
+net over the encoder's 54 nodes, 72 edges, 19 tiles and 115 global scalars (encoder v3), read from
+and written to the weights file format of net/src/weights.rs, version 2 (`alphasettler.netformat`,
+which holds the format's constants and its one reader). The layer order, byte for byte, is the
 table in net/src/weights.rs; `Net.layers()` returns the modules in that order.
 
 The adjacency comes from the Rust side (`net_adjacency`) as averaging and summing matrices, so both
@@ -12,53 +11,31 @@ corrupt header never sizes an allocation."""
 
 from __future__ import annotations
 
-import struct
-import sys
 from array import array
 from pathlib import Path
 
 import torch
 from torch import nn
 
+from alphasettler import netformat
 from alphasettler._engine import (
-    NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, NET_EDGE_WIDTH, NET_ENCODING_HASH, NET_FORMAT_VERSION, NET_GLOBAL_WIDTH,
-    NET_HIDDEN_LEN, NET_MAX_ROUNDS, NET_MAX_WIDTH, NET_NODE_WIDTH, NET_PUBLIC_LEN, NET_SETTLEMENT_BASE,
-    NET_TILE_WIDTH, action_space_size, net_adjacency,
+    NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, NET_EDGE_WIDTH, NET_ENCODING_HASH, NET_GLOBAL_WIDTH, NET_HIDDEN_LEN,
+    NET_NODE_WIDTH, NET_PUBLIC_LEN, NET_SETTLEMENT_BASE, NET_TILE_WIDTH, NET_V2_ENCODING_HASH,
+)
+# The format's names, importable from here as before.
+from alphasettler.netformat import (  # noqa: F401
+    ACTIONS, ADJACENCY, EDGES, FIXED_HEADER_LEN, MAGIC, NODES, OTHER, SEATS, TILES, check_arch, layer_count,
 )
 
-MAGIC = b"ASNET\0\0\0"
-ACTIONS = action_space_size()
-SEATS = 4
-FIXED_HEADER_LEN = 8 + 4 + 8 + 4 + 4 + 4
-ADJACENCY = net_adjacency()
-NODES, EDGES, TILES = len(ADJACENCY["node_tiles"]), len(ADJACENCY["edge_nodes"]), len(ADJACENCY["tile_nodes"])
 NODE_END = NODES * NET_NODE_WIDTH
 EDGE_END = NODE_END + EDGES * NET_EDGE_WIDTH
 TILE_END = EDGE_END + TILES * NET_TILE_WIDTH
 assert TILE_END + NET_GLOBAL_WIDTH == NET_PUBLIC_LEN, "nodes, edges, tiles and the globals tile the public vector"
-# The pooled head's slots: 0..NET_SETTLEMENT_BASE, then everything after the entity heads' slots.
-OTHER = ACTIONS - 2 * NODES - EDGES - TILES
-
-
-def check_arch(width: int, rounds: int) -> None:
-    """ValueError (with the Rust loader's wording) for a width or round count out of range."""
-    if not 1 <= width <= NET_MAX_WIDTH:
-        raise ValueError(f"width {width} is out of range 1..={NET_MAX_WIDTH}")
-    if not 1 <= rounds <= NET_MAX_ROUNDS:
-        raise ValueError(f"rounds {rounds} is out of range 1..={NET_MAX_ROUNDS}")
-
-
-def layer_count(rounds: int) -> int:
-    return 4 + 4 * rounds + 8
 
 
 def shapes(width: int, rounds: int) -> list[tuple[int, int]]:
     """(rows, cols) of each layer in file order; rows are outputs (as Rust's `Arch::shapes`)."""
-    d = width
-    out = [(d, NET_NODE_WIDTH), (d, NET_EDGE_WIDTH), (d, NET_TILE_WIDTH), (d, NET_GLOBAL_WIDTH)]
-    out += [(d, 3 * d), (d, 5 * d), (d, 3 * d), (d, 4 * d)] * rounds
-    return out + [(2, 2 * d), (1, 2 * d), (1, 2 * d), (4 * d, 4 * d), (OTHER, 4 * d),
-                  (4 * d, 4 * d + NET_HIDDEN_LEN), (SEATS, 4 * d), (SEATS, 4 * d)]
+    return netformat.shapes(width, rounds, NET_GLOBAL_WIDTH)
 
 
 def _links(lists: list[list[int]], cols: int, mean: bool) -> torch.Tensor:
@@ -154,46 +131,25 @@ def _floats(t: torch.Tensor) -> bytes:
 
 
 def to_bytes(net: Net) -> bytes:
-    assert sys.byteorder == "little", "the weights file is little-endian"
     layers = net.layers()
-    out = [MAGIC, struct.pack("<IQIII", NET_FORMAT_VERSION, NET_ENCODING_HASH, net.width, net.rounds, len(layers))]
-    out += [struct.pack("<II", layer.out_features, layer.in_features) for layer in layers]
+    out = [netformat.header(net.width, net.rounds, [(layer.out_features, layer.in_features) for layer in layers])]
     for layer in layers:
         out += [_floats(layer.weight), _floats(layer.bias)]
     return b"".join(out)
 
 
+def _check_encoding(encoding: int) -> None:
+    if encoding != NET_ENCODING_HASH:
+        why = ("; it is an encoder v2 net (before the trade block): convert it with `alphasettler net-upgrade OLD NEW`"
+               if encoding == NET_V2_ENCODING_HASH else "")
+        raise ValueError(f"encoding hash {encoding:#018x} does not match this encoder's {NET_ENCODING_HASH:#018x}: "
+                         f"the file was trained on a different feature layout{why}")
+
+
 def from_bytes(data: bytes) -> Net:
     """The network in `data`; ValueError (with the Rust loader's wording) for a file it rejects."""
-    assert sys.byteorder == "little", "the weights file is little-endian"
-    if len(data) < FIXED_HEADER_LEN:
-        raise ValueError(f"truncated: {len(data)} bytes is shorter than the {FIXED_HEADER_LEN}-byte header")
-    if data[:8] != MAGIC:
-        raise ValueError("not an AlphaSettler weights file (wrong magic)")
-    version, encoding, width, rounds, count = struct.unpack_from("<IQIII", data, 8)
-    if version != NET_FORMAT_VERSION:
-        why = "; version 1 holds the flat MLP that network v2 replaced: retrain the net" if version == 1 else ""
-        raise ValueError(f"format version {version}, expected {NET_FORMAT_VERSION}{why}")
-    if encoding != NET_ENCODING_HASH:
-        raise ValueError(f"encoding hash {encoding:#018x} does not match this encoder's {NET_ENCODING_HASH:#018x}: "
-                         "the file was trained on a different feature layout")
-    check_arch(width, rounds)
-    if count != layer_count(rounds):
-        raise ValueError(f"{count} layers, expected {layer_count(rounds)} for {rounds} rounds")
-    header = FIXED_HEADER_LEN + 8 * count
-    if len(data) < header:
-        raise ValueError(f"truncated: {len(data)} bytes is shorter than the {header}-byte header")
-    declared = [struct.unpack_from("<II", data, FIXED_HEADER_LEN + 8 * i) for i in range(count)]
-    if declared != shapes(width, rounds):
-        raise ValueError(f"layer shapes {declared} do not fit network v2 with width {width} and {rounds} rounds")
-    want = header + 4 * sum(r * c + r for r, c in declared)
-    if len(data) < want:
-        raise ValueError(f"truncated: {len(data)} bytes, expected {want}")
-    if len(data) > want:
-        raise ValueError(f"{len(data) - want} trailing bytes after the last layer")
-    params = torch.frombuffer(bytearray(data[header:]), dtype=torch.float32)
-    if not torch.isfinite(params).all():
-        raise ValueError("a weight is NaN or infinite")
+    width, rounds, _, floats = netformat.read(data, NET_GLOBAL_WIDTH, _check_encoding, "network v2")
+    params = torch.frombuffer(floats, dtype=torch.float32)
     net = Net(width=width, rounds=rounds)
     at = 0
     with torch.no_grad():

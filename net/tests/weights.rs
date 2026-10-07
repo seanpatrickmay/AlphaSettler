@@ -505,3 +505,27 @@ fn softmax_sums_to_one_and_sends_minus_infinity_to_zero() {
     );
     assert!((big[0] - 1.0 / (1.0 + (-1f32).exp())).abs() < 1e-6);
 }
+
+#[test]
+fn an_encoder_v2_file_is_refused_with_the_way_to_upgrade_it() {
+    let mut bytes = Weights::random(SMALL, 1).to_bytes();
+    bytes[12..20].copy_from_slice(&V2_ENCODING_HASH.to_le_bytes());
+    let e = err(&bytes);
+    assert!(e.contains("encoding hash"), "{e}");
+    assert!(
+        e.contains("encoder v2") && e.contains("alphasettler net-upgrade"),
+        "{e}"
+    );
+    assert_ne!(V2_ENCODING_HASH, ENCODING_HASH);
+    assert_eq!(
+        settler_net::graph::GLOBAL_WIDTH - V2_GLOBAL_WIDTH,
+        24,
+        "the trade block"
+    );
+    let mut other = Weights::random(SMALL, 1).to_bytes();
+    other[12] ^= 1;
+    assert!(
+        !err(&other).contains("net-upgrade"),
+        "only v2's hash gets the hint"
+    );
+}
