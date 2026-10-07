@@ -1,5 +1,5 @@
 """Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic`, `train`,
-`fast-train`, `fast-score`, `fast-loop` and `train-loop`. `selfplay --simulations S` writes 3a
+`sprt`, `fast-train`, `fast-score`, `fast-loop` and `train-loop`. `selfplay --simulations S` writes 3a
 records; `selfplay --pcr` and `selfplay --net NAME` write 3b exploration records; `train` (the train
 extra) trains a network on them; `train-loop` (the train extra) runs the resumable self-play, train
 and gate generations; `fast-train` and `fast-score` (the train extra) train and score candidate nets
@@ -51,6 +51,22 @@ def _parser() -> argparse.ArgumentParser:
     a.add_argument("--out", default=None, help="JSONL path (default: runs/<time>-<candidate>-vs-<baseline>.jsonl)")
     a.add_argument("--no-trades", action="store_true", help="disable domestic trade offers")
     a.add_argument("--nets-dir", default=DEFAULT_NETS_DIR, help="where net:NAME bots find NAME.bin")
+
+    sp = sub.add_parser("sprt", help="candidate vs three baselines in batches until a sequential test decides")
+    sp.add_argument("--candidate", required=True)
+    sp.add_argument("--baseline", required=True)
+    sp.add_argument("--p0", type=float, default=0.25, help="H0: the candidate's win rate (no gain)")
+    sp.add_argument("--p1", type=float, default=0.30, help="H1: the win rate of a gain worth having")
+    sp.add_argument("--alpha", type=float, default=0.05)
+    sp.add_argument("--beta", type=float, default=0.05)
+    sp.add_argument("--batch", type=_positive_int, default=12, help="seeds per batch (4 games each)")
+    sp.add_argument("--max-seeds", type=_positive_int, default=400)
+    sp.add_argument("--seed-start", type=int, default=2_000_000_000,
+                    help="default: a range no training game or gate uses")
+    sp.add_argument("--threads", type=_positive_int, default=None)
+    sp.add_argument("--out", default=None, help="JSONL path (default: runs/<time>-sprt-<candidate>-vs-<baseline>.jsonl)")
+    sp.add_argument("--no-trades", action="store_true", help="disable domestic trade offers")
+    sp.add_argument("--nets-dir", default=DEFAULT_NETS_DIR, help="where net:NAME bots find NAME.bin")
 
     c = sub.add_parser("compare", help="two candidates against the same baseline on the same seeds")
     c.add_argument("--a", required=True)
@@ -306,6 +322,26 @@ def _fit_heuristic(args) -> int:
     return 0
 
 
+def _sprt(args, config) -> int:
+    from alphasettler.sprt import run_sprt
+
+    name = args.baseline.replace(":", "-")
+    out = Path(args.out or f"runs/{_stamp()}-sprt-{args.candidate.replace(':', '-')}-vs-{name}.jsonl")
+
+    def progress(seeds, llr, summary):
+        print(f"  {seeds} seeds: win rate {summary.win_rate:.3f}, z {summary.z_vs_null:.2f}, LLR {llr:.2f}", flush=True)
+
+    r = run_sprt(args.candidate, args.baseline, p0=args.p0, p1=args.p1, alpha=args.alpha, beta=args.beta,
+                 batch=args.batch, max_seeds=args.max_seeds, seed_start=args.seed_start, threads=args.threads,
+                 config=config, out=out, nets_dir=args.nets_dir, progress=progress)
+    verdict = {"H1": f"H1: a gain (win rate >= {args.p1:g})", "H0": f"H0: no gain worth {args.p1:g}",
+               None: f"undecided after {r.seeds} seeds"}[r.decision]
+    print(format_summary(f"{args.candidate} vs {args.baseline}", r.summary))
+    print(f"sprt: {verdict} after {r.seeds} seeds ({4 * r.seeds} games), LLR {r.llr:.2f}")
+    print(f"wrote {out}")
+    return 0
+
+
 def _train_missing() -> bool:
     """True, after printing how to install it, if PyTorch (the `train` extra) is missing. Any
     other import error surfaces as itself."""
@@ -542,6 +578,8 @@ def main(argv: list[str] | None = None) -> int:
             print(format_summary(f"{args.candidate} vs {args.baseline}", summary))
             print(_resets_line(records))
             print(f"wrote {out}")
+        elif args.command == "sprt":
+            return _sprt(args, config)
         elif args.command == "oracle-diff":
             return _oracle_diff(args)
         elif args.command == "selfplay":
