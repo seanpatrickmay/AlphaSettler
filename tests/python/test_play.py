@@ -59,9 +59,21 @@ def test_a_human_cannot_play_an_action_that_is_not_playable(client):
     (TABLE, {"vps_to_win": 8}),
     (TABLE, {"friendly_robber": True}),
 ])
-def test_our_bot_is_refused_outside_the_standard_game(client, players, options):
+def test_our_bot_is_refused_outside_the_standard_game_with_a_reason(client, players, options):
     client, _ = client
-    assert client.post("/api/games", json={"players": players, **options}).status_code == 400
+    response = client.post("/api/games", json={"players": players, **options})
+    assert response.status_code == 400
+    assert "standard game" in response.json["error"]
+
+
+def test_catanatrons_web_defaults_are_refused_with_a_reason(client):
+    client, _ = client
+    response = client.post("/api/games", json={"players": TABLE, "vps_to_win": 15, "discard_limit": 9,
+                                                "friendly_robber": True})
+    assert response.status_code == 400
+    assert "10 VP" in response.json["error"]
+    unknown = client.post("/api/games", json={"players": ["HUMAN", "WEIGHTED_RANDOM"]})
+    assert unknown.status_code == 400 and "WEIGHTED_RANDOM" in unknown.json["error"]
 
 
 def test_unknown_games_and_old_states_are_not_found(client):

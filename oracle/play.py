@@ -27,6 +27,7 @@ from catanatron.players.minimax import AlphaBetaPlayer
 from catanatron.players.value import ValueFunctionPlayer
 from catanatron.serialization import action_from_json, web_view
 from flask import Flask, abort, jsonify, request
+from werkzeug.exceptions import HTTPException
 
 from alphasettler import Bot
 from oracle.arena import CONFIG, AlphaSettlerPlayer
@@ -93,6 +94,12 @@ def create_app(bot_name: str, nets_dir: str | None = None) -> Flask:
             response.headers["Access-Control-Allow-Headers"] = "Content-Type"
             response.headers["Access-Control-Allow-Methods"] = "GET, POST"
         return response
+
+    @app.errorhandler(HTTPException)
+    def explain(error):
+        """Errors as JSON the UI can show, and on the console: the UI waits forever on one it cannot read."""
+        print(f"{request.method} {request.path}: {error.code} {error.description}", file=sys.stderr)
+        return jsonify({"error": error.description}), error.code
 
     @app.get("/api/players")
     def players():
