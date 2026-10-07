@@ -15,6 +15,8 @@ use settler_search::{
 pub const DEFAULT_SIMULATIONS: u32 = 1000;
 pub const MAX_SIMULATIONS: u32 = 1_000_000;
 pub const MAX_ROLLOUT: u32 = 200;
+/// Most a `+sK` suffix multiplies setup settlements' simulations by.
+pub const MAX_SETUP_FACTOR: u32 = 100;
 const BELIEF_SALT: u64 = 0xBE11EF;
 
 /// `ismcts` -> (1000, 0); `ismcts@N` -> (N, 0); `ismcts@N+rD` -> (N, D). Digits only, no sign.
@@ -37,6 +39,22 @@ pub fn parse_name(name: &str) -> Option<(u32, u32)> {
     let sims_ok = (1..=MAX_SIMULATIONS).contains(&sims);
     let rollout_ok = rest.contains("+r") == (rollout > 0) && rollout <= MAX_ROLLOUT;
     (sims_ok && rollout_ok).then_some((sims, rollout))
+}
+
+/// A searching bot's name with an optional `+sK` suffix split off: `ismcts@100+s10` ->
+/// ("ismcts@100", 10), a name without one -> (name, 1). K is digits only, 2..=MAX_SETUP_FACTOR.
+pub fn split_setup(name: &str) -> Option<(&str, u32)> {
+    let Some(i) = name.rfind("+s") else {
+        return Some((name, 1));
+    };
+    let k = &name[i + 2..];
+    if k.is_empty() || !k.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let k: u32 = k.parse().ok()?;
+    (2..=MAX_SETUP_FACTOR)
+        .contains(&k)
+        .then_some((&name[..i], k))
 }
 
 /// How one decision is searched and chosen; self-play varies these move by move.
@@ -83,6 +101,8 @@ pub struct IsmctsBot<E = HeuristicEvaluator> {
     seed: u64,
     rng: Rng,
     cfg: SearchConfig,
+    /// Setup settlements search `cfg.simulations` x this (1: no extra search).
+    setup_factor: u32,
     eval: E,
     tracked: Tracked,
     last: Option<SearchResult>,
@@ -123,6 +143,7 @@ impl<E: Evaluator> IsmctsBot<E> {
             seed,
             rng: Rng::new(seed),
             cfg,
+            setup_factor: 1,
             eval,
             tracked: Tracked::Unseen,
             last: None,
@@ -132,6 +153,18 @@ impl<E: Evaluator> IsmctsBot<E> {
             searches: 0,
             buf: Vec::new(),
         }
+    }
+
+    /// Search setup settlements with `factor` (1..=MAX_SETUP_FACTOR) times the simulations of
+    /// every other decision, capped at MAX_SIMULATIONS. Only `act` applies it; self-play's
+    /// `act_with` takes its budget from `MoveOptions`.
+    pub fn with_setup_factor(mut self, factor: u32) -> IsmctsBot<E> {
+        assert!(
+            (1..=MAX_SETUP_FACTOR).contains(&factor),
+            "setup factor {factor} out of range"
+        );
+        self.setup_factor = factor;
+        self
     }
 
     /// The last decision's search, if it searched; taking it clears it.
@@ -254,8 +287,17 @@ impl<E: Evaluator + Send> Bot for IsmctsBot<E> {
     }
 
     fn act(&mut self, obs: &Observation, legal: &[Action]) -> Action {
+        let factor = if obs.phase == Phase::SetupSettlement {
+            self.setup_factor
+        } else {
+            1
+        };
         let opts = MoveOptions {
-            simulations: self.cfg.simulations,
+            simulations: self
+                .cfg
+                .simulations
+                .saturating_mul(factor)
+                .min(MAX_SIMULATIONS),
             noise: None,
             sample: None,
         };

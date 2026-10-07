@@ -32,9 +32,19 @@ fn nets_dir(tag: &str) -> PathBuf {
 
 #[test]
 fn net_names_parse_and_bad_ones_are_rejected_without_touching_the_disk() {
-    assert_eq!(parse_net_name("net:a"), Some(("a", 1000, 0)));
-    assert_eq!(parse_net_name("net:gen-001@600"), Some(("gen-001", 600, 0)));
-    assert_eq!(parse_net_name("net:x_Y-9@300+r8"), Some(("x_Y-9", 300, 8)));
+    assert_eq!(parse_net_name("net:a"), Some(("a", 1000, 0, 1)));
+    assert_eq!(
+        parse_net_name("net:gen-001@600"),
+        Some(("gen-001", 600, 0, 1))
+    );
+    assert_eq!(
+        parse_net_name("net:gen-001@600+s10"),
+        Some(("gen-001", 600, 0, 10))
+    );
+    assert_eq!(
+        parse_net_name("net:x_Y-9@300+r8"),
+        Some(("x_Y-9", 300, 8, 1))
+    );
     let longest = format!("net:{}", "a".repeat(64));
     assert_eq!(parse_net_name(&longest).map(|p| p.0.len()), Some(64));
     let too_long = format!("net:{}", "a".repeat(65));

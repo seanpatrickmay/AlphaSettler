@@ -467,3 +467,52 @@ fn moves_are_sampled_in_proportion_to_visits() {
         assert!((*c as f64 / n as f64 - p).abs() < 4.0 * se, "{count:?}");
     }
 }
+
+#[test]
+fn setup_factors_parse_and_bad_ones_are_rejected() {
+    use settler_bots::ismcts::{split_setup, MAX_SETUP_FACTOR};
+    assert_eq!(split_setup("ismcts@100"), Some(("ismcts@100", 1)));
+    assert_eq!(split_setup("ismcts@100+s10"), Some(("ismcts@100", 10)));
+    assert_eq!(split_setup("ismcts@100+r5+s3"), Some(("ismcts@100+r5", 3)));
+    assert_eq!(
+        split_setup("net:gen-004@100+s10"),
+        Some(("net:gen-004@100", 10))
+    );
+    let max = format!("ismcts@1+s{MAX_SETUP_FACTOR}");
+    assert_eq!(split_setup(&max), Some(("ismcts@1", MAX_SETUP_FACTOR)));
+    let over = format!("ismcts@1+s{}", MAX_SETUP_FACTOR + 1);
+    for bad in [
+        "ismcts@100+s",
+        "ismcts@100+s0",
+        "ismcts@100+s1",
+        "ismcts@100+s-2",
+        "ismcts@100+sx",
+        &over,
+    ] {
+        assert_eq!(split_setup(bad), None, "{bad}");
+    }
+    assert!(make_bot("ismcts@20+s5", 0).is_some());
+    assert!(make_bot("ismcts@20+s0", 0).is_none());
+    assert!(
+        make_bot("greedy+s5", 0).is_none(),
+        "only searching bots take a setup factor"
+    );
+}
+
+#[test]
+fn a_setup_factor_multiplies_the_simulations_of_setup_settlements_only() {
+    let mut g = Game::new(3, no_trades());
+    let mut bot = IsmctsBot::new(3, 20, 0).with_setup_factor(5);
+    assert_eq!(g.observation(0).phase, Phase::SetupSettlement);
+    act_and_apply(&mut bot, &mut g);
+    assert_eq!(bot.take_last_search().unwrap().simulations, 100);
+    assert!(matches!(g.observation(0).phase, Phase::SetupRoad { .. }));
+    act_and_apply(&mut bot, &mut g);
+    if let Some(r) = bot.take_last_search() {
+        assert_eq!(r.simulations, 20, "setup roads keep the base budget");
+    }
+    let mut plain = IsmctsBot::new(3, 20, 0);
+    let mut g = Game::new(3, no_trades());
+    act_and_apply(&mut plain, &mut g);
+    assert_eq!(plain.take_last_search().unwrap().simulations, 20);
+}
