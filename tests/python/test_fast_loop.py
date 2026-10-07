@@ -75,3 +75,13 @@ def test_the_window_is_the_newest_directories_holding_enough_games(tmp_path):
 def test_cli_fast_loop_needs_its_set_up_arguments_the_first_time(tmp_path):
     r = cli("fast-loop", "--dir", str(tmp_path / "l"), "--generations", "1")
     assert r.returncode == 2 and "needs --seed-dirs" in r.stderr
+
+
+def test_a_relative_run_directory_trains_on_absolute_seed_directories(tmp_path, monkeypatch):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    monkeypatch.chdir(tmp_path)
+    FastLoop.init("loop", ["seed-gen"], "start.bin", first=1)
+    assert FastLoop("loop", FastLoopSettings(generations=1, **{**TINY, "window_games": 10})).run() == 1
+    state = json.loads((tmp_path / "loop" / STATE).read_text())
+    assert state["seed_dirs"][0]["dir"] == str(seed.resolve())

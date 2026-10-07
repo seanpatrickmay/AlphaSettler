@@ -66,7 +66,7 @@ def count_games(gen_dir: Path) -> int:
 
 class FastLoop:
     def __init__(self, root: str | Path, settings: FastLoopSettings):
-        self.root = Path(root)
+        self.root = Path(root).resolve()  # the seed directories are recorded absolute
         self.s = settings
         self.nets = self.root / "nets"
         self.config = {"max_offers_per_turn": 0, "max_turns": settings.max_turns}
