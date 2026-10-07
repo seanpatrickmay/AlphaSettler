@@ -18,6 +18,9 @@ pub struct SearchConfig {
     pub c_puct: f32,
     /// Leaves per `Evaluator` call.
     pub batch: usize,
+    /// Domestic offers are searched moves for every seat in the tree: a bot that may offer
+    /// assumes its opponents may too. Off, no seat offers in the tree (3a and 3b never offered).
+    pub offers: bool,
 }
 
 impl Default for SearchConfig {
@@ -26,6 +29,7 @@ impl Default for SearchConfig {
             simulations: 1000,
             c_puct: 1.5,
             batch: 8,
+            offers: false,
         }
     }
 }
@@ -40,15 +44,20 @@ pub struct SearchResult {
     pub nodes: usize,
 }
 
-/// The actions the search considers: everything legal except domestic offers (3a never trades).
-pub fn search_actions(legal: &[Action], out: &mut Vec<Action>) {
+/// The actions the search considers: everything legal, with domestic offers only when `offers`.
+pub fn search_moves(legal: &[Action], offers: bool, out: &mut Vec<Action>) {
     out.clear();
     out.extend(
         legal
             .iter()
             .copied()
-            .filter(|a| !matches!(a, Action::OfferTrade { .. })),
+            .filter(|a| offers || !matches!(a, Action::OfferTrade { .. })),
     );
+}
+
+/// `search_moves` without offers: what a bot that never offers searches, and what rollouts play.
+pub fn search_actions(legal: &[Action], out: &mut Vec<Action>) {
+    search_moves(legal, false, out);
 }
 
 /// A finished game's value: 1 for the winner, ¼ each when the turn cap ended it.
@@ -151,7 +160,7 @@ fn descend(
     tree: &mut Tree,
     mut world: State,
     viewer: PlayerId,
-    c_puct: f32,
+    cfg: &SearchConfig,
     rng: &mut Rng,
     buf: &mut Vec<Action>,
     legal: &mut Vec<Action>,
@@ -173,7 +182,7 @@ fn descend(
             continue;
         }
         legal_actions(&world, buf);
-        search_actions(buf, legal);
+        search_moves(buf, cfg.offers, legal);
         let n = &mut tree.nodes[node as usize];
         if !n.expanded {
             if n.awaiting_eval {
@@ -209,7 +218,7 @@ fn descend(
             }
         }
         let actor = world.current_actor() as usize;
-        let i = puct::select(&n.children, |c| allowed.contains(c.key), actor, c_puct)
+        let i = puct::select(&n.children, |c| allowed.contains(c.key), actor, cfg.c_puct)
             .expect("a live decision node has a legal action");
         let a = Action::decode(n.children[i].key).expect("children are keyed by valid action ids");
         path.push((node, i));
@@ -273,7 +282,7 @@ pub fn search_tree<E: Evaluator>(
         "simulations and batch must be positive"
     );
     let mut root_actions = Vec::new();
-    search_actions(legal, &mut root_actions);
+    search_moves(legal, cfg.offers, &mut root_actions);
     match root_actions.len() {
         0 => return Err("nothing to search: no legal action".into()),
         1 => {
@@ -300,7 +309,7 @@ pub fn search_tree<E: Evaluator>(
                 &mut tree,
                 world,
                 obs.viewer,
-                cfg.c_puct,
+                cfg,
                 rng,
                 &mut buf,
                 &mut scratch,

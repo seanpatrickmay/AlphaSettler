@@ -4,12 +4,14 @@
 //! everything public plus the viewer's own cards. Each sample copies it and overwrites only what
 //! the viewer cannot see: opponents' hands (drawn from the belief), their dev cards and the deck
 //! order (a uniform deal of the unseen cards, conditioned on no opponent holding enough VP cards
-//! to have won already), and the random seed.
+//! to have won already), and the random seed. A pending domestic trade (public) is carried as it
+//! is; the template is built at the Main position the offer was made from, because a snapshot
+//! cannot hold one.
 
 use crate::belief::Belief;
 use settler_engine::rng::Rng;
 use settler_engine::types::*;
-use settler_engine::{Observation, Phase, PlayerSnapshot, Snapshot, State};
+use settler_engine::{Observation, Phase, PlayerSnapshot, Response, Snapshot, State};
 
 pub struct WorldSampler {
     template: State,
@@ -98,11 +100,23 @@ impl WorldSampler {
             .ok_or("the belief has no states")?
             .0
             .hands;
-        if matches!(
-            obs.phase,
-            Phase::TradeResponse | Phase::TradeConfirm | Phase::GameOver { .. }
-        ) {
+        if matches!(obs.phase, Phase::GameOver { .. }) {
             return Err(format!("no worlds to sample in phase {:?}", obs.phase));
+        }
+        // Every world must be able to play the pending trade out: the offerer holds what it
+        // gives, each acceptor what it was asked for. The belief's events guarantee it; a state
+        // that breaks it would wrap a hand below zero on a confirmation.
+        if let Some(t) = obs.trade {
+            let offerer = obs.current as usize;
+            let uncovered = belief.states().iter().any(|(s, _)| {
+                !covers(&s.hands[offerer], &t.give)
+                    || (0..NUM_PLAYERS).any(|q| {
+                        t.responses[q] == Response::Accepted && !covers(&s.hands[q], &t.get)
+                    })
+            });
+            if uncovered {
+                return Err("a belief state does not cover the pending trade".into());
+            }
         }
         let me = obs.viewer as usize;
         let mut unseen_counts = DEV_DECK_COUNTS;
@@ -221,7 +235,12 @@ impl WorldSampler {
                 discard_remaining: obs.discard_remaining[p],
             }),
             current: obs.current,
-            phase: obs.phase,
+            // A snapshot cannot hold a pending trade: build the Main position it was made from.
+            phase: if obs.trade.is_some() {
+                Phase::Main
+            } else {
+                obs.phase
+            },
             return_phase: obs.return_phase,
             turn: obs.turn,
             setup_step: setup_step(obs),
@@ -231,6 +250,8 @@ impl WorldSampler {
             largest_army_owner: obs.largest_army_owner,
         };
         sampler.template = State::from_snapshot(0, obs.config, &snap)?;
+        sampler.template.phase = obs.phase;
+        sampler.template.trade = obs.trade;
         Ok(sampler)
     }
 

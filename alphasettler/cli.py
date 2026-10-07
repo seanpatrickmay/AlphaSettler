@@ -197,7 +197,7 @@ def _check_bot_name(name: str, nets_dir: str) -> None:
         if not str(e).startswith("unknown bot"):
             raise
         raise ValueError(
-            f"unknown bot {name!r}; known bots: {bot_names()} (or ismcts@N, ismcts@N+rD, net:NAME[@N[+rD]])"
+            f"unknown bot {name!r}; known bots: {bot_names()} (or ismcts@N, ismcts@N+rD, net:NAME[@N[+rD]], either with +sK and +t)"
         ) from None
 
 

@@ -1,10 +1,13 @@
 mod common;
 
+use common::trading;
 use settler_bots::arena::{belief_resets, play_game, run_match, GameRecord};
-use settler_bots::ismcts::{parse_name, IsmctsBot};
+use settler_bots::ismcts::{parse_name, IsmctsBot, MoveOptions};
 use settler_bots::{make_bot, Bot, BOT_NAMES};
 use settler_engine::rng::Rng;
 use settler_engine::*;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 fn no_trades() -> GameConfig {
     GameConfig {
@@ -76,31 +79,31 @@ fn beats_random() {
     );
 }
 
+/// Answers and confirmations are searched, from a belief rebuilt from the observation alone
+/// (each decision is a fresh bot with no history).
 #[test]
-fn answers_offers_without_searching() {
+fn answers_and_confirmations_are_searched() {
     let mut g = Game::new(2, GameConfig::default());
     let mut rng = Rng::new(2);
-    let (mut rejected, mut cancelled) = (false, false);
-    while !g.state().is_over() && !(rejected && cancelled) {
+    let (mut answered, mut confirmed) = (0, 0);
+    while !g.state().is_over() && (answered < 3 || confirmed < 3) {
         let s = *g.state();
         let legal = g.legal_actions();
         let actor = s.current_actor();
-        let mut bot = IsmctsBot::new(0, 50, 0);
-        if s.phase == Phase::TradeResponse {
-            assert_eq!(bot.act(&s.observation(actor), &legal), Action::RejectTrade);
+        if matches!(s.phase, Phase::TradeResponse | Phase::TradeConfirm) && legal.len() > 1 {
+            let mut bot = IsmctsBot::new(0, 50, 0);
+            let a = bot.act(&s.observation(actor), &legal);
+            assert!(legal.contains(&a));
             assert!(
-                bot.take_last_search().is_none(),
-                "answered an offer by searching"
+                bot.take_last_search().is_some(),
+                "{:?} was answered without a search",
+                s.phase
             );
-            rejected = true;
-        }
-        if s.phase == Phase::TradeConfirm {
-            assert_eq!(bot.act(&s.observation(actor), &legal), Action::CancelTrade);
-            assert!(
-                bot.take_last_search().is_none(),
-                "answered an offer by searching"
-            );
-            cancelled = true;
+            if s.phase == Phase::TradeResponse {
+                answered += 1;
+            } else {
+                confirmed += 1;
+            }
         }
         let pick = if s.phase == Phase::TradeResponse && legal.contains(&Action::AcceptTrade) {
             Action::AcceptTrade
@@ -110,8 +113,8 @@ fn answers_offers_without_searching() {
         g.apply(pick).unwrap();
     }
     assert!(
-        rejected && cancelled,
-        "random play with trades reaches both trade phases"
+        answered >= 3 && confirmed >= 3,
+        "{answered} answers, {confirmed} confirmations"
     );
 }
 
@@ -120,8 +123,9 @@ fn resets(bot: &IsmctsBot) -> u64 {
     d["belief_resets"]
 }
 
-/// Random moves from `g` until player 0, past setup and turn `min_turn`, must make a decision
-/// that is searched (`searched`: more than one searchable move, not a trade answer) or not.
+/// Random moves from `g` until player 0, past setup and turn `min_turn` and outside the trade
+/// phases, must make a decision that is searched (`searched`: more than one searchable move) or
+/// not.
 fn advance(g: &mut Game, rng: &mut Rng, min_turn: u32, searched: bool) {
     let mut moves = Vec::new();
     loop {
@@ -515,4 +519,278 @@ fn a_setup_factor_multiplies_the_simulations_of_setup_settlements_only() {
     let mut g = Game::new(3, no_trades());
     act_and_apply(&mut plain, &mut g);
     assert_eq!(plain.take_last_search().unwrap().simulations, 20);
+}
+
+#[test]
+fn the_offer_suffix_combines_with_the_others_in_any_order() {
+    use settler_bots::ismcts::split_trades;
+    assert_eq!(
+        split_trades("ismcts@100"),
+        Some(("ismcts@100".to_owned(), false))
+    );
+    assert_eq!(
+        split_trades("ismcts@100+t"),
+        Some(("ismcts@100".to_owned(), true))
+    );
+    for name in [
+        "ismcts@100+t+r5+s3",
+        "ismcts@100+r5+t+s3",
+        "ismcts@100+s3+r5+t",
+        "ismcts@100+s3+t+r5",
+    ] {
+        assert_eq!(
+            split_trades(name),
+            Some(("ismcts@100+r5+s3".to_owned(), true)),
+            "{name}"
+        );
+        assert!(make_bot(name, 0).is_some(), "{name}");
+    }
+    assert_eq!(
+        split_trades("net:gen-004@600+s4+t"),
+        Some(("net:gen-004@600+s4".to_owned(), true))
+    );
+    for bad in [
+        "ismcts@100+t+t",
+        "ismcts@100+t5",
+        "ismcts@100+T",
+        "ismcts@100+",
+        "ismcts@100+r5+r5",
+        "ismcts@100+s3+s3",
+        "ismcts@100+x",
+    ] {
+        assert_eq!(split_trades(bad), None, "{bad}");
+        assert!(make_bot(bad, 0).is_none(), "{bad}");
+    }
+    assert!(make_bot("ismcts+t", 0).is_some());
+    assert!(
+        make_bot("greedy+t", 0).is_none(),
+        "only searching bots offer"
+    );
+    assert!(make_bot("random+t", 0).is_none());
+}
+
+#[test]
+fn only_a_bot_with_the_offer_suffix_searches_offers() {
+    let is_offer = |a: &Action| matches!(a, Action::OfferTrade { .. });
+    for seed in 0..3 {
+        let s = main_with(seed, [1, 1, 1, 1, 1], trading());
+        let legal = s.legal_actions();
+        assert!(legal.iter().any(is_offer), "seed {seed}: offers are legal");
+        let offer_visits = |offers: bool| {
+            let mut bot = IsmctsBot::new(seed, 200, 0).with_offers(offers);
+            let a = bot.act(&s.observation(0), &legal);
+            let r = bot.take_last_search().expect("the decision was searched");
+            let v: u32 = legal
+                .iter()
+                .zip(&r.visits)
+                .filter(|(a, _)| is_offer(a))
+                .map(|(_, &v)| v)
+                .sum();
+            (a, v)
+        };
+        let (a, v) = offer_visits(false);
+        assert!(
+            !is_offer(&a) && v == 0,
+            "seed {seed}: the answer-only bot searched an offer"
+        );
+        let (_, v) = offer_visits(true);
+        assert!(v > 0, "seed {seed}: the +t bot never searched an offer");
+    }
+}
+
+/// An IsmctsBot that plays a move drawn in proportion to root visits (as self-play's opening
+/// does), so any offer the search visits gets played, and counts its offers and its searched
+/// trade answers and confirmations.
+struct Sampling {
+    bot: IsmctsBot,
+    rng: Rng,
+    offers: Arc<AtomicU32>,
+    trade_searches: Arc<AtomicU32>,
+}
+
+impl Bot for Sampling {
+    fn name(&self) -> &'static str {
+        "sampling"
+    }
+
+    fn observe(&mut self, viewer: PlayerId, events: &[Event]) {
+        self.bot.observe(viewer, events);
+    }
+
+    fn act(&mut self, obs: &Observation, legal: &[Action]) -> Action {
+        let opts = MoveOptions {
+            simulations: 30,
+            noise: None,
+            sample: Some(self.rng.next_u64()),
+        };
+        let a = self.bot.act_with(obs, legal, &opts);
+        if matches!(a, Action::OfferTrade { .. }) {
+            self.offers.fetch_add(1, Ordering::Relaxed);
+        }
+        let trade = matches!(obs.phase, Phase::TradeResponse | Phase::TradeConfirm);
+        if trade && self.bot.take_last_search().is_some() {
+            self.trade_searches.fetch_add(1, Ordering::Relaxed);
+        }
+        a
+    }
+
+    fn diagnostics(&self) -> Vec<(&'static str, u64)> {
+        self.bot.diagnostics()
+    }
+}
+
+/// Whole trading games (every move checked legal by `play_game`): seat 0 may offer, the other
+/// seats answer by searching but never offer, and no belief is ever reset.
+#[test]
+fn trading_games_play_through_and_only_the_offering_seat_offers() {
+    let counter = || Arc::new(AtomicU32::new(0));
+    let offers: Vec<Arc<AtomicU32>> = (0..4).map(|_| counter()).collect();
+    let searched = counter();
+    for seed in 0..3u64 {
+        let mut bots: Vec<Box<dyn Bot>> = (0..4)
+            .map(|p| {
+                Box::new(Sampling {
+                    bot: IsmctsBot::new(seed * 4 + p as u64, 30, 0).with_offers(p == 0),
+                    rng: Rng::new(seed * 4 + p as u64),
+                    offers: offers[p].clone(),
+                    trade_searches: searched.clone(),
+                }) as Box<dyn Bot>
+            })
+            .collect();
+        let (_, _, turns, _) = play_game(seed, trading(), &mut bots);
+        assert!(turns > 0);
+        assert_eq!(belief_resets(bots.iter().map(|b| &**b)), 0, "seed {seed}");
+    }
+    let made: Vec<u32> = offers.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+    assert!(
+        made[0] > 0 && made[1..] == [0, 0, 0],
+        "offers by seat: {made:?}"
+    );
+    assert!(
+        searched.load(Ordering::Relaxed) > 0,
+        "no answer or confirmation was searched"
+    );
+}
+
+/// Two settlements at nodes the distance rule allows.
+fn two_settlements() -> u64 {
+    use settler_engine::topology::topo;
+    let far = (1..54)
+        .find(|&n| topo().node_neighbor_mask[0] & (1u64 << n) == 0)
+        .unwrap();
+    1 | (1u64 << far)
+}
+
+/// The cards `city_offer` deals, as production events, so a belief built from `Belief::new`
+/// matches the hand-built position exactly.
+fn produced(offerer: PlayerId, ore_holder: PlayerId) -> Vec<Event> {
+    vec![
+        Event::Produced {
+            player: offerer,
+            resources: [1, 0, 0, 2, 2],
+        },
+        Event::Produced {
+            player: ore_holder,
+            resources: [0, 0, 0, 0, 1],
+        },
+    ]
+}
+
+/// The trading game to 3 VP. `offerer` (two settlements: 2 VP) holds a wood, 2 wheat and 2 ore
+/// and has just offered the wood for the one ore its winning city lacks; `ore_holder` holds the
+/// only other ore, and nobody else holds anything.
+fn city_offer(seed: u64, offerer: PlayerId, ore_holder: PlayerId) -> Game {
+    city_offer_to(seed, offerer, ore_holder, 3)
+}
+
+/// `city_offer` in a game to `vp_to_win`: at 4 the city does not win.
+fn city_offer_to(seed: u64, offerer: PlayerId, ore_holder: PlayerId, vp_to_win: u8) -> Game {
+    let config = GameConfig {
+        vp_to_win,
+        ..trading()
+    };
+    let mut s = State::new(seed, config);
+    s.setup_step = 8;
+    s.phase = Phase::Main;
+    s.current = offerer;
+    s.players[offerer as usize].settlements = two_settlements();
+    common::give(&mut s, offerer as usize, [1, 0, 0, 2, 2]);
+    common::give(&mut s, ore_holder as usize, [0, 0, 0, 0, 1]);
+    let mut g = Game::from_state(s);
+    g.apply(Action::OfferTrade { give: 0, get: 4 }).unwrap();
+    g
+}
+
+#[test]
+fn rejects_an_offer_that_hands_the_offerer_the_win() {
+    for seed in 0..4 {
+        let g = city_offer(seed, 1, 2);
+        assert_eq!(
+            (g.state().phase, g.state().current_actor()),
+            (Phase::TradeResponse, 2)
+        );
+        let legal = g.legal_actions();
+        assert!(legal.contains(&Action::AcceptTrade));
+        let mut bot = IsmctsBot::new(seed, 1000, 0);
+        bot.observe(2, &[produced(1, 2), g.log_for(2)].concat());
+        assert_eq!(
+            bot.act(&g.observation(2), &legal),
+            Action::RejectTrade,
+            "seed {seed}"
+        );
+        assert!(bot.take_last_search().is_some(), "the answer was searched");
+        assert_eq!(resets(&bot), 0);
+    }
+}
+
+/// The control for `rejects_an_offer_that_hands_the_offerer_the_win` (the heuristic prior
+/// favours rejecting either way): the search visits accepting less when the city wins the game
+/// than in the same position to 4 VP, where it does not.
+#[test]
+fn accepting_is_searched_less_when_it_hands_the_offerer_the_win() {
+    let accept_visits = |seed: u64, vp_to_win: u8| {
+        let g = city_offer_to(seed, 1, 2, vp_to_win);
+        let legal = g.legal_actions();
+        let mut bot = IsmctsBot::new(seed, 1000, 0);
+        bot.observe(2, &[produced(1, 2), g.log_for(2)].concat());
+        bot.act(&g.observation(2), &legal);
+        let r = bot.take_last_search().expect("the answer was searched");
+        assert_eq!(resets(&bot), 0);
+        let accept = legal
+            .iter()
+            .position(|&a| a == Action::AcceptTrade)
+            .unwrap();
+        r.visits[accept]
+    };
+    for seed in 0..4 {
+        let (wins, control) = (accept_visits(seed, 3), accept_visits(seed, 4));
+        assert!(control > 0, "seed {seed}: accepting was never searched");
+        assert!(wins < control, "seed {seed}: {wins} vs {control} visits");
+    }
+}
+
+/// An acceptor cannot build off its turn, so the trade that wins on the spot is the offerer's:
+/// confirming completes the city. The heuristic prior favours cancelling; the search overrules it.
+#[test]
+fn confirms_a_trade_that_wins_the_game_on_the_spot() {
+    for seed in 0..4 {
+        let mut g = city_offer(seed, 0, 1);
+        g.apply(Action::AcceptTrade).unwrap(); // player 1
+        g.apply(Action::RejectTrade).unwrap(); // player 2
+        g.apply(Action::RejectTrade).unwrap(); // player 3
+        assert_eq!(
+            (g.state().phase, g.state().current_actor()),
+            (Phase::TradeConfirm, 0)
+        );
+        let legal = g.legal_actions();
+        assert_eq!(legal, vec![Action::ConfirmTrade(1), Action::CancelTrade]);
+        let mut bot = IsmctsBot::new(seed, 1000, 0);
+        bot.observe(0, &[produced(0, 1), g.log_for(0)].concat());
+        assert_eq!(
+            bot.act(&g.observation(0), &legal),
+            Action::ConfirmTrade(1),
+            "seed {seed}"
+        );
+        assert_eq!(resets(&bot), 0);
+    }
 }

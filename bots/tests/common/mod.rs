@@ -2,6 +2,15 @@
 
 use settler_engine::*;
 
+/// The trading game (spec 3c Section 2): two offers a turn, one card a side.
+pub fn trading() -> GameConfig {
+    GameConfig {
+        max_offers_per_turn: 2,
+        max_trade_cards: 1,
+        ..GameConfig::default()
+    }
+}
+
 /// A fresh game past setup: no buildings, empty hands, player 0 to act in `phase`.
 pub fn blank(seed: u64, phase: Phase) -> State {
     let mut s = State::new(seed, GameConfig::default());

@@ -10,7 +10,7 @@
 use settler_engine::rng::Rng;
 use settler_engine::rules::roll::{pick_card, sample_cards};
 use settler_engine::types::*;
-use settler_engine::{Event, Observation, Phase};
+use settler_engine::{Event, Observation, Phase, Response};
 use std::collections::BTreeMap;
 
 /// Settlements and roads placed during setup (two of each per player), which cost nothing.
@@ -200,7 +200,9 @@ pub const DEFAULT_MAX_STATES: usize = 65_536;
 const OBSERVATION_DEALS: usize = 1024;
 
 /// Opponents' hands dealt uniformly from the cards neither the bank nor the viewer holds, each
-/// opponent getting their visible count.
+/// opponent getting their visible count. A pending trade is evidence everyone saw: the offerer
+/// holds what it gives and every acceptor what it was asked for, so those cards are dealt first.
+/// With no trade pending the draws are exactly as before.
 fn deal_hidden_hands(obs: &Observation, rng: &mut Rng) -> [Hand; NUM_PLAYERS] {
     let me = obs.viewer as usize;
     let mut pool: Hand = std::array::from_fn(|r| {
@@ -208,12 +210,29 @@ fn deal_hidden_hands(obs: &Observation, rng: &mut Rng) -> [Hand; NUM_PLAYERS] {
             .saturating_sub(obs.bank[r])
             .saturating_sub(obs.my_hand[r])
     });
+    let mut must = [[0u8; NUM_RESOURCES]; NUM_PLAYERS];
+    if let Some(t) = obs.trade {
+        must[obs.current as usize] = t.give;
+        for (m, r) in must.iter_mut().zip(&t.responses) {
+            if *r == Response::Accepted {
+                *m = t.get;
+            }
+        }
+    }
+    must[me] = [0; NUM_RESOURCES];
+    for m in must.iter_mut() {
+        *m = std::array::from_fn(|r| m[r].min(pool[r]));
+        hand_sub(&mut pool, m);
+    }
     let mut hands = [[0u8; NUM_RESOURCES]; NUM_PLAYERS];
     hands[me] = obs.my_hand;
     for q in (0..NUM_PLAYERS).filter(|&q| q != me) {
-        let k = (obs.hand_counts[q] as u32).min(hand_total(&pool)) as u8;
+        let k = (obs.hand_counts[q] as u32)
+            .saturating_sub(hand_total(&must[q]))
+            .min(hand_total(&pool)) as u8;
         hands[q] = sample_cards(&pool, k, rng);
         hand_sub(&mut pool, &hands[q]);
+        hand_add(&mut hands[q], &must[q]);
     }
     hands
 }

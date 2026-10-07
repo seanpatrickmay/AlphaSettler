@@ -22,4 +22,6 @@ BAD_NET_NAMES = [
     "net:a@300+r201",
     "net:a@5@6",
     "net:a+r8",
+    "net:a@300+t+t",
+    "net:a+t@300",
 ]

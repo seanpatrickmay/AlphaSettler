@@ -13,6 +13,7 @@ pub use belief::{Belief, HandTracker, DEFAULT_MAX_STATES};
 pub use evaluator::{Eval, Evaluator, Leaf, UniformEvaluator};
 pub use noise::{dirichlet, gamma, normal, unit, Noised, RootNoise};
 pub use search::{
-    search, search_actions, search_tree, terminal_value, visible_chance, SearchConfig, SearchResult,
+    search, search_actions, search_moves, search_tree, terminal_value, visible_chance,
+    SearchConfig, SearchResult,
 };
 pub use world::WorldSampler;

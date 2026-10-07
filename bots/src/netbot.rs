@@ -1,7 +1,8 @@
 //! Network bots (spec Section 3): `net:NAME` (1,000 simulations), `net:NAME@N` and
-//! `net:NAME@N+rD`, each optionally with `+sK`, with the same limits on N, D and K as `ismcts`: IsmctsBot searching with a
-//! `NetEvaluator`. NAME is `[A-Za-z0-9_-]{1,64}` and names the file `<nets-dir>/NAME.bin`; the
-//! character set keeps every name a plain file name inside the directory.
+//! `net:NAME@N+rD`, each optionally with `+sK` and `+t` in any order, with the same limits on N,
+//! D and K as `ismcts`: IsmctsBot searching with a `NetEvaluator`. NAME is `[A-Za-z0-9_-]{1,64}`
+//! and names the file `<nets-dir>/NAME.bin`; the character set keeps every name a plain file name
+//! inside the directory.
 
 use crate::greedy;
 use crate::ismcts::{self, IsmctsBot};
@@ -23,20 +24,21 @@ pub fn valid_net_name(net: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// `net:NAME` -> (NAME, 1000, 0, 1); `net:NAME@N` -> (NAME, N, 0, 1); `net:NAME@N+rD` -> (NAME,
-/// N, D, 1); a `+sK` suffix on any of them sets the last field (the setup factor) to K.
-pub fn parse_net_name(name: &str) -> Option<(&str, u32, u32, u32)> {
-    let (name, factor) = ismcts::split_setup(name)?;
+/// `net:NAME` -> (NAME, 1000, 0, 1, false); `net:NAME@N` -> (NAME, N, 0, 1, false);
+/// `net:NAME@N+rD` -> (NAME, N, D, 1, false). `+sK` sets the setup factor to K and `+t` the last
+/// field (the bot may offer); the suffixes come in any order (`ismcts::split_trades`).
+pub fn parse_net_name(name: &str) -> Option<(&str, u32, u32, u32, bool)> {
+    let (canon, offers) = ismcts::split_trades(name)?;
+    let (canon, factor) = ismcts::split_setup(&canon)?;
     let rest = name.strip_prefix("net:")?;
-    let (net, tail) = match rest.find('@') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, ""),
-    };
+    let end = rest.find(['@', '+']).unwrap_or(rest.len());
+    let net = &rest[..end];
     if !valid_net_name(net) {
         return None;
     }
+    let tail = &canon["net:".len() + net.len()..];
     let (simulations, rollout) = ismcts::parse_name(&format!("ismcts{tail}"))?;
-    Some((net, simulations, rollout, factor))
+    Some((net, simulations, rollout, factor, offers))
 }
 
 pub fn net_path(nets_dir: &Path, net: &str) -> PathBuf {

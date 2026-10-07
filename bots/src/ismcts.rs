@@ -1,6 +1,7 @@
 //! IsmctsBot: tracks hidden cards from the event log and searches each real decision with
-//! single-observer ISMCTS (spec Sections 2-3). Never trades. Generic over the evaluator: the
-//! heuristic for `ismcts` names, the network for `net:` names (`crate::netbot`).
+//! single-observer ISMCTS (spec Sections 2-3), domestic-trade answers and confirmations included
+//! (spec 3c Section 3). It makes offers only with `with_offers` (a `+t` name). Generic over the
+//! evaluator: the heuristic for `ismcts` names, the network for `net:` names (`crate::netbot`).
 
 use crate::greedy;
 use crate::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
@@ -8,7 +9,7 @@ use crate::Bot;
 use settler_engine::rng::{mix, Rng};
 use settler_engine::{Action, Event, Observation, Phase, PlayerId};
 use settler_search::{
-    search, search_actions, Belief, Evaluator, Noised, RootNoise, SearchConfig, SearchResult,
+    search, search_moves, Belief, Evaluator, Noised, RootNoise, SearchConfig, SearchResult,
     DEFAULT_MAX_STATES,
 };
 
@@ -55,6 +56,31 @@ pub fn split_setup(name: &str) -> Option<(&str, u32)> {
     (2..=MAX_SETUP_FACTOR)
         .contains(&k)
         .then_some((&name[..i], k))
+}
+
+/// A searching bot's name with its `+t` suffix removed and its `+rD` / `+sK` suffixes put in the
+/// order `parse_name` and `split_setup` read (`+rD` before `+sK`), and whether it had `+t`. The
+/// suffixes are everything from the first `+`, in any order, each kind at most once; `None` for a
+/// repeated or unknown one (`+t5`, `+T`, a bare `+`). Their values are checked by those parsers.
+pub fn split_trades(name: &str) -> Option<(String, bool)> {
+    let Some(i) = name.find('+') else {
+        return Some((name.to_owned(), false));
+    };
+    let (mut rollout, mut setup, mut offers) = (None, None, false);
+    for part in name[i + 1..].split('+') {
+        match part.as_bytes().first() {
+            Some(b'r') if rollout.is_none() => rollout = Some(part),
+            Some(b's') if setup.is_none() => setup = Some(part),
+            Some(b't') if part.len() == 1 && !offers => offers = true,
+            _ => return None,
+        }
+    }
+    let mut out = name[..i].to_owned();
+    for part in [rollout, setup].into_iter().flatten() {
+        out.push('+');
+        out.push_str(part);
+    }
+    Some((out, offers))
 }
 
 /// How one decision is searched and chosen; self-play varies these move by move.
@@ -167,6 +193,13 @@ impl<E: Evaluator> IsmctsBot<E> {
         self
     }
 
+    /// Make domestic offers searched moves (a `+t` name). Without it the bot still answers and
+    /// confirms offers by searching, but never offers, and assumes nobody does.
+    pub fn with_offers(mut self, offers: bool) -> IsmctsBot<E> {
+        self.cfg.offers = offers;
+        self
+    }
+
     /// The last decision's search, if it searched; taking it clears it.
     pub fn take_last_search(&mut self) -> Option<SearchResult> {
         self.last.take()
@@ -187,22 +220,13 @@ impl<E: Evaluator> IsmctsBot<E> {
         }
     }
 
-    /// `act` with this decision's search settings. A decision that does not search (a trade
-    /// answer, a single searchable move) ignores `opts`. After a sampled move,
+    /// `act` with this decision's search settings. A decision that does not search (a single
+    /// searchable move) ignores `opts`. After a sampled move,
     /// `take_last_search().action` is the move played.
     pub fn act_with(&mut self, obs: &Observation, legal: &[Action], opts: &MoveOptions) -> Action {
         self.last = None;
         let counted_in_observe = std::mem::take(&mut self.counted_in_observe);
-        match obs.phase {
-            Phase::TradeResponse if legal.contains(&Action::RejectTrade) => {
-                return Action::RejectTrade
-            }
-            Phase::TradeConfirm if legal.contains(&Action::CancelTrade) => {
-                return Action::CancelTrade
-            }
-            _ => {}
-        }
-        search_actions(legal, &mut self.buf);
+        search_moves(legal, self.cfg.offers, &mut self.buf);
         if self.buf.len() == 1 {
             return self.buf[0];
         }

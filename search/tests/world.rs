@@ -409,18 +409,83 @@ fn sampled_hands_follow_the_beliefs_weights() {
     }
 }
 
+/// Every viewer's exact belief, advanced through random games with trades on, samples worlds at
+/// TradeResponse and TradeConfirm roots that keep the pending trade and hands that cover it:
+/// every legal move, a confirmation included, applies to a valid state.
 #[test]
-fn a_pending_trade_cannot_be_sampled() {
-    let mut found = false;
-    random_game(1, GameConfig::default(), |g| {
-        if found || g.state().phase != Phase::TradeResponse {
+fn worlds_sampled_at_a_trade_root_keep_the_trade_and_hands_that_cover_it() {
+    let mut roots = 0;
+    for seed in 0..6 {
+        let mut beliefs: Vec<Belief> = (0..4)
+            .map(|p| Belief::new(p, DEFAULT_MAX_STATES, seed))
+            .collect();
+        let mut seen = [0usize; 4];
+        let mut rng = Rng::new(seed);
+        random_game(seed, GameConfig::default(), |g| {
+            for p in 0..4u8 {
+                let log = g.log_for(p);
+                beliefs[p as usize]
+                    .observe(&log[seen[p as usize]..])
+                    .unwrap();
+                seen[p as usize] = log.len();
+            }
+            let s = g.state();
+            if s.is_over() || !trade_phase(s.phase) {
+                return;
+            }
+            roots += 1;
+            let t = s.trade.unwrap();
+            for p in 0..4u8 {
+                let obs = g.observation(p);
+                let sampler = WorldSampler::new(&obs, &beliefs[p as usize]).unwrap();
+                for _ in 0..3 {
+                    let w = sampler.sample(&beliefs[p as usize], &mut rng);
+                    w.check_invariants().unwrap();
+                    assert_eq!(w.observation(p), obs, "seed {seed} viewer {p}");
+                    assert_eq!((w.phase, w.trade), (s.phase, s.trade));
+                    assert!(covers(&w.players[s.current as usize].hand, &t.give));
+                    for q in 0..4 {
+                        if t.responses[q] == Response::Accepted {
+                            assert!(covers(&w.players[q].hand, &t.get), "acceptor {q}");
+                        }
+                    }
+                    for a in w.legal_actions() {
+                        let mut x = w;
+                        x.apply(a);
+                        x.check_invariants().unwrap();
+                    }
+                }
+            }
+        });
+    }
+    assert!(roots > 20, "{roots} trade roots");
+}
+
+/// A belief rebuilt from the observation alone (no history) still deals the offerer what it
+/// gives and every acceptor what it asked for, so a world can be sampled at the trade root.
+#[test]
+fn a_belief_from_the_observation_alone_covers_the_pending_trade() {
+    let mut checked = 0;
+    random_game(2, GameConfig::default(), |g| {
+        let s = g.state();
+        if checked >= 40 || s.is_over() || !trade_phase(s.phase) {
             return;
         }
-        found = true;
-        let actor = g.state().current_actor();
-        let obs = g.observation(actor);
-        let b = Belief::from_observation(&obs, 8, 0);
-        assert!(WorldSampler::new(&obs, &b).is_err());
+        let t = s.trade.unwrap();
+        for p in 0..4u8 {
+            let obs = g.observation(p);
+            let b = Belief::from_observation(&obs, 256, p as u64);
+            for (st, _) in b.states() {
+                assert!(covers(&st.hands[s.current as usize], &t.give));
+                for q in 0..4 {
+                    if t.responses[q] == Response::Accepted {
+                        assert!(covers(&st.hands[q], &t.get), "acceptor {q}");
+                    }
+                }
+            }
+            assert!(WorldSampler::new(&obs, &b).is_ok());
+        }
+        checked += 1;
     });
-    assert!(found, "a random game with trades reaches TradeResponse");
+    assert!(checked >= 10, "{checked} trade roots");
 }

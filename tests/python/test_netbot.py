@@ -86,3 +86,18 @@ def test_cli_rejects_bad_net_names_and_files_before_writing_anything(nets, tmp_p
                 "--nets-dir", str(nets), "--out-dir", str(tmp_path / "never"))
         assert r.returncode == 2 and message in r.stderr, (bad, r.stderr)
         assert not (tmp_path / "never").exists()
+
+
+def test_offer_suffixes_build_net_bots_in_any_order(nets):
+    for name in ("net:tiny@10+t", "net:tiny@10+s2+t", "net:tiny@10+t+r3+s2"):
+        assert Bot(name, 1, nets_dir=str(nets)).name == "net", name
+    # Bots driven from Python see no events: every decision rebuilds the belief from the
+    # observation, trade roots included.
+    g = Game(4, {"max_offers_per_turn": 2, "max_trade_cards": 1})
+    bot = Bot("net:tiny@10+t", 1, nets_dir=str(nets))
+    for _ in range(200):
+        if g.is_over:
+            break
+        a = bot.act(g)
+        assert a in g.legal_actions()
+        g.apply(a)

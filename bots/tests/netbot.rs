@@ -1,3 +1,6 @@
+mod common;
+
+use common::trading;
 use settler_bots::arena::run_match_in;
 use settler_bots::netbot::{
     load_net, net_bot, net_bot_with, parse_net_name, valid_net_name, NET_BATCH,
@@ -32,18 +35,26 @@ fn nets_dir(tag: &str) -> PathBuf {
 
 #[test]
 fn net_names_parse_and_bad_ones_are_rejected_without_touching_the_disk() {
-    assert_eq!(parse_net_name("net:a"), Some(("a", 1000, 0, 1)));
+    assert_eq!(parse_net_name("net:a"), Some(("a", 1000, 0, 1, false)));
     assert_eq!(
         parse_net_name("net:gen-001@600"),
-        Some(("gen-001", 600, 0, 1))
+        Some(("gen-001", 600, 0, 1, false))
     );
     assert_eq!(
         parse_net_name("net:gen-001@600+s10"),
-        Some(("gen-001", 600, 0, 10))
+        Some(("gen-001", 600, 0, 10, false))
     );
     assert_eq!(
         parse_net_name("net:x_Y-9@300+r8"),
-        Some(("x_Y-9", 300, 8, 1))
+        Some(("x_Y-9", 300, 8, 1, false))
+    );
+    assert_eq!(
+        parse_net_name("net:gen-004@600+t"),
+        Some(("gen-004", 600, 0, 1, true))
+    );
+    assert_eq!(
+        parse_net_name("net:gen-004@600+s4+t+r2"),
+        Some(("gen-004", 600, 2, 4, true))
     );
     let longest = format!("net:{}", "a".repeat(64));
     assert_eq!(parse_net_name(&longest).map(|p| p.0.len()), Some(64));
@@ -72,6 +83,10 @@ fn net_names_parse_and_bad_ones_are_rejected_without_touching_the_disk() {
         "netx:a",
         "Net:a",
         "ismcts:a",
+        "net:a@300+t+t",
+        "net:a@300+t5",
+        "net:a+t@300",
+        "net:a@300+T",
     ] {
         assert_eq!(parse_net_name(bad), None, "{bad}");
         assert!(make_bot(bad, 0).is_none(), "{bad}");
@@ -151,4 +166,12 @@ fn net_self_play_explores_deterministically() {
         .iter()
         .all(|g| g.belief_resets == 0 && !g.decisions.is_empty()));
     assert!(a.iter().flat_map(|g| &g.decisions).any(|d| !d.full_search));
+}
+
+#[test]
+fn net_bots_with_and_without_the_offer_suffix_play_the_trading_game() {
+    let dir = nets_dir("trading");
+    let records = run_match_in("net:tiny@10+t", "net:tiny@10", 0..2, trading(), 2, &dir).unwrap();
+    assert_eq!(records.len(), 8);
+    assert!(records.iter().all(|r| r.belief_resets == 0), "{records:?}");
 }

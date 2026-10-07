@@ -5,8 +5,8 @@ use settler_engine::rng::Rng;
 use settler_engine::*;
 use settler_search::tree::{NodeKind, Tree, ROOT};
 use settler_search::{
-    search, search_tree, terminal_value, visible_chance, Belief, Eval, Evaluator, Leaf,
-    SearchConfig, UniformEvaluator,
+    search, search_moves, search_tree, terminal_value, visible_chance, Belief, Eval, Evaluator,
+    Leaf, SearchConfig, UniformEvaluator,
 };
 
 fn cfg(simulations: u32) -> SearchConfig {
@@ -396,5 +396,64 @@ fn the_chosen_move_is_always_one_the_caller_listed() {
         let visits = |a: Action| root.iter().find(|c| c.key == a.encode()).unwrap().visits;
         assert!(visits(Action::PlayKnight) > visits(Action::Roll));
         assert_eq!(r.action, Action::Roll, "seed {seed}");
+    }
+}
+
+/// Player 0 in Main holding one card of each resource, in a game that allows offers.
+fn main_with_cards(seed: u64) -> State {
+    let config = GameConfig::default();
+    let base = after_setup(seed, config);
+    edit(&base, config, |snap| {
+        give_cards(snap, 0, [1, 1, 1, 1, 1]);
+        snap.phase = Phase::Main;
+    })
+}
+
+#[test]
+fn offers_are_searched_only_when_the_config_allows_them() {
+    let s = main_with_cards(7);
+    let obs = s.observation(0);
+    let legal = s.legal_actions();
+    let is_offer = |a: &Action| matches!(a, Action::OfferTrade { .. });
+    assert!(legal.iter().any(is_offer), "offers are legal here");
+    let mut moves = Vec::new();
+    search_moves(&legal, false, &mut moves);
+    assert!(!moves.iter().any(is_offer) && moves.len() < legal.len());
+    search_moves(&legal, true, &mut moves);
+    assert_eq!(moves, legal);
+    let b = Belief::from_observation(&obs, 64, 7);
+    for offers in [false, true] {
+        let config = SearchConfig {
+            simulations: 600,
+            offers,
+            ..SearchConfig::default()
+        };
+        let (r, tree) = search_tree(
+            &obs,
+            &legal,
+            &b,
+            &mut UniformEvaluator,
+            &config,
+            &mut Rng::new(3),
+        )
+        .unwrap();
+        let offered: u32 = legal
+            .iter()
+            .zip(&r.visits)
+            .filter(|(a, _)| is_offer(a))
+            .map(|(_, &v)| v)
+            .sum();
+        assert_eq!(
+            offered > 0,
+            offers,
+            "offers {offers}: {offered} visits on offers"
+        );
+        // Below a searched offer the opponents answer: a decision node with children.
+        let answered = tree.nodes[ROOT as usize].children.iter().any(|c| {
+            Action::decode(c.key).is_some_and(|a| is_offer(&a))
+                && c.visits > 1
+                && !tree.nodes[c.node as usize].children.is_empty()
+        });
+        assert_eq!(answered, offers, "offers {offers}");
     }
 }
