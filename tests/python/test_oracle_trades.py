@@ -223,3 +223,46 @@ def test_catanatron_asking_the_offerer_to_answer_its_own_offer_is_declined_unsee
     assert [e["type"] for e in events] == ["trade_offered"] + ["trade_responded"] * 3 + ["trade_cancelled"]
     assert sorted(e["player"] for e in events if e["type"] == "trade_responded") == [
         q for q in range(4) if q != ours_seat]
+
+
+class Offering:
+    """Our bot, except that it offers whenever an offer is legal (one at random): whole games then
+    go through offers, answers (Catanatron's), confirmations or cancels (our bot's search)."""
+
+    def __init__(self, bot, rng):
+        self.bot, self.rng = bot, rng
+
+    def act(self, game):
+        offers = [a for a in game.legal_actions() if is_offer(a)]
+        return self.rng.choice(offers) if game.phase == "main" and offers else self.bot.act(game)
+
+    def __getattr__(self, name):
+        return getattr(self.bot, name)
+
+
+@pytest.mark.parametrize("seed, seat, baseline", [(11, 0, "value"), (12, 1, "value"), (13, 2, "value"),
+                                                  (14, 3, "value"), (15, 1, "alphabeta")])
+def test_whole_games_with_offers_play_through_the_arena_loop(monkeypatch, seed, seat, baseline):
+    """play_game's own loop, our bot offering at every chance from each seat: Catanatron's answers
+    (AlphaBeta's by its search, and the self-answers it asks of offerers in seats 1-3) cost no
+    fallback, and the trade events reach our bot's belief without a reset."""
+    import random
+
+    import oracle.arena as arena
+
+    seen = []
+    init, observe = AlphaSettlerPlayer.__init__, AlphaSettlerPlayer.observe
+
+    def offering_init(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        self.bot = Offering(self.bot, random.Random(seed))
+
+    def recording_observe(self, state, events):
+        seen.extend(e["type"] for e in events)
+        observe(self, state, events)
+
+    monkeypatch.setattr(AlphaSettlerPlayer, "__init__", offering_init)
+    monkeypatch.setattr(AlphaSettlerPlayer, "observe", recording_observe)
+    r = arena.play_game(seed, "ismcts@10+t", baseline, seat, trades=True)
+    assert seen.count("trade_offered") > 0 and seen.count("trade_responded") == 3 * seen.count("trade_offered")
+    assert r["fallbacks"] == 0 and r["belief_resets"] == 0, r
