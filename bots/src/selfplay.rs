@@ -2,6 +2,9 @@
 //! 3a searched every move in full. 3b adds playout cap randomization (full or fast searches),
 //! Dirichlet root noise on full searches and proportional move sampling in the opening, for the
 //! heuristic evaluator (the warm start) and the network alike.
+//! 3c: every seat may offer exactly when the game allows offers (the trading game's self-play has
+//! every seat `+t`), and offers, answers and confirmations are recorded like any other searched
+//! decision.
 
 use crate::arena::{belief_resets, bot_seed, split_seeds, EventFeed, MAX_SEEDS};
 use crate::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
@@ -123,9 +126,11 @@ where
     E: Evaluator + Send,
     F: Fn() -> E,
 {
+    // Every seat searches offers exactly when the game allows them (spec 3c Section 5).
     let cfg = SearchConfig {
         simulations: ex.full_simulations,
         batch,
+        offers: config.max_offers_per_turn > 0,
         ..SearchConfig::default()
     };
     let mut bots: Vec<IsmctsBot<E>> = (0..NUM_PLAYERS)

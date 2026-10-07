@@ -14,34 +14,20 @@ use std::sync::Arc;
 /// Picks a rollout move from an observation and the searchable moves (bots pass GreedyBot's).
 pub type RolloutPolicy = fn(&Observation, &[Action]) -> Action;
 
-fn is_offer(a: &Action) -> bool {
-    matches!(a, Action::OfferTrade { .. })
-}
-
 /// The prior over `legal` for `actor`: a softmax of the policy logits at the moves' policy ids
 /// (`policy::policy_id`: steals and trade confirmations seat-relative, as in the training
-/// targets). Domestic offers always get 0 (3b never trades); if `legal` holds nothing else the
-/// prior is uniform. With no finite maximum (every logit -inf, or some +inf) it is the softmax's
-/// limit: uniform over the moves at the maximum, never NaN.
+/// targets). Domestic offers reach it only from a search with `SearchConfig::offers` and read
+/// their own logits like any move. With no finite maximum (every logit -inf, or some +inf) it is
+/// the softmax's limit: uniform over the moves at the maximum, never NaN.
 pub fn masked_prior(logits: &[f32], legal: &[Action], actor: PlayerId) -> Vec<f32> {
-    let mut p: Vec<f32> = legal
-        .iter()
-        .map(|a| {
-            if is_offer(a) {
-                f32::NEG_INFINITY
-            } else {
-                logits[policy_id(*a, actor)]
-            }
-        })
-        .collect();
+    let mut p: Vec<f32> = legal.iter().map(|a| logits[policy_id(*a, actor)]).collect();
     let max = p.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     if max.is_finite() {
         softmax(&mut p);
         return p;
     }
-    let only_offers = legal.iter().all(is_offer);
-    for (x, a) in p.iter_mut().zip(legal) {
-        *x = (only_offers || (*x == max && !is_offer(a))) as u8 as f32;
+    for x in p.iter_mut() {
+        *x = (*x == max) as u8 as f32;
     }
     let n: f32 = p.iter().sum();
     p.iter_mut().for_each(|x| *x /= n);

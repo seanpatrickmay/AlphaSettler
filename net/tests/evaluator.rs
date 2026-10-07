@@ -92,7 +92,7 @@ fn values_and_priors_are_distributions_in_every_phase() {
 }
 
 #[test]
-fn a_single_legal_move_gets_all_the_prior_and_offers_get_none() {
+fn a_single_legal_move_gets_all_the_prior_and_offers_read_their_own_logits() {
     let mut eval = NetEvaluator::new(net());
     let s = State::new(3, GameConfig::default());
     let actor = s.current_actor();
@@ -109,8 +109,12 @@ fn a_single_legal_move_gets_all_the_prior_and_offers_get_none() {
         actor,
         legal: &mixed,
     }]);
-    assert_eq!(e[0].prior[1], 0.0);
-    assert!((e[0].prior[0] + e[0].prior[2] - 1.0).abs() < 1e-6);
+    assert!(e[0].prior[1] > 0.0, "a searched offer has prior mass");
+    assert!((e[0].prior.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+    let mut logits = vec![0.0f32; ACTION_SPACE_SIZE];
+    logits[offer.encode() as usize] = 2.0f32.ln(); // twice EndTurn's and BuyDev's weight
+    let p = masked_prior(&logits, &mixed, 0);
+    assert!((p[0] - 0.25).abs() < 1e-6 && (p[1] - 0.5).abs() < 1e-6 && (p[2] - 0.25).abs() < 1e-6);
     assert_eq!(
         masked_prior(&vec![0.0; ACTION_SPACE_SIZE], &[offer], 0),
         vec![1.0]
@@ -118,12 +122,13 @@ fn a_single_legal_move_gets_all_the_prior_and_offers_get_none() {
 }
 
 #[test]
-fn a_prior_with_no_finite_logit_is_uniform_over_the_moves_it_may_play() {
+fn a_prior_with_no_finite_logit_is_uniform_over_the_moves_at_the_maximum() {
     let offer = Action::OfferTrade { give: 0, get: 1 };
     let dead = vec![f32::NEG_INFINITY; ACTION_SPACE_SIZE];
+    let third = 1.0 / 3.0;
     assert_eq!(
         masked_prior(&dead, &[Action::EndTurn, offer, Action::BuyDev], 0),
-        vec![0.5, 0.0, 0.5]
+        vec![third, third, third]
     );
     assert_eq!(masked_prior(&dead, &[offer, offer], 0), vec![0.5, 0.5]);
     let mut huge = vec![0.0; ACTION_SPACE_SIZE];

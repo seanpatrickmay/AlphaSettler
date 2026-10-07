@@ -5,8 +5,10 @@ import json
 
 import pytest
 
+from alphasettler import records
+from alphasettler.arena import TRADES
 from alphasettler.train.fastloop import GATE_MIN_Z, STATE, FastLoop, FastLoopSettings, count_games, promoted
-from alphasettler.train.loop import SEEDS_PER_GENERATION
+from alphasettler.train.loop import SEEDS_PER_GENERATION, gen_name
 from alphasettler.train.model import Net, save
 
 from test_train import cli, generation
@@ -85,3 +87,42 @@ def test_a_relative_run_directory_trains_on_absolute_seed_directories(tmp_path, 
     assert FastLoop("loop", FastLoopSettings(generations=1, **{**TINY, "window_games": 10})).run() == 1
     state = json.loads((tmp_path / "loop" / STATE).read_text())
     assert state["seed_dirs"][0]["dir"] == str(seed.resolve())
+
+
+def test_a_trading_loop_plays_and_gates_in_the_trading_game(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)  # no-trade records start the window
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    FastLoop.init(root, [seed], tmp_path / "start.bin", first=1, trades=True)
+    loop = FastLoop(root, FastLoopSettings(generations=2, **TINY))
+    assert loop.trades and loop.config == {**TRADES, "max_turns": 1000}
+    assert loop.run() == 2
+    state = json.loads((root / STATE).read_text())
+    assert state["trades"] is True
+    for g in state["generations"]:
+        assert g["gate"]["candidate"].endswith("+t") and g["gate"]["baseline"].endswith("+t"), g["gate"]
+    for k in (1, 2):
+        paths = sorted((root / gen_name(k)).glob("selfplay-local-*.jsonl.gz"))
+        assert paths
+        for path in paths:
+            for game in records.read(path):
+                assert (game["config"]["max_offers_per_turn"], game["config"]["max_trade_cards"]) == (2, 1)
+
+
+def test_cli_fast_loop_keeps_the_trading_setting_it_was_set_up_with(tmp_path):
+    root, _ = setup(tmp_path)  # set up without --trades
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).trades is False
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--trades")
+    assert r.returncode == 2 and "without --trades" in r.stderr
+
+
+@pytest.mark.parametrize("trades", [True, False])
+def test_cli_fast_loop_records_the_trading_setting_of_a_new_loop(tmp_path, trades):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    flag = ["--trades"] if trades else []
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", *flag, "--seed-dirs", str(seed),
+            "--start-net", str(tmp_path / "start.bin"), "--first", "1")
+    assert r.returncode == 0, r.stderr
+    assert json.loads((root / STATE).read_text())["trades"] is trades

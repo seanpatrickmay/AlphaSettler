@@ -17,6 +17,9 @@ BATCH_SEEDS = 10_000
 # The engine computes the range end seed_start + seeds as a u64, so the end itself must fit.
 SEED_LIMIT = 2**64 - 1
 
+# The trading game (spec 3c Section 2): two domestic offers a turn, one card a side.
+TRADES = {"max_offers_per_turn": 2, "max_trade_cards": 1}
+
 
 def _write_records(f: TextIO, candidate: str, baseline: str, records: list[dict]) -> None:
     for r in records:

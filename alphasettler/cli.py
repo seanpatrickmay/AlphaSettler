@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from alphasettler._engine import DEFAULT_NETS_DIR, NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, Bot, bot_names
-from alphasettler.arena import SEED_LIMIT, _write_records, check, format_summary, open_output, run
+from alphasettler.arena import SEED_LIMIT, TRADES, _write_records, check, format_summary, open_output, run
 from alphasettler.stats import paired, summarize
 
 
@@ -50,7 +50,10 @@ def _parser() -> argparse.ArgumentParser:
     a.add_argument("--seed-start", type=int, default=0)
     a.add_argument("--threads", type=_positive_int, default=None)
     a.add_argument("--out", default=None, help="JSONL path (default: runs/<time>-<candidate>-vs-<baseline>.jsonl)")
-    a.add_argument("--no-trades", action="store_true", help="disable domestic trade offers")
+    rules = a.add_mutually_exclusive_group()
+    rules.add_argument("--no-trades", action="store_true", help="disable domestic trade offers")
+    rules.add_argument("--trades", action="store_true",
+                       help="the trading game: 2 domestic offers a turn, 1 card a side (+t bots offer)")
     a.add_argument("--nets-dir", default=DEFAULT_NETS_DIR, help="where net:NAME bots find NAME.bin")
 
     sp = sub.add_parser("sprt", help="candidate vs three baselines in batches until a sequential test decides")
@@ -101,7 +104,8 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--seed-start", type=int, default=0)
     s.add_argument("--threads", type=_positive_int, default=None)
     s.add_argument("--out-dir", default="runs")
-    s.add_argument("--trades", action="store_true", help="allow domestic offers (ismcts never makes any)")
+    s.add_argument("--trades", action="store_true",
+                   help="the trading game (2 offers a turn, 1 card a side); every seat may offer")
 
     f = sub.add_parser("fit-heuristic", help="fit the heuristic evaluator's weights on self-play records")
     f.add_argument("records", nargs="+")
@@ -161,6 +165,8 @@ def _parser() -> argparse.ArgumentParser:
     fl.add_argument("--gate-simulations", type=_positive_int, default=100)
     fl.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
     fl.add_argument("--threads", type=_positive_int, default=None)
+    fl.add_argument("--trades", action="store_true",
+                    help="first run only: self-play and gate in the trading game, every seat +t")
 
     nu = sub.add_parser("net-upgrade", help="rewrite an encoder v2 net (3b's) for encoder v3, same no-trade moves")
     nu.add_argument("old", help="the encoder v2 weights file")
@@ -234,7 +240,7 @@ def _selfplay(args) -> int:
         raise ValueError(f"--rollout must be 0..={MAX_ROLLOUT}, got {args.rollout}")
     if args.seed_start < 0 or args.seed_start + args.games > SEED_LIMIT:
         raise ValueError(f"seeds {args.seed_start}..{args.seed_start + args.games} are outside the u64 seed range")
-    config = {} if args.trades else {"max_offers_per_turn": 0}
+    config = dict(TRADES) if args.trades else {"max_offers_per_turn": 0}
     out = Path(args.out_dir) / f"{_stamp()}-selfplay-s{args.simulations}.jsonl.gz"
     threads = args.threads or os.cpu_count() or 1
     games = decisions = resets = 0
@@ -274,7 +280,7 @@ def _selfplay_explore(args) -> int:
     full = SELFPLAY_FULL_SIMULATIONS if args.full_simulations is None else args.full_simulations
     fast = SELFPLAY_FAST_SIMULATIONS if args.fast_simulations is None else args.fast_simulations
     p = SELFPLAY_FULL_PROBABILITY if args.full_probability is None else args.full_probability
-    config = {} if args.trades else {"max_offers_per_turn": 0}
+    config = dict(TRADES) if args.trades else {"max_offers_per_turn": 0}
     label = "ismcts" if args.net is None else f"net-{args.net}"
     out = Path(args.out_dir) / f"{_stamp()}-selfplay-{label}-f{full}-q{fast}.jsonl.gz"
     if out.exists():
@@ -466,11 +472,15 @@ def _fast_loop(args) -> int:
         if not (args.seed_dirs and args.start_net and args.first is not None):
             print("error: a new fast loop needs --seed-dirs, --start-net and --first", file=sys.stderr)
             return 2
-        FastLoop.init(root, args.seed_dirs, args.start_net, args.first)
+        FastLoop.init(root, args.seed_dirs, args.start_net, args.first, trades=args.trades)
     s = FastLoopSettings(generations=args.generations, games=args.games, window_games=args.window_games,
                          minutes=args.minutes, lr=args.lr, gate_seeds=args.gate_seeds,
                          gate_simulations=args.gate_simulations, device=args.device, threads=args.threads)
     loop = FastLoop(root, s)
+    if args.trades and not loop.trades:
+        print(f"error: {root} was set up without --trades, and a loop keeps the setting it was set up with",
+              file=sys.stderr)
+        return 2
     try:
         n = loop.run()
     except KeyboardInterrupt:
@@ -583,7 +593,12 @@ def _catanatron_arena(args, out: Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    config = {"max_offers_per_turn": 0} if getattr(args, "no_trades", False) else None
+    if getattr(args, "trades", False):
+        config = dict(TRADES)
+    elif getattr(args, "no_trades", False):
+        config = {"max_offers_per_turn": 0}
+    else:
+        config = None
     try:
         if args.command == "arena":
             name = args.baseline.replace(":", "-")

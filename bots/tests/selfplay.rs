@@ -1,3 +1,6 @@
+mod common;
+
+use common::trading;
 use settler_bots::heuristic::{
     fit, log_likelihood, samples_from_games, HeuristicEvaluator, ReplayGame, Sample,
     DEFAULT_WEIGHTS, NUM_FEATURES,
@@ -329,4 +332,41 @@ fn root_noise_changes_the_recorded_visits() {
     }
     assert!(compared >= 10, "only {compared} searched positions");
     assert!(differ > 0, "noise changed none of {compared} searches");
+}
+
+/// Trading self-play: every seat may offer, and offers, answers and confirmations are recorded
+/// like any other searched decision, visits aligned with the legal moves (spec 3c Section 5).
+/// Moves are drawn in proportion to visits, so offers with any visits get played.
+#[test]
+fn trading_self_play_records_offers_answers_and_confirmations() {
+    let ex = Exploration {
+        sample_turns: u32::MAX,
+        ..Exploration::fixed(20)
+    };
+    let (mut offers, mut answers, mut confirmations) = (0, 0, 0);
+    for seed in 0..3 {
+        let g = play_with(seed, trading(), &ex, 8, &heuristic);
+        assert_eq!(g.belief_resets, 0, "seed {seed}");
+        let mut s = State::new(seed, trading());
+        let mut decisions = g.decisions.iter().peekable();
+        for (i, &a) in g.actions.iter().enumerate() {
+            if let Some(d) = decisions.next_if(|d| d.index as usize == i) {
+                assert_eq!(d.legal, s.legal_actions());
+                assert_eq!(d.visits.len(), d.legal.len());
+                offers += d
+                    .legal
+                    .iter()
+                    .zip(&d.visits)
+                    .filter(|(a, v)| matches!(a, Action::OfferTrade { .. }) && **v > 0)
+                    .count();
+                answers += (s.phase == Phase::TradeResponse) as u32;
+                confirmations += (s.phase == Phase::TradeConfirm) as u32;
+            }
+            s.apply(a);
+        }
+    }
+    assert!(
+        offers > 0 && answers > 0 && confirmations > 0,
+        "{offers} visited offers, {answers} answers, {confirmations} confirmations"
+    );
 }

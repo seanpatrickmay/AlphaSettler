@@ -1,14 +1,18 @@
 mod common;
 
 use common::trading;
-use settler_bots::arena::run_match_in;
+use settler_bots::arena::{belief_resets, play_game, run_match_in};
+use settler_bots::ismcts::IsmctsBot;
 use settler_bots::netbot::{
     load_net, net_bot, net_bot_with, parse_net_name, valid_net_name, NET_BATCH,
 };
 use settler_bots::{make_bot, Bot, Roster};
 use settler_engine::*;
+use settler_net::evaluator::NetEvaluator;
 use settler_net::weights::{Arch, Weights};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 fn no_trades() -> GameConfig {
     GameConfig {
@@ -144,8 +148,6 @@ fn net_bots_search_with_the_given_leaf_batch() {
 #[test]
 fn net_self_play_explores_deterministically() {
     use settler_bots::selfplay::{run_with, Exploration};
-    use settler_net::evaluator::NetEvaluator;
-    use std::sync::Arc;
     let w = Arc::new(Weights::random(
         Arch {
             width: 8,
@@ -168,10 +170,71 @@ fn net_self_play_explores_deterministically() {
     assert!(a.iter().flat_map(|g| &g.decisions).any(|d| !d.full_search));
 }
 
+/// A net bot that counts the offers it makes and its searched trade answers and confirmations.
+struct Counting {
+    bot: IsmctsBot<NetEvaluator>,
+    offers: Arc<AtomicU32>,
+    trade_searches: Arc<AtomicU32>,
+}
+
+impl Bot for Counting {
+    fn name(&self) -> &'static str {
+        "counting"
+    }
+
+    fn observe(&mut self, viewer: PlayerId, events: &[Event]) {
+        self.bot.observe(viewer, events);
+    }
+
+    fn act(&mut self, obs: &Observation, legal: &[Action]) -> Action {
+        let a = self.bot.act(obs, legal);
+        if matches!(a, Action::OfferTrade { .. }) {
+            self.offers.fetch_add(1, Ordering::Relaxed);
+        }
+        let trade = matches!(obs.phase, Phase::TradeResponse | Phase::TradeConfirm);
+        if trade && self.bot.take_last_search().is_some() {
+            self.trade_searches.fetch_add(1, Ordering::Relaxed);
+        }
+        a
+    }
+
+    fn diagnostics(&self) -> Vec<(&'static str, u64)> {
+        self.bot.diagnostics()
+    }
+}
+
 #[test]
 fn net_bots_with_and_without_the_offer_suffix_play_the_trading_game() {
     let dir = nets_dir("trading");
     let records = run_match_in("net:tiny@10+t", "net:tiny@10", 0..2, trading(), 2, &dir).unwrap();
     assert_eq!(records.len(), 8);
     assert!(records.iter().all(|r| r.belief_resets == 0), "{records:?}");
+    // The same table by hand (seat 0 `+t`): offers have priors, so seat 0 offers, the others
+    // never do, and trade answers and confirmations are reached and searched.
+    let w = load_net(&dir, "tiny").unwrap();
+    let counter = || Arc::new(AtomicU32::new(0));
+    let offers: Vec<Arc<AtomicU32>> = (0..4).map(|_| counter()).collect();
+    let searched = counter();
+    for seed in 0..2u64 {
+        let mut bots: Vec<Box<dyn Bot>> = (0..4)
+            .map(|p| {
+                Box::new(Counting {
+                    bot: net_bot(seed * 4 + p as u64, w.clone(), 10, 0).with_offers(p == 0),
+                    offers: offers[p].clone(),
+                    trade_searches: searched.clone(),
+                }) as Box<dyn Bot>
+            })
+            .collect();
+        play_game(seed, trading(), &mut bots);
+        assert_eq!(belief_resets(bots.iter().map(|b| &**b)), 0, "seed {seed}");
+    }
+    let made: Vec<u32> = offers.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+    assert!(
+        made[0] > 0 && made[1..] == [0, 0, 0],
+        "offers by seat: {made:?}"
+    );
+    assert!(
+        searched.load(Ordering::Relaxed) > 0,
+        "no answer or confirmation was searched"
+    );
 }

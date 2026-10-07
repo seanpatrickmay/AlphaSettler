@@ -92,12 +92,17 @@ def test_offer_suffixes_build_net_bots_in_any_order(nets):
     for name in ("net:tiny@10+t", "net:tiny@10+s2+t", "net:tiny@10+t+r3+s2"):
         assert Bot(name, 1, nets_dir=str(nets)).name == "net", name
     # Bots driven from Python see no events: every decision rebuilds the belief from the
-    # observation, trade roots included.
+    # observation, trade roots included. Offers have priors, so the +t bot offers, and answers
+    # and confirmations with a choice (more than one legal move) are searched.
     g = Game(4, {"max_offers_per_turn": 2, "max_trade_cards": 1})
     bot = Bot("net:tiny@10+t", 1, nets_dir=str(nets))
+    trade_roots = {"trade_response": 0, "trade_confirm": 0}
     for _ in range(200):
         if g.is_over:
             break
+        if g.phase in trade_roots and len(g.legal_actions()) > 1:
+            trade_roots[g.phase] += 1
         a = bot.act(g)
         assert a in g.legal_actions()
         g.apply(a)
+    assert all(n > 0 for n in trade_roots.values()), trade_roots

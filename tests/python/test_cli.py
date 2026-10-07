@@ -234,3 +234,40 @@ def test_cli_selfplay_interrupt_keeps_written_batches(tmp_path, monkeypatch, cap
     assert [g["seed"] for g in games] == [0, 1]
     for g in games:
         assert records.replay_mismatches(g) == []
+
+
+def test_cli_arena_trades_plays_the_trading_game(tmp_path, monkeypatch, capsys):
+    from alphasettler import cli as cli_module
+    from alphasettler.arena import TRADES
+
+    assert TRADES == {"max_offers_per_turn": 2, "max_trade_cards": 1}
+    seen = []
+    real = cli_module.run
+
+    def spy(candidate, baseline, seeds, seed_start, threads, config, out, nets_dir):
+        seen.append(config)
+        return real(candidate, baseline, seeds, seed_start, threads, config, out, nets_dir)
+
+    monkeypatch.setattr(cli_module, "run", spy)
+    rc = cli_module.main(["arena", "--candidate", "ismcts@10+t", "--baseline", "ismcts@10", "--seeds", "1",
+                          "--trades", "--out", str(tmp_path / "t.jsonl")])
+    assert rc == 0
+    assert seen == [TRADES]
+    assert "belief resets: 0" in capsys.readouterr().out
+
+
+def test_cli_trades_and_no_trades_are_exclusive():
+    r = cli("arena", "--candidate", "random", "--baseline", "random", "--seeds", "1", "--trades", "--no-trades")
+    assert r.returncode == 2 and "not allowed with" in r.stderr
+
+
+def test_cli_selfplay_trades_records_the_trading_game(tmp_path):
+    from alphasettler import records
+
+    r = cli("selfplay", "--pcr", "--games", "1", "--full-simulations", "4", "--fast-simulations", "2", "--trades",
+            "--out-dir", str(tmp_path))
+    assert r.returncode == 0, r.stderr
+    (path,) = tmp_path.glob("*.jsonl.gz")
+    (g,) = list(records.read(path))
+    assert (g["config"]["max_offers_per_turn"], g["config"]["max_trade_cards"]) == (2, 1)
+    assert records.replay_mismatches(g) == []

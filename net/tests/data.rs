@@ -70,7 +70,7 @@ fn a_position_equals_the_encoder_on_the_replayed_state() {
         set.decisions(),
         games.iter().map(|g| g.decisions.len()).sum::<usize>()
     );
-    let mut offers_masked = 0;
+    let (mut offers_in_mask, mut offers_targeted) = (0, 0);
     for (gi, g) in games.iter().enumerate() {
         let mut s = State::new(g.seed, g.config);
         let mut next = 0;
@@ -83,26 +83,23 @@ fn a_position_equals_the_encoder_on_the_replayed_state() {
                 encode_state(&s, d.actor, &mut public, &mut hidden);
                 assert_eq!((b.n, &b.public, &b.hidden), (1, &public, &hidden));
                 let legal = s.legal_actions();
-                offers_masked +=
-                    legal.iter().any(|a| matches!(a, Action::OfferTrade { .. })) as u32;
-                let searchable: Vec<(Action, u32)> = legal
-                    .iter()
-                    .copied()
-                    .zip(d.visits.iter().copied())
-                    .filter(|(a, _)| !matches!(a, Action::OfferTrade { .. }))
-                    .collect();
-                let total: u32 = searchable.iter().map(|x| x.1).sum();
+                let total: u32 = d.visits.iter().sum();
                 let (mut mask, mut policy) = (
                     vec![0u8; ACTION_SPACE_SIZE],
                     vec![0.0f32; ACTION_SPACE_SIZE],
                 );
-                for &(a, v) in &searchable {
-                    mask[policy_id(a, d.actor)] = 1;
-                    policy[policy_id(a, d.actor)] = if total > 0 {
+                for (&a, &v) in legal.iter().zip(&d.visits) {
+                    let k = policy_id(a, d.actor);
+                    mask[k] = 1;
+                    policy[k] = if total > 0 {
                         v as f32 / total as f32
                     } else {
-                        1.0 / searchable.len() as f32
+                        1.0 / legal.len() as f32
                     };
+                    if matches!(a, Action::OfferTrade { .. }) {
+                        offers_in_mask += b.mask[k] as u32;
+                        offers_targeted += (b.policy[k] > 0.0) as u32;
+                    }
                 }
                 assert_eq!(b.mask, mask);
                 assert_eq!(b.policy, policy);
@@ -123,8 +120,8 @@ fn a_position_equals_the_encoder_on_the_replayed_state() {
         }
     }
     assert!(
-        offers_masked > 0,
-        "offers were legal somewhere and stayed out of the mask"
+        offers_in_mask > 0 && offers_targeted > 0,
+        "offers sit in the mask ({offers_in_mask}) and in the targets ({offers_targeted})"
     );
 }
 
@@ -357,4 +354,47 @@ fn sample_full_draws_only_policy_targets() {
     assert!(e.contains("no full-search"), "{e}");
     let e = set.sample_full(MAX_SAMPLE + 1, 0, 1).unwrap_err();
     assert!(e.contains("at most"), "{e}");
+}
+
+/// In the trading game every legal move, offers and seat-relative confirmations included, has
+/// one slot, and the evaluator's prior reads the same slots.
+#[test]
+fn trade_moves_sit_in_the_same_slots_for_the_sampler_and_the_evaluator() {
+    let config = GameConfig {
+        max_turns: 150,
+        ..trading()
+    };
+    let games: Vec<RecordedGame> = (1..4).map(|seed| recorded_every(seed, config, 1)).collect();
+    let set = TrainingSet::new(games.clone()).unwrap();
+    let (mut offers, mut relative_confirms) = (0, 0);
+    for (gi, g) in games.iter().enumerate() {
+        let mut s = State::new(g.seed, g.config);
+        for (di, d) in g.decisions.iter().enumerate() {
+            let mut b = Batch::default();
+            set.position(gi, di, &mut b);
+            let legal = s.legal_actions();
+            let slots: Vec<usize> = (0..ACTION_SPACE_SIZE).filter(|&k| b.mask[k] == 1).collect();
+            assert_eq!(
+                slots.len(),
+                legal.len(),
+                "one slot per legal move, offers included"
+            );
+            let prior = masked_prior(&vec![0.0; ACTION_SPACE_SIZE], &legal, d.actor);
+            assert!(prior
+                .iter()
+                .all(|&p| (p - 1.0 / legal.len() as f32).abs() < 1e-6));
+            for a in &legal {
+                let k = policy_id(*a, d.actor);
+                assert!(slots.contains(&k), "{a:?} by seat {}", d.actor);
+                offers += matches!(a, Action::OfferTrade { .. }) as u32;
+                relative_confirms +=
+                    (matches!(a, Action::ConfirmTrade(_)) && k != a.encode() as usize) as u32;
+            }
+            s.apply(g.actions[di]);
+        }
+    }
+    assert!(
+        offers > 0 && relative_confirms > 0,
+        "{offers} offers, {relative_confirms} seat-relative confirmations"
+    );
 }

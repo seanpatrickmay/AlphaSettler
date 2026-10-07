@@ -239,7 +239,7 @@ impl PyTrainingSet {
         batch_dict(py, &b)
     }
 
-    /// Decisions that are policy targets (full searches with a visit off domestic offers).
+    /// Decisions that are policy targets (full searches with at least one visit).
     #[getter]
     fn policy_decisions(&self) -> usize {
         self.inner.policy_decisions()

@@ -13,7 +13,11 @@ holds `start.bin` (the starting net), `gen-NNN.bin` and `best.bin`. Generation k
 `<dir>/gen-NNN/` and its self-play seeds start at k x SEEDS_PER_GENERATION, as in the train-loop,
 so numbering on from the seed generations keeps every seed unique. Every step is resumable: a
 finished chunk, net or gate result is a file written temp-then-rename, and state.json records each
-finished generation."""
+finished generation.
+
+With trades (set when the loop is set up: `init(..., trades=True)`, `fast-loop --trades`), self-play
+and the gate play the trading game (spec 3c Section 5): every self-play seat may offer, and both
+gate sides are `+t`. A resumed loop keeps the setting it was set up with."""
 
 from __future__ import annotations
 
@@ -24,7 +28,7 @@ from pathlib import Path
 
 from alphasettler import files, records
 from alphasettler import selfplay as selfplay_mod
-from alphasettler.arena import run as arena_run
+from alphasettler.arena import TRADES, run as arena_run
 from alphasettler.train.loop import GATE_SEED_START, SEEDS_PER_GENERATION, gen_name, json_float
 
 STATE = "state.json"
@@ -69,13 +73,16 @@ class FastLoop:
         self.root = Path(root).resolve()  # the seed directories are recorded absolute
         self.s = settings
         self.nets = self.root / "nets"
-        self.config = {"max_offers_per_turn": 0, "max_turns": settings.max_turns}
         self.state = json.loads((self.root / STATE).read_text())
+        self.trades = bool(self.state.get("trades", False))  # state files from before 3c have none
+        rules = dict(TRADES) if self.trades else {"max_offers_per_turn": 0}
+        self.config = {**rules, "max_turns": settings.max_turns}
 
     @staticmethod
-    def init(root: str | Path, seed_dirs: list[str | Path], start_net: str | Path, first: int) -> None:
+    def init(root: str | Path, seed_dirs: list[str | Path], start_net: str | Path, first: int,
+             trades: bool = False) -> None:
         """Create `root` with `seed_dirs` (oldest first) as the starting records and `start_net`
-        as the best net; generation numbering starts at `first`."""
+        as the best net; generation numbering starts at `first`; `trades` plays the trading game."""
         root = Path(root)
         if (root / STATE).exists():
             raise ValueError(f"{root / STATE} exists: the loop is already set up (resume it with fast-loop)")
@@ -85,7 +92,7 @@ class FastLoop:
         files.atomic_copy(start_net, nets / "best.bin")
         dirs = [str(Path(d).resolve()) for d in seed_dirs]
         state = {"seed_dirs": [{"dir": d, "games": count_games(Path(d))} for d in dirs],
-                 "first": first, "best": "start", "latest": "start", "generations": []}
+                 "first": first, "trades": trades, "best": "start", "latest": "start", "generations": []}
         files.atomic_write_text(root / STATE, json.dumps(state, indent=1) + "\n")
 
     def _save(self) -> None:
@@ -185,7 +192,8 @@ class FastLoop:
 
     def _gate(self, k: int, gdir: Path, best: str) -> dict:
         sims = self.s.gate_simulations
-        candidate, baseline = f"net:{gen_name(k)}@{sims}", f"net:{best}@{sims}"
+        offers = "+t" if self.trades else ""
+        candidate, baseline = f"net:{gen_name(k)}@{sims}{offers}", f"net:{best}@{sims}{offers}"
         tmp = files.temp_path(gdir / "gate.jsonl")
         recs, summary = arena_run(candidate, baseline, self.s.gate_seeds, GATE_SEED_START, self.s.threads,
                                   self.config, tmp, self.nets)

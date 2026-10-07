@@ -44,7 +44,7 @@ pub struct Batch {
     /// n × HIDDEN_LEN.
     pub hidden: Vec<f32>,
     /// n × ACTION_SPACE_SIZE: 1 at the policy id (`policy::policy_id`, seat-relative for steals
-    /// and trade confirmations) of each legal move except domestic offers.
+    /// and trade confirmations) of each legal move, domestic offers included.
     pub mask: Vec<u8>,
     /// n × ACTION_SPACE_SIZE: root visits normalised over the mask (uniform if none), at the same
     /// policy ids.
@@ -67,22 +67,15 @@ impl Batch {
         let m0 = self.mask.len();
         self.mask.resize(m0 + ACTION_SPACE_SIZE, 0);
         self.policy.resize(m0 + ACTION_SPACE_SIZE, 0.0);
-        let searchable = || {
-            legal
-                .iter()
-                .zip(&d.visits)
-                .filter(|(a, _)| !matches!(a, Action::OfferTrade { .. }))
-        };
         // u64: visit counts come from files and may sum past u32::MAX.
-        let total: u64 = searchable().map(|(_, &v)| v as u64).sum();
-        let count = searchable().count();
-        for (a, &v) in searchable() {
+        let total: u64 = d.visits.iter().map(|&v| v as u64).sum();
+        for (a, &v) in legal.iter().zip(&d.visits) {
             let k = m0 + policy_id(*a, actor);
             self.mask[k] = 1;
             self.policy[k] = if total > 0 {
                 v as f32 / total as f32
             } else {
-                1.0 / count as f32
+                1.0 / legal.len() as f32
             };
         }
         self.full.push((d.full_search && total > 0) as u8);
@@ -111,7 +104,7 @@ impl Batch {
 
 /// Replay `g` once, checking it against its record.
 /// Checks that `g` replays, and returns the indices of its decisions that are policy targets
-/// (`Batch::full` 1: a full search with a visit on a move other than a domestic offer).
+/// (`Batch::full` 1: a full search with at least one visit).
 fn check_game(g: &RecordedGame, buf: &mut Vec<Action>) -> Result<Vec<u32>, String> {
     let mut targets = Vec::new();
     g.config.validate()?;
@@ -137,10 +130,7 @@ fn check_game(g: &RecordedGame, buf: &mut Vec<Action>) -> Result<Vec<u32>, Strin
                     buf.len()
                 ));
             }
-            let visited = buf
-                .iter()
-                .zip(&d.visits)
-                .any(|(a, &v)| v > 0 && !matches!(a, Action::OfferTrade { .. }));
+            let visited = d.visits.iter().any(|&v| v > 0);
             if d.full_search && visited {
                 targets.push(k as u32);
             }
