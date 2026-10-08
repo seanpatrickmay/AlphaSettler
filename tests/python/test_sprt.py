@@ -5,6 +5,7 @@ import math
 
 import pytest
 
+from alphasettler.arena import TRADES
 from alphasettler.sprt import MIN_SEEDS, VARIANCE_FLOOR_DIV, bounds, decide, llr, run_sprt
 
 
@@ -62,3 +63,29 @@ def test_max_seeds_below_the_minimum_is_refused(tmp_path):
             "--out", str(tmp_path / "c.jsonl"))
     assert r.returncode == 2 and "max_seeds" in r.stderr, r.stderr
     assert not (tmp_path / "c.jsonl").exists()
+
+
+@pytest.mark.parametrize("flag, expected", [("--trades", TRADES), ("--no-trades", {"max_offers_per_turn": 0}),
+                                            (None, None)])
+def test_cli_sprt_passes_the_chosen_rules_to_the_test(monkeypatch, tmp_path, flag, expected):
+    import alphasettler.sprt
+    from alphasettler.cli import main
+
+    seen = {}
+
+    def fake_run_sprt(candidate, baseline, **kwargs):
+        seen["config"] = kwargs["config"]
+        raise SystemExit(0)
+
+    monkeypatch.setattr(alphasettler.sprt, "run_sprt", fake_run_sprt)
+    argv = ["sprt", "--candidate", "ismcts@20+t", "--baseline", "ismcts@20", "--out", str(tmp_path / "s.jsonl")]
+    with pytest.raises(SystemExit):
+        main(argv + ([flag] if flag else []))
+    assert seen["config"] == expected
+
+
+def test_cli_sprt_refuses_both_rule_flags():
+    from test_train import cli
+
+    r = cli("sprt", "--candidate", "ismcts@20", "--baseline", "random", "--trades", "--no-trades")
+    assert r.returncode != 0 and "not allowed with" in r.stderr

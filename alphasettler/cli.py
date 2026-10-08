@@ -69,7 +69,10 @@ def _parser() -> argparse.ArgumentParser:
                     help="default: a range no training game or gate uses")
     sp.add_argument("--threads", type=_positive_int, default=None)
     sp.add_argument("--out", default=None, help="JSONL path (default: runs/<time>-sprt-<candidate>-vs-<baseline>.jsonl)")
-    sp.add_argument("--no-trades", action="store_true", help="disable domestic trade offers")
+    sp_rules = sp.add_mutually_exclusive_group()
+    sp_rules.add_argument("--no-trades", action="store_true", help="disable domestic trade offers")
+    sp_rules.add_argument("--trades", action="store_true",
+                          help="the trading game: 2 domestic offers a turn, 1 card a side (+t bots offer)")
     sp.add_argument("--nets-dir", default=DEFAULT_NETS_DIR, help="where net:NAME bots find NAME.bin")
 
     c = sub.add_parser("compare", help="two candidates against the same baseline on the same seeds")
