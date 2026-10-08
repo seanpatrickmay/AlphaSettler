@@ -1,7 +1,8 @@
 # Sub-project 3d-1 (opening diagnosis and opening model): results
 
 Date: 2026-10-08. Machine: Apple M1 Pro, macOS (25.5.0).
-Commit: ca40ba2 (Plan 7, Task 5), plus the commit adding this file.
+Commits: ca40ba2 (Plan 7, Task 5) for the training, the SPRT, the confirmation and D4; d5818cf (the
+final review's fix wave) for both diagnoses, rerun with D2 read from the seat to act's view.
 
 Spec: [`docs/superpowers/specs/2026-10-08-opening-model-design.md`](../superpowers/specs/2026-10-08-opening-model-design.md).
 Plan: [`docs/superpowers/plans/2026-10-08-plan-7-opening-model.md`](../superpowers/plans/2026-10-08-plan-7-opening-model.md).
@@ -20,17 +21,17 @@ D1, forced or chosen: weak openings where a spot touching the missing resource w
 | no ore | 9200 | 0.736 | 0.902 | 0.978 | 0.995 | 0.000 |
 | weak groups | 17209 | 0.775 | 0.920 | 0.982 | 0.997 | 0.000 |
 
-D2, misjudged: the net's win probability for each seat after the setup, from its own view, against its result (decided games)
+D2, misjudged: the net's win probability for each seat after the setup, from the view of the seat to act, against its result (decided games)
 
 | group | seats | predicted | actual | gap | se |
 |---|---|---|---|---|---|
-| no wood and brick | 2391 | 0.202 | 0.216 | -0.014 | 0.008 |
-| no wheat | 5618 | 0.186 | 0.153 | +0.033 | 0.005 |
-| no ore | 9200 | 0.188 | 0.197 | -0.009 | 0.004 |
-| no wood or no brick | 12501 | 0.243 | 0.250 | -0.006 | 0.004 |
-| no sheep | 3269 | 0.250 | 0.282 | -0.032 | 0.008 |
-| all five | 7021 | 0.270 | 0.395 | -0.125 | 0.006 |
-| weak groups | 17209 | 0.189 | 0.185 | +0.004 | 0.003 |
+| no wood and brick | 2391 | 0.222 | 0.216 | +0.005 | 0.008 |
+| no wheat | 5618 | 0.221 | 0.153 | +0.069 | 0.005 |
+| no ore | 9200 | 0.215 | 0.197 | +0.018 | 0.004 |
+| no wood or no brick | 12501 | 0.264 | 0.250 | +0.015 | 0.004 |
+| no sheep | 3269 | 0.280 | 0.282 | -0.002 | 0.008 |
+| all five | 7021 | 0.289 | 0.395 | -0.106 | 0.006 |
+| weak groups | 17209 | 0.218 | 0.185 | +0.033 | 0.003 |
 
 D3, search budget: the setup settlements of 200 games from runs/3c/gen-034, re-chosen from the recorded position by net:gen-034@budget (a fresh bot each)
 
@@ -40,7 +41,7 @@ D3, search budget: the setup settlements of 200 games from runs/3c/gen-034, re-c
 | 1000 | 1600 | 0.504 | 0.396 |
 | 8000 | 1600 | 0.524 | 0.390 |
 
-**verdict: misjudged (a spot within 1 pip in 0.920 of 17209 weak openings; the weak groups' gap +0.004 exceeds all five's -0.125 by 20.14 standard errors)**
+**verdict: misjudged (a spot within 1 pip in 0.920 of 17209 weak openings; the weak groups' gap +0.033 exceeds all five's -0.106 by 21.73 standard errors)**
 
 Self-play draws its setup moves in proportion to root visits, with root noise (the first
 `SAMPLE_TURNS` = 8 turns include the setup), so D1 and D2 describe the self-play policy's
@@ -52,11 +53,22 @@ game are negatively correlated, so the true standard error of the difference is 
 (the Task 5 review estimates 5 to 10%). At 20 standard errors this does not change the verdict.
 
 Reading it: the bot is not forced (in 92% of weak openings a spot touching the missing resource was
-legal within 1 pip), and the value head's error is mostly on the strong side. It rates the weak
-groups about right (+0.004 pooled; no wheat is overrated by 0.033), but it underrates openings that
-touch all five resources by 0.125 (0.270 predicted, 0.395 actual), so it does not see why they are
-better. More search does not fix it: at 1,000 and 8,000 simulations half the picks change, but the
-weak-group share only falls from 0.425 to 0.396 and 0.390.
+legal within 1 pip), and the value head is wrong in both directions. It overrates the weak groups
+(+0.033 pooled; no wheat by 0.069) and underrates openings that touch all five resources by 0.106
+(0.289 predicted, 0.395 actual), so it does not see why coverage matters. More search does not fix
+it: at 1,000 and 8,000 simulations half the picks change, but the weak-group share only falls from
+0.425 to 0.396 and 0.390.
+
+D2 reads every seat's probability from the view of the seat to act (seat 0 at `pre_roll`), the
+view a search evaluates its leaves from; everything is public right after the setup. A first run
+read each seat from its own view, a viewpoint the net never sees for seats 1 to 3 (their four
+numbers summed to 0.898 a game); it gave the same verdict (all five -0.125, weak +0.004, 20.14
+standard errors) and is kept in `runs/3d1/diagnose-3c-ownview.md`. D1 and D3 do not depend on the
+view and came out identical in both runs.
+
+D3 re-chose with `net:gen-034@N` without `+t` (`+t` changes nothing during the setup), and its
+weak-group share combines each pick's re-chosen spot on its own, so a "re-chosen opening" need not
+be one the draft could have produced jointly.
 
 For comparison, gen-4's no-trade self-play (`runs/3b-v2/gen-005`), the same net reading it:
 10600 games (0 without a winner), 42400 openings, from runs/3b-v2/gen-005; net gen-034.
@@ -70,19 +82,19 @@ D1, forced or chosen: weak openings where a spot touching the missing resource w
 | no ore | 9921 | 0.747 | 0.911 | 0.977 | 0.995 | 0.000 |
 | weak groups | 18591 | 0.787 | 0.927 | 0.983 | 0.997 | 0.000 |
 
-D2, misjudged: the net's win probability for each seat after the setup, from its own view, against its result (decided games)
+D2, misjudged: the net's win probability for each seat after the setup, from the view of the seat to act, against its result (decided games)
 
 | group | seats | predicted | actual | gap | se |
 |---|---|---|---|---|---|
-| no wood and brick | 2594 | 0.212 | 0.240 | -0.028 | 0.008 |
-| no wheat | 6076 | 0.168 | 0.137 | +0.032 | 0.004 |
-| no ore | 9921 | 0.193 | 0.184 | +0.009 | 0.004 |
-| no wood or no brick | 12941 | 0.251 | 0.259 | -0.008 | 0.004 |
-| no sheep | 3566 | 0.255 | 0.278 | -0.023 | 0.007 |
-| all five | 7302 | 0.277 | 0.407 | -0.130 | 0.006 |
-| weak groups | 18591 | 0.188 | 0.176 | +0.011 | 0.003 |
+| no wood and brick | 2594 | 0.230 | 0.240 | -0.010 | 0.008 |
+| no wheat | 6076 | 0.204 | 0.137 | +0.067 | 0.004 |
+| no ore | 9921 | 0.216 | 0.184 | +0.032 | 0.004 |
+| no wood or no brick | 12941 | 0.269 | 0.259 | +0.010 | 0.004 |
+| no sheep | 3566 | 0.281 | 0.278 | +0.002 | 0.007 |
+| all five | 7302 | 0.293 | 0.407 | -0.114 | 0.006 |
+| weak groups | 18591 | 0.214 | 0.176 | +0.038 | 0.003 |
 
-**verdict: misjudged (a spot within 1 pip in 0.927 of 18591 weak openings; the weak groups' gap +0.011 exceeds all five's -0.130 by 22.75 standard errors)**
+**verdict: misjudged (a spot within 1 pip in 0.927 of 18591 weak openings; the weak groups' gap +0.038 exceeds all five's -0.114 by 24.43 standard errors)**
 
 ## The opening model (done criterion 2)
 
@@ -118,9 +130,10 @@ The opening model trades about a third of a pip for coverage: it opens on all fi
 ## Rulings the build made
 
 - After the setup the engine's phase is `PreRoll`; D2 reads that position (setup done, before the
-  first roll), from each seat's own view, and leaves out games with no winner.
+  first roll), from the view of the seat to act (the final review's ruling; the plan said each
+  seat's own view), and leaves out games with no winner.
 - `net_evaluate` reads the hidden block from the game itself; right after the setup every card is
-  public, so this is each seat's own view. It gives the evaluation a search leaf of the same world
+  public, so this is a full-information view. It gives the evaluation a search leaf of the same world
   gets, equal within rounding across batch shapes (the Accelerate forward pass).
 - Pips sum per settlement (a tile touched twice pays twice); "distance 2" is two steps on the node
   graph, whoever owns the edges.
@@ -136,9 +149,10 @@ The opening model trades about a third of a pip for coverage: it opens on all fi
 
 ## Next
 
-The opening model is a gain at 100 and at 600 simulations, so `+o` should be on wherever the bot
-plays for strength, and the next loop should use it in self-play too: the main net then trains on
-games that open on all five resources far more often, which is where its value head is most wrong.
+The opening model is a gain for gen-034 in the trading game at 100 and at 600 simulations (the only
+net and game measured), so `+o` should be on wherever gen-034 plays for strength, and the next loop
+should try it in self-play too: the main net then trains on games that open on all five resources
+far more often, which is where its value head is most wrong.
 Setup roads and a draft search over the model (spec Section 6) are the follow-ups for openings;
 D2's underrating of all-five openings also argues for 3d-2's whole-board features in the encoder,
 since two rounds of message passing may not carry a seat's resource coverage across the board
