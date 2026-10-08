@@ -1,11 +1,12 @@
 """Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic`, `train`,
-`sprt`, `fast-train`, `fast-score`, `fast-loop`, `train-loop`, `net-upgrade` and `opening-train`;
+`sprt`, `fast-train`, `fast-score`, `fast-loop`, `train-loop`, `net-upgrade`, `opening-train` and `opening-diagnose`;
 `net-upgrade` rewrites a 3b (encoder v2) net for encoder v3. `selfplay --simulations S` writes 3a records;
 `selfplay --pcr` and `selfplay --net NAME` write 3b exploration records; `train` (the train extra)
 trains a network on them; `train-loop` (the train extra) runs the resumable self-play, train and
 gate generations; `fast-train` and `fast-score` (the train extra) train and score candidate nets on
 a fixed pool of generations, and `fast-loop` runs small generations trained that way. `opening-train`
-(the train extra) fits the opening model of spec 3d-1 on recorded games' setups."""
+(the train extra) fits the opening model of spec 3d-1 on recorded games' setups. `opening-diagnose` prints spec 3d-1's
+opening diagnosis (D1-D3 and the verdict on record directories, or D4 for a bot)."""
 
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from pathlib import Path
 
 from alphasettler._engine import DEFAULT_NETS_DIR, NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, Bot, bot_names
 from alphasettler.arena import SEED_LIMIT, TRADES, _write_records, check, format_summary, open_output, run
+from alphasettler.diagnose import AUDIT_BUDGETS
 from alphasettler.stats import paired, summarize
 
 
@@ -185,6 +187,25 @@ def _parser() -> argparse.ArgumentParser:
                     help="also score this net's value head on the held-out positions")
     ot.add_argument("--nets-dir", default=DEFAULT_NETS_DIR, help="where --compare-net finds NAME.bin")
     ot.add_argument("--seed", type=int, default=0)
+
+    od = sub.add_parser("opening-diagnose", help="spec 3d-1's opening diagnosis: D1-D3 on records, or D4 for a bot")
+    od_source = od.add_mutually_exclusive_group(required=True)
+    od_source.add_argument("--games", nargs="+", metavar="DIR", help="record directories: D1, D2, D3 and the verdict")
+    od_source.add_argument("--bot", help="play setups with four copies of this bot: D4")
+    od.add_argument("--net", default=None, metavar="NAME",
+                    help="with --games: the net whose value head D2 reads and whose search D3 re-runs")
+    od.add_argument("--nets-dir", default=DEFAULT_NETS_DIR)
+    od.add_argument("--audit", type=int, default=200,
+                    help="with --games: D3 re-chooses the setups of this many games of the last DIR (0 skips D3)")
+    od.add_argument("--audit-budgets", type=_positive_int, nargs="+", default=list(AUDIT_BUDGETS), metavar="N",
+                    help="with --games: D3's simulation budgets")
+    od.add_argument("--seeds", type=_positive_int, default=None, help="with --bot: how many setups to play")
+    od.add_argument("--seed-start", type=int, default=2_000_000_000, help="with --bot: the first seed")
+    od_rules = od.add_mutually_exclusive_group()
+    od_rules.add_argument("--no-trades", action="store_true", help="with --bot: domestic offers off")
+    od_rules.add_argument("--trades", action="store_true", help="with --bot: the trading game")
+    od.add_argument("--threads", type=_positive_int, default=None)
+    od.add_argument("--out", default=None, help="also write the report to this new file")
 
     lp = sub.add_parser("train-loop",
                         help="self-play, train and gate generations; rerun to resume (needs the train extra)")
@@ -577,6 +598,38 @@ def _opening_train(args) -> int:
     return 0
 
 
+def _opening_diagnose(args, config) -> int:
+    from alphasettler import diagnose
+    from alphasettler._engine import resolve_net
+
+    threads = args.threads or os.cpu_count() or 1
+    if args.bot is not None:
+        if args.seeds is None:
+            raise ValueError("--bot needs --seeds")
+        if args.seed_start < 0 or args.seed_start + args.seeds > SEED_LIMIT:
+            raise ValueError(f"seeds {args.seed_start}..{args.seed_start + args.seeds} are outside the u64 seed range")
+        _check_bot_name(args.bot, args.nets_dir)
+    else:
+        if args.net is None:
+            raise ValueError("--games needs --net NAME (the net whose value head D2 reads and whose search D3 re-runs)")
+        if args.audit < 0:
+            raise ValueError(f"--audit must be 0 or more, got {args.audit}")
+        resolve_net(args.net, args.nets_dir)  # a bad net fails now, before any record is read
+    with ExitStack() as stack:
+        # Open the output before the work, so a bad path fails first.
+        f = stack.enter_context(open_output(args.out)) if args.out else None
+        if args.bot is not None:
+            setups = diagnose.play_setups(args.bot, args.seed_start, args.seeds, config, args.nets_dir, threads)
+            text = diagnose.d4_table(args.bot, setups)
+        else:
+            text = diagnose.diagnose([Path(d) for d in args.games], args.net, args.nets_dir, args.audit,
+                                     args.audit_budgets, threads)
+        print(text)
+        if f is not None:
+            f.write(text + "\n")
+    return 0
+
+
 def _oracle_missing() -> int:
     from oracle import CATANATRON_REQUIREMENT
 
@@ -682,6 +735,8 @@ def main(argv: list[str] | None = None) -> int:
             return _net_upgrade(args)
         elif args.command == "opening-train":
             return _opening_train(args)
+        elif args.command == "opening-diagnose":
+            return _opening_diagnose(args, config)
         else:
             for name in (args.a, args.b, args.baseline):
                 _check_bot_name(name, args.nets_dir)
