@@ -126,3 +126,66 @@ def test_cli_fast_loop_records_the_trading_setting_of_a_new_loop(tmp_path, trade
             "--start-net", str(tmp_path / "start.bin"), "--first", "1")
     assert r.returncode == 0, r.stderr
     assert json.loads((root / STATE).read_text())["trades"] is trades
+
+
+def test_cli_fast_loop_with_gumbel_runs_two_generations_of_gumbel_self_play(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    r = cli("fast-loop", "--dir", str(root), "--generations", "2", "--first", "1", "--gumbel", "100",
+            "--seed-dirs", str(seed), "--start-net", str(tmp_path / "start.bin"), "--games", "2",
+            "--window-games", "3", "--minutes", "0.01", "--gate-seeds", "1", "--gate-simulations", "6",
+            "--device", "cpu", "--threads", "2")
+    assert r.returncode == 0, r.stderr
+    state = json.loads((root / STATE).read_text())
+    assert state["gumbel"] == 100 and [g["gen"] for g in state["generations"]] == [1, 2]
+    for g in state["generations"]:
+        sp = g["selfplay"]
+        assert sp["gumbel"] == 100 and sp["belief_resets"] == 0
+        assert sp["full_decisions"] == sp["decisions"] > 0
+        assert "+g" not in g["gate"]["candidate"] and "+g" not in g["gate"]["baseline"], "gates are unchanged"
+    for k in (1, 2):
+        paths = sorted((root / gen_name(k)).glob("selfplay-local-*.jsonl.gz"))
+        assert paths
+        for path in paths:
+            for game in records.read(path):
+                assert game["selfplay"]["gumbel_simulations"] == 100
+                for d in game["decisions"]:
+                    assert d["full_search"] is True and sum(d["visits"]) == 99
+                    assert len(d["target"]) == len(d["legal"])
+                    assert sum(d["target"]) == pytest.approx(1.0, abs=1e-4)
+
+
+@pytest.mark.parametrize("set_up, resume, message", [
+    (None, ["--gumbel", "100"], "without --gumbel"),
+    (100, ["--gumbel", "50"], "with --gumbel 100"),
+], ids=["set-up-without", "other-value"])
+def test_cli_fast_loop_keeps_the_self_play_mode_it_was_set_up_with(tmp_path, set_up, resume, message):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    FastLoop.init(root, [seed], tmp_path / "start.bin", first=1, gumbel=set_up)
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).gumbel == set_up
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", *resume)
+    assert r.returncode == 2 and message in r.stderr, r.stderr
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0")
+    assert r.returncode == 0, r.stderr
+    assert json.loads((root / STATE).read_text())["gumbel"] == set_up, "a resume without the flag keeps it"
+
+
+def test_a_loop_set_up_before_gumbel_existed_reads_as_set_up_without_it(tmp_path):
+    root, _ = setup(tmp_path)
+    state = json.loads((root / STATE).read_text())
+    del state["gumbel"]
+    (root / STATE).write_text(json.dumps(state))
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).gumbel is None
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--gumbel", "100")
+    assert r.returncode == 2 and "without --gumbel" in r.stderr
+
+
+def test_a_gumbel_budget_below_two_is_refused_before_anything_is_written(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    with pytest.raises(ValueError, match="gumbel simulations"):
+        FastLoop.init(tmp_path / "bad", [seed], tmp_path / "start.bin", first=1, gumbel=1)
+    assert not (tmp_path / "bad").exists()

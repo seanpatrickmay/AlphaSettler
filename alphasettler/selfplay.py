@@ -28,6 +28,16 @@ def check_gumbel(simulations: int) -> None:
                          f"got {simulations!r}")
 
 
+def mode_mismatch(root: str | Path, stored: int | None, asked: int | None) -> str | None:
+    """The error for asking `--gumbel` of a loop in `root` that was set up with `stored` (None:
+    without it, as every loop from before P2 was), or None if the ask is allowed: no flag keeps the
+    loop's mode, the same value repeats it. A loop keeps the self-play mode it was set up with."""
+    if asked is None or asked == stored:
+        return None
+    was = "without --gumbel" if stored is None else f"with --gumbel {stored}"
+    return f"{root} was set up {was}, and a loop keeps the self-play mode it was set up with"
+
+
 def settings(net: str | None, nets_dir: str | Path, full_simulations: int, fast_simulations: int,
              full_probability: float, gumbel: int | None = None) -> dict:
     """The `selfplay` block. Checks every argument, and loads the net, without playing a game.

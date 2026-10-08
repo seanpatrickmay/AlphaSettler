@@ -15,7 +15,7 @@ from dataclasses import replace
 
 import pytest
 
-from alphasettler import files
+from alphasettler import files, records
 from alphasettler._engine import NET_MAX_ROUNDS, NET_MAX_WIDTH
 from alphasettler.train.loop import Loop, LoopSettings, json_float, promoted
 
@@ -294,7 +294,7 @@ def test_new_flags_apply_only_to_steps_not_yet_run(tmp_path, reference):
 @pytest.mark.parametrize("change", [{"generations": -1}, {"generations": 100}, {"lr": 0.0}, {"warm_lr": math.nan}, {"games": 0},
                                     {"window": 0}, {"gate_seeds": 0}, {"gate_simulations": 0}, {"device": "gpu"},
                                     {"warm_games": 10_000_001}, {"width": 0}, {"rounds": 0},
-                                    {"width": NET_MAX_WIDTH + 1}, {"rounds": NET_MAX_ROUNDS + 1}, {"width": 2.5}])
+                                    {"width": NET_MAX_WIDTH + 1}, {"rounds": NET_MAX_ROUNDS + 1}, {"width": 2.5}, {"gumbel": 1}])
 def test_bad_settings_are_an_error_before_anything_is_written(tmp_path, change):
     with pytest.raises(ValueError):
         Loop(tmp_path / "run", replace(TINY, **change))
@@ -471,3 +471,38 @@ def test_cli_train_loop_ctrl_c_exits_130_and_the_rerun_resumes(tmp_path, monkeyp
     monkeypatch.setattr(Loop, "_save", real)
     assert main(args) == 0
     assert "2 steps run" in capsys.readouterr().out
+
+
+def test_a_gumbel_train_loop_records_its_mode_and_improved_policies(tmp_path):
+    d = tmp_path / "g"
+    s = replace(TINY, generations=0, gumbel=4)
+    assert Loop(d, s).run() == 3
+    m = manifest(d)
+    assert m["gumbel"] == 4 and m["generations"][0]["selfplay"]["gumbel"] == 4
+    paths = sorted((d / "gen-000").glob("selfplay-local-*.jsonl.gz"))
+    assert paths
+    for path in paths:
+        for g in records.read(path):
+            assert g["selfplay"]["gumbel_simulations"] == 4
+            assert all(len(x["target"]) == len(x["legal"]) for x in g["decisions"])
+    assert Loop(d, replace(s, gumbel=None)).gumbel == 4, "a resume without the flag keeps it"
+    with pytest.raises(ValueError, match="with --gumbel 4"):
+        Loop(d, replace(s, gumbel=8))
+
+
+def test_a_train_loop_set_up_without_gumbel_refuses_it(tmp_path, reference):
+    assert manifest(reference)["gumbel"] is None
+    with pytest.raises(ValueError, match="without --gumbel"):
+        Loop(reference, replace(TINY, gumbel=4))
+    r = cli("train-loop", "--dir", str(reference), "--generations", "1", "--gumbel", "4")
+    assert r.returncode == 2 and "without --gumbel" in r.stderr
+    # A run set up before P2 has no "gumbel" key: it reads as set up without it.
+    old = tmp_path / "before-p2"
+    shutil.copytree(reference, old)
+    m = manifest(old)
+    del m["gumbel"]
+    (old / "manifest.json").write_text(json.dumps(m))
+    with pytest.raises(ValueError, match="without --gumbel"):
+        Loop(old, replace(TINY, gumbel=4))
+    assert Loop(old, TINY).gumbel is None
+    assert Loop(old, TINY).run() == 0, "resuming without the flag is accepted, nothing redone"

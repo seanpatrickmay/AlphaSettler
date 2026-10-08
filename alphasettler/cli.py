@@ -170,6 +170,8 @@ def _parser() -> argparse.ArgumentParser:
     fl.add_argument("--threads", type=_positive_int, default=None)
     fl.add_argument("--trades", action="store_true",
                     help="first run only: self-play and gate in the trading game, every seat +t")
+    fl.add_argument("--gumbel", type=_positive_int, default=None, metavar="SIMS",
+                    help="first run only: every self-play move a Gumbel root search of SIMS simulations")
 
     nu = sub.add_parser("net-upgrade", help="rewrite an encoder v2 net (3b's) for encoder v3, same no-trade moves")
     nu.add_argument("old", help="the encoder v2 weights file")
@@ -199,6 +201,8 @@ def _parser() -> argparse.ArgumentParser:
     lp.add_argument("--max-turns", type=_positive_int, default=1000)
     lp.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
     lp.add_argument("--threads", type=_positive_int, default=None)
+    lp.add_argument("--gumbel", type=_positive_int, default=None, metavar="SIMS",
+                    help="first run only: every self-play move a Gumbel root search of SIMS simulations")
     return p
 
 
@@ -468,6 +472,7 @@ def _fast_score(args) -> int:
 def _fast_loop(args) -> int:
     if _train_missing():
         return 2
+    from alphasettler.selfplay import mode_mismatch
     from alphasettler.train.fastloop import STATE, FastLoop, FastLoopSettings
 
     root = Path(args.dir)
@@ -475,7 +480,8 @@ def _fast_loop(args) -> int:
         if not (args.seed_dirs and args.start_net and args.first is not None):
             print("error: a new fast loop needs --seed-dirs, --start-net and --first", file=sys.stderr)
             return 2
-        FastLoop.init(root, args.seed_dirs, args.start_net, args.first, trades=args.trades)
+        FastLoop.init(root, args.seed_dirs, args.start_net, args.first, trades=args.trades,
+                      gumbel=args.gumbel)
     s = FastLoopSettings(generations=args.generations, games=args.games, window_games=args.window_games,
                          minutes=args.minutes, lr=args.lr, gate_seeds=args.gate_seeds,
                          gate_simulations=args.gate_simulations, device=args.device, threads=args.threads)
@@ -483,6 +489,10 @@ def _fast_loop(args) -> int:
     if args.trades and not loop.trades:
         print(f"error: {root} was set up without --trades, and a loop keeps the setting it was set up with",
               file=sys.stderr)
+        return 2
+    error = mode_mismatch(root, loop.gumbel, args.gumbel)
+    if error is not None:
+        print(f"error: {error}", file=sys.stderr)
         return 2
     try:
         n = loop.run()
@@ -505,6 +515,7 @@ def _train_loop(args) -> int:
         steps_factor=args.steps_factor, batch=args.batch, width=args.width, rounds=args.rounds,
         gate_seeds=args.gate_seeds, gate_simulations=args.gate_simulations, max_turns=args.max_turns,
         device=args.device, threads=args.threads,
+        gumbel=args.gumbel,
     )
     loop = Loop(Path(args.dir), s)
     try:

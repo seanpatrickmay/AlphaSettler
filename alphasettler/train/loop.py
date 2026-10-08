@@ -69,6 +69,7 @@ class LoopSettings:
     max_turns: int = 1000
     device: str = "auto"
     threads: int | None = None
+    gumbel: int | None = None  # Gumbel self-play simulations, kept from the run's first start
 
 
 def gen_name(k: int) -> str:
@@ -125,6 +126,8 @@ def _check(s: LoopSettings) -> None:
         raise ValueError(f"unknown device {s.device!r}; use {', '.join(DEVICES)}")
     # No net is loaded here: generation 0's bot is checked, later ones load when their step runs.
     selfplay_mod.settings(None, ".", s.full_simulations, s.fast_simulations, s.full_probability)
+    if s.gumbel is not None:
+        selfplay_mod.check_gumbel(s.gumbel)
     for lr in (s.warm_lr, s.lr):
         TrainConfig(lr=lr, steps_factor=s.steps_factor, batch=s.batch, threads=s.threads, width=s.width,
                     rounds=s.rounds).check()
@@ -139,6 +142,7 @@ class Loop:
         self.config = {"max_offers_per_turn": 0, "max_turns": settings.max_turns}
         resolve_config(self.config)  # an out-of-range turn cap fails now
         self.manifest = self._load()
+        self.gumbel = self._mode(settings.gumbel)
 
     def _load(self) -> dict:
         path = self.root / MANIFEST
@@ -149,6 +153,20 @@ class Loop:
             raise ValueError(f"{path} has format {m.get('format')!r}, expected {MANIFEST_FORMAT}: a format 1 run "
                              "trained the flat MLP, whose nets no longer load; start network v2 in a new directory")
         return m
+
+    def _mode(self, asked: int | None) -> int | None:
+        """The self-play mode: Gumbel simulations, or None for PUCT self-play. Set when the run
+        starts (`--gumbel SIMS`) and kept on every resume, as the fast loop keeps `--trades`; a
+        manifest from before P2 has none. Asking for another mode is a ValueError."""
+        if not (self.root / MANIFEST).exists():
+            self.manifest["gumbel"] = asked
+            return asked
+        stored = self.manifest.get("gumbel")
+        error = selfplay_mod.mode_mismatch(self.root, stored, asked)
+        if error is not None:
+            raise ValueError(error)
+        self.manifest["gumbel"] = stored
+        return stored
 
     def _save(self) -> None:
         files.atomic_write_text(self.root / MANIFEST, _dumps(self.manifest, indent=1))
@@ -232,6 +250,8 @@ class Loop:
             "full_probability": self.s.full_probability,
             "config": self.config,
         }
+        if self.gumbel is not None:  # only then: plans written before P2 still match
+            plan["gumbel"] = self.gumbel
         plan_path = gdir / "selfplay.json"
         if plan_path.exists():
             if json.loads(plan_path.read_text()) != plan:
@@ -251,7 +271,8 @@ class Loop:
                 selfplay_mod.write_explore(
                     tmp, lo, min(self.s.chunk_games, end - lo), config=self.config,
                     full_simulations=self.s.full_simulations, fast_simulations=self.s.fast_simulations,
-                    full_probability=self.s.full_probability, net=net, nets_dir=self.nets, threads=self.s.threads)
+                    full_probability=self.s.full_probability, net=net, nets_dir=self.nets, threads=self.s.threads,
+                    gumbel=self.gumbel)
                 files.fsync_file(tmp)
                 os.replace(tmp, path)
                 print(f"  {path.name}: seeds {lo}..{min(end, lo + self.s.chunk_games)}", flush=True)

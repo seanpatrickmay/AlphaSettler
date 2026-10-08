@@ -17,7 +17,10 @@ finished generation.
 
 With trades (set when the loop is set up: `init(..., trades=True)`, `fast-loop --trades`), self-play
 and the gate play the trading game (spec 3c Section 5): every self-play seat may offer, and both
-gate sides are `+t`. A resumed loop keeps the setting it was set up with."""
+gate sides are `+t`. A resumed loop keeps the setting it was set up with.With `gumbel` (set when the loop is set up: `init(..., gumbel=SIMS)`, `fast-loop --gumbel SIMS`;
+spec P2 Section 5), every self-play move is a Gumbel root search of SIMS simulations whose improved
+policy is the decision's policy target; the gate is unchanged. A resumed loop keeps that too.
+"""
 
 from __future__ import annotations
 
@@ -75,24 +78,29 @@ class FastLoop:
         self.nets = self.root / "nets"
         self.state = json.loads((self.root / STATE).read_text())
         self.trades = bool(self.state.get("trades", False))  # state files from before 3c have none
+        self.gumbel = self.state.get("gumbel")  # state files from before P2 have none: PUCT self-play
         rules = dict(TRADES) if self.trades else {"max_offers_per_turn": 0}
         self.config = {**rules, "max_turns": settings.max_turns}
 
     @staticmethod
     def init(root: str | Path, seed_dirs: list[str | Path], start_net: str | Path, first: int,
-             trades: bool = False) -> None:
+             trades: bool = False, gumbel: int | None = None) -> None:
         """Create `root` with `seed_dirs` (oldest first) as the starting records and `start_net`
-        as the best net; generation numbering starts at `first`; `trades` plays the trading game."""
+        as the best net; generation numbering starts at `first`; `trades` plays the trading game;
+        `gumbel` (simulations) makes every self-play move a Gumbel root search."""
         root = Path(root)
         if (root / STATE).exists():
             raise ValueError(f"{root / STATE} exists: the loop is already set up (resume it with fast-loop)")
+        if gumbel is not None:
+            selfplay_mod.check_gumbel(gumbel)
         nets = root / "nets"
         nets.mkdir(parents=True, exist_ok=True)
         files.atomic_copy(start_net, nets / "start.bin")
         files.atomic_copy(start_net, nets / "best.bin")
         dirs = [str(Path(d).resolve()) for d in seed_dirs]
         state = {"seed_dirs": [{"dir": d, "games": count_games(Path(d))} for d in dirs],
-                 "first": first, "trades": trades, "best": "start", "latest": "start", "generations": []}
+                 "first": first, "trades": trades, "gumbel": gumbel, "best": "start", "latest": "start",
+                 "generations": []}
         files.atomic_write_text(root / STATE, json.dumps(state, indent=1) + "\n")
 
     def _save(self) -> None:
@@ -131,7 +139,8 @@ class FastLoop:
             files.remove_dead_temps(gdir, pattern)
         files.remove_dead_temps(self.nets, "*.bin")
         best = self.state["best"]
-        print(f"{name}: selfplay with net:{best}", flush=True)
+        mode = "" if self.gumbel is None else f" (Gumbel root, {self.gumbel} simulations)"
+        print(f"{name}: selfplay with net:{best}{mode}", flush=True)
         sp = self._selfplay(k, gdir, best)
         print(f"{name}: train", flush=True)
         tr = self._train(k, gdir, sp["games"])
@@ -155,7 +164,8 @@ class FastLoop:
                 selfplay_mod.write_explore(
                     tmp, lo, min(self.s.chunk_games, end - lo), config=self.config,
                     full_simulations=self.s.full_simulations, fast_simulations=self.s.fast_simulations,
-                    full_probability=self.s.full_probability, net=best, nets_dir=self.nets, threads=self.s.threads)
+                    full_probability=self.s.full_probability, net=best, nets_dir=self.nets, threads=self.s.threads,
+                    gumbel=self.gumbel)
                 files.fsync_file(tmp)
                 os.replace(tmp, path)
                 print(f"  {path.name}: seeds {lo}..{min(end, lo + self.s.chunk_games)}", flush=True)
@@ -166,7 +176,7 @@ class FastLoop:
                 totals["belief_resets"] += g["belief_resets"]
         print(f"  {totals['games']} games, {totals['decisions']} decisions, belief resets {totals['belief_resets']}",
               flush=True)
-        return {"net": best, "seed_start": start, **totals}
+        return {"net": best, "seed_start": start, "gumbel": self.gumbel, **totals}
 
     def _train(self, k: int, gdir: Path, games: int) -> dict:
         from alphasettler.train.fast import FastConfig, fast_train, load_pool
