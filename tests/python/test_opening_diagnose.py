@@ -13,7 +13,7 @@ from alphasettler.diagnose import (
     GROUPS, Diagnosis, calibration, d1_table, d2_table, d4_table, gap, group, opening_pips, play_setups, verdict,
 )
 from alphasettler.opening import model_bytes, replay_setup
-from opening_games import fixed_game, write_dir
+from opening_games import fixed_game, truncate, write_dir
 
 BOARD = Game(0, None).snapshot()["board"]
 
@@ -73,17 +73,20 @@ def test_d1_shares_are_cumulative_and_count_openings_with_no_alternative():
     assert "| weak groups | 6 | 0.333 | 0.500 | 0.667 | 0.833 | 0.167 |" in table
 
 
-def test_d2_reads_each_seat_s_own_view_after_the_setup_and_skips_games_without_a_winner():
+def test_d2_reads_the_view_of_the_seat_to_act_once_a_decided_game_and_skips_games_without_a_winner():
     seen = []
 
-    def value(g, seat):
-        seen.append((g.phase, seat))
+    def value(g, viewer):
+        seen.append((g.phase, viewer))
         return [0.1, 0.2, 0.3, 0.4]
 
     d = Diagnosis(value)
-    d.add(replay_setup(fixed_game(0, winner=3)))
-    d.add(replay_setup(fixed_game(1, winner=None)))
-    assert seen == [("pre_roll", seat) for seat in range(4)]
+    decided, undecided = replay_setup(fixed_game(0, winner=3)), replay_setup(fixed_game(1, winner=None))
+    d.add(decided)
+    d.add(undecided)
+    # One call, for the decided game, viewed by whoever acts after the setup; each seat's entry is
+    # its own index into that one answer.
+    assert seen == [("pre_roll", decided.after.current_actor)]
     assert d.calibration["no ore"] == [(0.4, True)]
     assert sorted(d.calibration["all five"]) == [(0.1, False), (0.3, False)]
     assert d.calibration["no wood or no brick"] == [(0.2, False)]
@@ -167,6 +170,21 @@ def test_cli_refuses_bad_arguments_before_reading_or_playing(tmp_path, nets, arg
     d = write_dir(tmp_path / "gen", [fixed_game()])
     r = cli("opening-diagnose", *[str(d) if a == "DIR" else a for a in args], "--nets-dir", str(nets))
     assert r.returncode == 2 and message in r.stderr, r.stderr
+
+
+def test_a_truncated_record_file_is_an_error_naming_the_file(tmp_path, nets):
+    d = write_dir(tmp_path / "gen", [fixed_game(s) for s in range(40)])
+    path = truncate(d)
+    r = cli("opening-diagnose", "--games", str(d), "--net", "tiny", "--nets-dir", str(nets))
+    assert r.returncode == 2 and str(path) in r.stderr and "cannot read the records" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr
+
+
+def test_a_record_missing_a_field_is_an_error_naming_the_file(tmp_path, nets):
+    broken = {k: v for k, v in fixed_game(1).items() if k != "winner"}
+    d = write_dir(tmp_path / "gen", [broken])
+    r = cli("opening-diagnose", "--games", str(d), "--net", "tiny", "--nets-dir", str(nets))
+    assert r.returncode == 2 and "selfplay-fixed.jsonl.gz: a record has no winner field" in r.stderr, r.stderr
 
 
 def test_the_diagnosis_does_not_import_torch():

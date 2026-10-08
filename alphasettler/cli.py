@@ -584,6 +584,8 @@ def _opening_train(args) -> int:
     out = Path(args.out)
     if out.exists():
         raise ValueError(f"{out} already exists; write the opening model to a new path")
+    if not out.parent.is_dir():
+        raise ValueError(f"{out.parent} is not a directory; write the opening model into an existing one")
     if args.compare_net is not None:
         resolve_net(args.compare_net, args.nets_dir)  # a bad net fails now, before the games are read
     cfg = OpeningConfig(seed=args.seed)

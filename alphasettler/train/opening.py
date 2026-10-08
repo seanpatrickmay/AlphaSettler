@@ -120,7 +120,8 @@ def load_samples(dirs: list[Path], compare: Callable[[Game, int], list[float]] |
     """(training samples, held-out samples, counts) from every record file in `dirs`. With
     `compare(game, seat)` (four win probabilities by absolute seat), each held-out sample keeps
     -ln(its probability of the winner). ValueError naming the file for a record that does not replay,
-    and for a directory with no records, or no training or no held-out samples at all."""
+    a record missing a field, or a file cut short or garbled; and for a directory with no records, or
+    no training or no held-out samples at all."""
     train, held = _Builder(False), _Builder(compare is not None)
     counts = {"games": 0, "no_winner": 0, "held_out_games": 0}
     for d in dirs:
@@ -128,17 +129,21 @@ def load_samples(dirs: list[Path], compare: Callable[[Game, int], list[float]] |
         if not paths:
             raise ValueError(f"no record files (*.jsonl.gz) in {d}")
         for path in paths:
-            for rec in records.read(path):
+            for rec in records.read_named(path):
                 counts["games"] += 1
-                if rec["winner"] is None:
+                try:
+                    winner, seed = rec["winner"], rec["seed"]
+                except KeyError as e:
+                    raise ValueError(f"{path}: a record has no {e.args[0]} field") from None
+                if winner is None:
                     counts["no_winner"] += 1
                     continue
-                is_held = rec["seed"] % HELD_OUT_EVERY == 0
+                is_held = seed % HELD_OUT_EVERY == 0
                 try:
                     setup = replay_setup(rec, features=True, value=compare if is_held else None)
                 except ValueError as e:
                     raise ValueError(f"{path}: {e}") from None
-                (held if is_held else train).add(setup, rec["winner"])
+                (held if is_held else train).add(setup, winner)
                 counts["held_out_games"] += is_held
     where = ", ".join(str(d) for d in dirs)
     if len(train.y) == 0:

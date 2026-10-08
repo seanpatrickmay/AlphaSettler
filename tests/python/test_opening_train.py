@@ -19,7 +19,7 @@ from alphasettler.opening import SETUP_ACTIONS, model_bytes, replay_setup, write
 from alphasettler.selfplay import write_explore
 from alphasettler.train import opening as topen
 from alphasettler.train.opening import OpeningConfig, OpeningNet, Samples, fit, load_samples
-from opening_games import FIXED_ACTIONS, FIXED_NODES, fixed_game, write_dir
+from opening_games import FIXED_ACTIONS, FIXED_NODES, fixed_game, truncate, write_dir
 from test_train import cli, write_games
 
 SEATS_IN_PICK_ORDER = [0, 1, 2, 3, 3, 2, 1, 0]
@@ -80,6 +80,16 @@ def test_directories_without_records_training_or_held_out_games_are_errors(tmp_p
     bad = write_dir(tmp_path / "bad", [{**fixed_game(1), "actions": FIXED_ACTIONS[:3]}])
     with pytest.raises(ValueError, match=r"selfplay-fixed\.jsonl\.gz: game 1: 3 actions"):
         load_samples([bad])
+
+
+def test_a_truncated_or_incomplete_record_file_is_an_error_naming_the_file(tmp_path):
+    cut = write_dir(tmp_path / "cut", [fixed_game(s) for s in range(40)])
+    path = truncate(cut)
+    with pytest.raises(ValueError, match=rf"{re.escape(str(path))}: cannot read the records"):
+        load_samples([cut])
+    broken = {k: v for k, v in fixed_game(1).items() if k != "winner"}
+    with pytest.raises(ValueError, match=r"selfplay-fixed\.jsonl\.gz: a record has no winner field"):
+        load_samples([write_dir(tmp_path / "broken", [broken])])
 
 
 def random_setup_features(seeds):
@@ -179,3 +189,11 @@ def test_cli_opening_train_checks_the_compare_net_before_reading_games(tmp_path)
             "--nets-dir", str(tmp_path))
     assert r.returncode == 2 and "cannot read" in r.stderr
     assert not out.exists()
+
+
+def test_cli_opening_train_checks_the_output_directory_before_reading_games(tmp_path):
+    d = write_dir(tmp_path / "gen", [{**fixed_game(0), "actions": []}])  # reading it would fail otherwise
+    out = tmp_path / "no-such-dir" / "opening.bin"
+    r = cli("opening-train", "--games", str(d), "--out", str(out), "--nets-dir", str(tmp_path))
+    assert r.returncode == 2 and f"{out.parent} is not a directory" in r.stderr, r.stderr
+    assert not out.parent.exists()

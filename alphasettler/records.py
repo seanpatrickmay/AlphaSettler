@@ -6,6 +6,7 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -50,10 +51,24 @@ def write(path: str | Path, games: list[dict], config: dict) -> None:
             w.write_game(g, config)
 
 
+# What reading a cut-short or garbled file raises: gzip framing, deflate data, text, JSON. Only
+# these end a file early; anything else (an OSError such as a permission error, MemoryError, a
+# bug) propagates.
+READ_ERRORS = (EOFError, gzip.BadGzipFile, zlib.error, UnicodeDecodeError, json.JSONDecodeError)
+
+
 def read(path: str | Path) -> Iterator[dict]:
     with gzip.open(path, "rt") as f:
         for line in f:
             yield json.loads(line)
+
+
+def read_named(path: str | Path) -> Iterator[dict]:
+    """`read`, but a cut-short or garbled file raises ValueError naming `path` (and the damage)."""
+    try:
+        yield from read(path)
+    except READ_ERRORS as e:
+        raise ValueError(f"{path}: cannot read the records: {type(e).__name__}: {e}") from e
 
 
 def _plain(x):

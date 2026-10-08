@@ -7,7 +7,8 @@ pips are the dice dots of the tiles its settlements touch (a tile two of them to
   for "no wood and brick"); per group, the share of openings where such a spot was within 0..3
   pips at either pick, and the share with none at all.
 - D2, misjudged: a net's win probability for each seat right after the setup (before the first
-  roll), from that seat's own view, against the seat's result, per group. Games without a winner
+  roll), from the view of the seat to act (the view search evaluates every leaf from; right after
+  the setup everything is public), against the seat's result, per group. Games without a winner
   are left out.
 - D3, search budget: the setup settlements of games drawn from one directory, re-chosen from the
   recorded position by the net at larger budgets (a fresh bot: setup positions hide nothing).
@@ -98,7 +99,8 @@ def gap(setup: Setup, seat: int) -> int | None:
 
 class Diagnosis:
     """D1 and D2 gathered a game at a time, so the records are never all in memory. `value(game,
-    seat)` gives four win probabilities by absolute seat; None skips D2."""
+    viewer)` gives four win probabilities by absolute seat as `viewer` sees the game; D2 calls it
+    once a decided game, with the seat to act. None skips D2."""
 
     def __init__(self, value: Callable[[Game, int], list[float]] | None):
         self.value = value
@@ -109,13 +111,17 @@ class Diagnosis:
     def add(self, setup: Setup) -> None:
         self.games += 1
         self.no_winner += setup.winner is None
+        # One view for every seat: the seat to act's, as search evaluates every leaf.
+        probabilities = None
+        if setup.winner is not None and self.value is not None:
+            probabilities = self.value(setup.after, setup.after.current_actor)
         for seat in range(SEATS):
             self.seats += 1
             g = group(setup.board, setup.nodes(seat))
             if g in self.gaps:
                 self.gaps[g].append(gap(setup, seat))
-            if setup.winner is not None and self.value is not None:
-                self.calibration[g].append((self.value(setup.after, seat)[seat], setup.winner == seat))
+            if probabilities is not None:
+                self.calibration[g].append((probabilities[seat], setup.winner == seat))
 
 
 def _share(k: int, n: int) -> str:
@@ -163,8 +169,8 @@ def _d2_row(label: str, pairs: list[tuple[float, bool]]) -> str:
 
 
 def d2_table(cal: dict[str, list[tuple[float, bool]]]) -> str:
-    lines = ["D2, misjudged: the net's win probability for each seat after the setup, from its own view, "
-             "against its result (decided games)", "",
+    lines = ["D2, misjudged: the net's win probability for each seat after the setup, from the view of the seat "
+             "to act, against its result (decided games)", "",
              "| group | seats | predicted | actual | gap | se |", "|---|---|---|---|---|---|"]
     lines += [_d2_row(g, cal[g]) for g in GROUPS]
     lines.append(_d2_row("weak groups", [x for g in WEAK for x in cal[g]]))
@@ -303,12 +309,13 @@ def diagnose(dirs: Sequence[Path], net: str, nets_dir: str, audit_games: int, bu
     for 0), and the verdict, as one Markdown report."""
     d = Diagnosis(lambda g, seat: net_evaluate(g, seat, net, nets_dir))
     for path in _files(dirs):
-        for rec in records.read(path):
+        for rec in records.read_named(path):
             d.add(_replay(path, rec))
     parts = [f"{d.games} games ({d.no_winner} without a winner), {d.seats} openings, from "
              f"{', '.join(str(x) for x in dirs)}; net {net}", d1_table(d.gaps), d2_table(d.calibration)]
     if audit_games > 0:
-        recs = sorted(((p, r) for p in _files(dirs[-1:]) for r in records.read(p)), key=lambda pr: pr[1]["seed"])
+        recs = sorted(((p, r) for p in _files(dirs[-1:]) for r in records.read_named(p)),
+                      key=lambda pr: pr[1]["seed"])
         drawn = random.Random(AUDIT_SEED).sample(recs, min(audit_games, len(recs)))
         setups = [_replay(p, r, keep_positions=True) for p, r in drawn]
         parts.append(d3_table(audit(setups, net, nets_dir, budgets, threads), len(setups), net, dirs[-1]))

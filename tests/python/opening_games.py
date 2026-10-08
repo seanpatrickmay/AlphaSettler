@@ -31,3 +31,13 @@ def write_dir(path: Path, games: list[dict]) -> Path:
     """`games` as the record file `path/selfplay-fixed.jsonl.gz` (each keeps its own config)."""
     records.write(Path(path) / "selfplay-fixed.jsonl.gz", games, {})
     return Path(path)
+
+
+def truncate(path_or_dir: Path) -> Path:
+    """Cut the record file (or the one in the directory `write_dir` made) short, as a copy that died
+    mid-write would be; returns the file."""
+    path = Path(path_or_dir)
+    if path.is_dir():
+        path = path / "selfplay-fixed.jsonl.gz"
+    path.write_bytes(path.read_bytes()[:-20])
+    return path

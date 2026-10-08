@@ -3,6 +3,8 @@ opening model file, net_evaluate, and bots acting from several Python threads at
 
 import math
 import struct
+import threading
+import time
 from array import array
 from concurrent.futures import ThreadPoolExecutor
 
@@ -159,3 +161,23 @@ def test_bots_act_from_several_threads_as_they_do_one_at_a_time(nets):
     one_at_a_time = [setup(s) for s in range(6)]
     with ThreadPoolExecutor(3) as ex:
         assert list(ex.map(setup, range(6))) == one_at_a_time
+
+
+def test_a_game_can_be_played_on_while_a_bot_decides_on_it(nets):
+    """Bot.act lets go of the game before it releases the GIL, so another thread's `apply` is not
+    refused as a second borrow while the bot searches. (If the search ends first the test passes
+    trivially: it cannot fail wrongly, only miss.)"""
+    g = Game(0, TRADES)
+    bot = Bot("net:tiny@200000", 0, nets_dir=str(nets))
+    started = threading.Event()
+
+    def decide():
+        started.set()
+        return bot.act(g)
+
+    with ThreadPoolExecutor(1) as ex:
+        decision = ex.submit(decide)
+        started.wait()
+        time.sleep(0.05)
+        g.apply(g.legal_actions()[0])  # RuntimeError (already borrowed) if act still held the game
+        assert decision.result() in range(SETTLEMENT, SETTLEMENT + 54)

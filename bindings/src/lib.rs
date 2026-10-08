@@ -202,6 +202,9 @@ impl PyBot {
             return Err(value_error("no legal actions in this position"));
         }
         let obs = s.observation(s.current_actor());
+        // `obs` and `legal` are owned: let go of the game's borrow before the GIL is released, so
+        // another Python thread can `apply` to this game while the bot searches.
+        drop(game);
         let a = py
             .detach(|| {
                 let mut bot = self.inner.lock().map_err(|_| ())?;

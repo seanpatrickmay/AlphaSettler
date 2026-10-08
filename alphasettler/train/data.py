@@ -16,9 +16,6 @@ all training data."""
 
 from __future__ import annotations
 
-import gzip
-import json
-import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,10 +32,8 @@ NOTICE_SEEDS = 5
 # The newest generation's games with seed % HELD_OUT_EVERY == 0 are the validation set (spec Section 4).
 HELD_OUT_EVERY = 20
 
-# What reading a cut-short or garbled file raises: gzip framing, deflate data, text, JSON. Only
-# these end a file early; anything else (an OSError such as a permission error, MemoryError, a
-# bug) propagates.
-_READ_ERRORS = (EOFError, gzip.BadGzipFile, zlib.error, UnicodeDecodeError, json.JSONDecodeError)
+# What reading a cut-short or garbled file raises (see `records.READ_ERRORS`).
+_READ_ERRORS = records.READ_ERRORS
 
 
 # Finished record files in a generation directory (it lives in `records`, which needs no torch).

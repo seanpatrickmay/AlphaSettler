@@ -66,7 +66,11 @@ class Setup:
 def replay_setup(record: dict, *, features: bool = False, value: Callable[[Game, int], list[float]] | None = None,
                  keep_positions: bool = False) -> Setup:
     """The setup of `record` (a self-play record: `seed`, `config`, `actions`, `winner`). ValueError
-    naming the game's seed if its first 16 actions are not a legal setup."""
+    naming the game's seed if its first 16 actions are not a legal setup, or naming the missing
+    fields if the record lacks any."""
+    missing = [k for k in ("seed", "config", "actions", "winner") if k not in record]
+    if missing:
+        raise ValueError(f"a record has no {', '.join(missing)} field" + ("s" if len(missing) > 1 else ""))
     seed = record["seed"]
     actions = record["actions"]
     if len(actions) < SETUP_ACTIONS:
