@@ -351,6 +351,9 @@ fn game_dict<'py>(
         )?;
         e.set_item("visits", dec.visits.clone())?;
         e.set_item("full_search", dec.full_search)?;
+        if let Some(t) = &dec.target {
+            e.set_item("target", t.clone())?;
+        }
         if observations {
             while applied < dec.index as usize {
                 s.apply(g.actions[applied]);
@@ -421,10 +424,13 @@ fn selfplay<'py>(
 
 /// 3b self-play (spec Section 4): playout cap randomization (`full_simulations` with
 /// probability `full_probability`, else `fast_simulations`), root noise on full searches and
-/// opening sampling. With `net`, every seat is the network `<nets_dir>/<net>.bin` (loaded once);
-/// otherwise the heuristic. Decisions carry no observations. Releases the GIL while games run.
+/// opening sampling. With `gumbel` (a simulation count), every move is instead a Gumbel root
+/// search of that many simulations, recorded with its improved policy as `target` (spec P2
+/// Section 5); the three PUCT arguments are then not used. With `net`, every seat is the network
+/// `<nets_dir>/<net>.bin` (loaded once); otherwise the heuristic. Decisions carry no
+/// observations. Releases the GIL while games run.
 #[pyfunction]
-#[pyo3(signature = (seed_start, games, threads, full_simulations, fast_simulations, full_probability, config=None, net=None, nets_dir=None))]
+#[pyo3(signature = (seed_start, games, threads, full_simulations, fast_simulations, full_probability, config=None, net=None, nets_dir=None, gumbel=None))]
 #[allow(clippy::too_many_arguments)]
 fn selfplay_explore<'py>(
     py: Python<'py>,
@@ -437,6 +443,7 @@ fn selfplay_explore<'py>(
     config: Option<&Bound<'py, PyDict>>,
     net: Option<&str>,
     nets_dir: Option<PathBuf>,
+    gumbel: Option<&Bound<'py, PyAny>>,
 ) -> PyResult<Bound<'py, PyList>> {
     use settler_bots::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
     use settler_bots::netbot::{load_net, DEFAULT_NETS_DIR, NET_BATCH};
@@ -445,11 +452,14 @@ fn selfplay_explore<'py>(
     let seed_start: u64 = int_arg(seed_start, "seed_start")?;
     let games: u64 = int_arg(games, "games")?;
     let threads: usize = int_arg(threads, "threads")?;
-    let ex = Exploration {
-        full_simulations: int_arg(full_simulations, "full_simulations")?,
-        fast_simulations: int_arg(fast_simulations, "fast_simulations")?,
-        full_probability,
-        ..Exploration::standard()
+    let ex = match gumbel {
+        Some(n) => Exploration::gumbel(int_arg(n, "gumbel")?),
+        None => Exploration {
+            full_simulations: int_arg(full_simulations, "full_simulations")?,
+            fast_simulations: int_arg(fast_simulations, "fast_simulations")?,
+            full_probability,
+            ..Exploration::standard()
+        },
     };
     ex.validate().map_err(value_error)?;
     if games == 0 {

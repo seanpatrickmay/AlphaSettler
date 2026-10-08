@@ -5,6 +5,8 @@
 //! 3c: every seat may offer exactly when the game allows offers (the trading game's self-play has
 //! every seat `+t`), and offers, answers and confirmations are recorded like any other searched
 //! decision.
+//! P2: Gumbel self-play (`Exploration::gumbel`) searches every move with the Gumbel root and
+//! records its improved policy as the decision's `target`.
 
 use crate::arena::{belief_resets, bot_seed, split_seeds, EventFeed, MAX_SEEDS};
 use crate::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
@@ -13,7 +15,7 @@ use crate::Bot;
 use settler_engine::legal::legal_actions;
 use settler_engine::rng::{mix, Rng};
 use settler_engine::{Action, GameConfig, PlayerId, State, NUM_PLAYERS};
-use settler_search::{unit, Evaluator, RootNoise, SearchConfig};
+use settler_search::{unit, Evaluator, RootMode, RootNoise, SearchConfig};
 use std::ops::Range;
 
 /// Fewest simulations self-play accepts: the first simulation only evaluates the root, so with
@@ -40,6 +42,9 @@ pub struct Decision {
     pub visits: Vec<u32>,
     /// A full search (a policy target); false for a fast search (a value target only).
     pub full_search: bool,
+    /// Gumbel self-play: the search's improved policy, aligned with `legal` and summing to 1
+    /// (spec P2 Section 5); `None` otherwise.
+    pub target: Option<Vec<f32>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -66,6 +71,10 @@ pub struct Exploration {
     /// Moves made while the engine's turn counter is below this (setup is turn 0) are drawn in
     /// proportion to root visits; later moves are the most-visited.
     pub sample_turns: u32,
+    /// Gumbel root search on every move (spec P2 Section 5), with Gumbel draws, each a full
+    /// search of `full_simulations` recorded with its improved policy. Noise, playout cap
+    /// randomization and visit sampling must be off: the draw is the exploration (`validate`).
+    pub gumbel: bool,
 }
 
 impl Exploration {
@@ -77,6 +86,7 @@ impl Exploration {
             full_probability: 1.0,
             noise: None,
             sample_turns: 0,
+            gumbel: false,
         }
     }
 
@@ -88,6 +98,20 @@ impl Exploration {
             full_probability: FULL_PROBABILITY,
             noise: Some(NOISE),
             sample_turns: SAMPLE_TURNS,
+            gumbel: false,
+        }
+    }
+
+    /// P2: every move a Gumbel search of `simulations` with Gumbel draws; every search full, no
+    /// noise, no sampled turns.
+    pub fn gumbel(simulations: u32) -> Exploration {
+        Exploration {
+            full_simulations: simulations,
+            fast_simulations: simulations,
+            full_probability: 1.0,
+            noise: None,
+            sample_turns: 0,
+            gumbel: true,
         }
     }
 
@@ -110,6 +134,18 @@ impl Exploration {
                 self.full_probability
             ));
         }
+        if self.gumbel
+            && (self.noise.is_some()
+                || self.sample_turns > 0
+                || self.full_probability != 1.0
+                || self.fast_simulations != self.full_simulations)
+        {
+            return Err(
+                "Gumbel self-play searches every move in full, with no root noise and no \
+                        visit sampling: the Gumbel draw is the exploration"
+                    .into(),
+            );
+        }
         Ok(())
     }
 }
@@ -131,6 +167,12 @@ where
         simulations: ex.full_simulations,
         batch,
         offers: config.max_offers_per_turn > 0,
+        // Gumbel self-play (spec P2 Section 5): every search draws its own Gumbel noise.
+        root: if ex.gumbel {
+            RootMode::Gumbel { draw: true }
+        } else {
+            RootMode::Puct
+        },
         ..SearchConfig::default()
     };
     let mut bots: Vec<IsmctsBot<E>> = (0..NUM_PLAYERS)
@@ -170,6 +212,7 @@ where
                 legal: buf.clone(),
                 visits: r.visits,
                 full_search: full,
+                target: r.improved,
             });
         }
         actions.push(a);

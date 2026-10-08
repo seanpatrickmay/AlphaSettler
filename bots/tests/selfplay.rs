@@ -288,6 +288,99 @@ fn standard_exploration_plays_the_games_it_played_before_p2() {
     );
 }
 
+#[test]
+fn gumbel_self_play_records_an_improved_policy_on_every_searched_decision() {
+    let ex = Exploration::gumbel(8);
+    assert!(ex.validate().is_ok());
+    for (seed, config) in [(0, no_trades()), (1, no_trades()), (2, trading())] {
+        let g = play_with(seed, config, &ex, 8, &heuristic);
+        assert_eq!(g.belief_resets, 0, "seed {seed}");
+        assert!(!g.decisions.is_empty());
+        let mut s = State::new(seed, config);
+        let mut decisions = g.decisions.iter().peekable();
+        for (i, &a) in g.actions.iter().enumerate() {
+            if let Some(d) = decisions.next_if(|d| d.index as usize == i) {
+                assert_eq!(d.legal, s.legal_actions());
+                assert!(d.full_search, "seed {seed} move {i}");
+                assert_eq!(d.visits.iter().sum::<u32>(), 7, "seed {seed} move {i}");
+                let t = d
+                    .target
+                    .as_ref()
+                    .expect("a Gumbel search records its improved policy");
+                assert_eq!(t.len(), d.legal.len());
+                assert!(t.iter().all(|x| x.is_finite() && *x >= 0.0));
+                let total: f64 = t.iter().map(|&x| x as f64).sum();
+                assert!((total - 1.0).abs() < 1e-4, "seed {seed} move {i}: {total}");
+            }
+            s.apply(a);
+        }
+    }
+}
+
+#[test]
+fn gumbel_self_play_is_deterministic_and_thread_independent() {
+    let ex = Exploration::gumbel(6);
+    let a = run_with(0..4, no_trades(), &ex, 8, &heuristic, 1).unwrap();
+    assert_eq!(
+        a,
+        run_with(0..4, no_trades(), &ex, 8, &heuristic, 3).unwrap()
+    );
+    assert_ne!(
+        a[0].actions,
+        play_with(0, no_trades(), &Exploration::fixed(6), 8, &heuristic).actions,
+        "the Gumbel root plays other games"
+    );
+}
+
+#[test]
+fn gumbel_self_play_refuses_noise_sampling_and_fast_searches() {
+    let ex = Exploration::gumbel(100);
+    assert_eq!(
+        (
+            ex.full_simulations,
+            ex.fast_simulations,
+            ex.full_probability,
+            ex.noise,
+            ex.sample_turns,
+            ex.gumbel
+        ),
+        (100, 100, 1.0, None, 0, true)
+    );
+    assert!(!Exploration::standard().gumbel && !Exploration::fixed(5).gumbel);
+    for bad in [
+        Exploration {
+            noise: Some(NOISE),
+            ..ex
+        },
+        Exploration {
+            sample_turns: 1,
+            ..ex
+        },
+        Exploration {
+            full_probability: 0.25,
+            ..ex
+        },
+        Exploration {
+            fast_simulations: 50,
+            ..ex
+        },
+        Exploration {
+            gumbel: true,
+            ..Exploration::standard()
+        },
+        Exploration::gumbel(1),
+    ] {
+        assert!(bad.validate().is_err(), "{bad:?}");
+        assert!(run_with(0..1, no_trades(), &bad, 8, &heuristic, 1).is_err());
+    }
+}
+
+#[test]
+fn puct_self_play_records_no_target() {
+    let g = play_with(2, trading(), &small_explore(), 8, &heuristic);
+    assert!(g.decisions.iter().all(|d| d.target.is_none()));
+}
+
 /// Noise is drawn only for full searches: with no full searches, noise on or off plays the same
 /// games (fast searches stay un-noised).
 #[test]

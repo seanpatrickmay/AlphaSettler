@@ -15,6 +15,7 @@ from alphasettler._engine import (
 from alphasettler.selfplay import write_explore
 
 CONFIG = {"max_offers_per_turn": 0}
+TRADING = {"max_offers_per_turn": 2, "max_trade_cards": 1}
 A = action_space_size()
 
 
@@ -66,6 +67,31 @@ def test_record_files_are_byte_identical_for_the_same_games(tmp_path):
     explore_games(tmp_path, 2, name="a.jsonl.gz")
     explore_games(tmp_path, 2, name="b.jsonl.gz")
     assert (tmp_path / "a.jsonl.gz").read_bytes() == (tmp_path / "b.jsonl.gz").read_bytes()
+
+
+@pytest.mark.parametrize("config", [CONFIG, TRADING], ids=["no-trades", "trading"])
+def test_gumbel_self_play_records_an_improved_policy_on_every_decision(tmp_path, config):
+    games = explore_games(tmp_path, 2, config=config, gumbel=6)
+    for g in games:
+        assert g["selfplay"] == {"bot": "ismcts", "net": None, "net_sha256": None, "gumbel_simulations": 6,
+                                 "batch": SEARCH_BATCH}
+        assert g["belief_resets"] == 0 and records.replay_mismatches(g) == []
+        assert g["decisions"]
+        for d in g["decisions"]:
+            assert d["full_search"] is True and sum(d["visits"]) == 5
+            assert len(d["target"]) == len(d["legal"]) and min(d["target"]) >= 0
+            assert sum(d["target"]) == pytest.approx(1.0, abs=1e-4)
+
+
+def test_plain_self_play_records_carry_no_target(tmp_path):
+    assert all("target" not in d for g in explore_games(tmp_path, 2) for d in g["decisions"])
+
+
+def test_gumbel_self_play_needs_at_least_two_simulations(tmp_path):
+    with pytest.raises(ValueError, match="gumbel simulations"):
+        write_explore(tmp_path / "no.jsonl.gz", 0, 1, config=CONFIG, full_simulations=6, fast_simulations=3,
+                      full_probability=0.25, gumbel=1)
+    assert not (tmp_path / "no.jsonl.gz").exists()
 
 
 def policy_id(action: int, actor: int) -> int:
