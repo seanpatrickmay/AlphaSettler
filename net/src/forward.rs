@@ -94,7 +94,7 @@ fn dense(l: &Layer, x: &[f32], n: usize, relu: bool, y: &mut Vec<f32>) {
             y.extend_from_slice(&l.b);
         }
         if n > 0 {
-            accelerate::gemm_xwt(x, &l.w, n, l.rows, l.cols, y);
+            accelerate::gemm_xwt(x, &l.w, n, l.rows, l.cols, 0, l.cols, y);
         }
         if relu {
             for v in y.iter_mut() {
@@ -154,14 +154,27 @@ mod accelerate {
         );
     }
 
-    /// `y += x · wᵀ`: `x` is `n × cols`, `w` is `rows × cols` (row-major, rows = outputs), `y` is
-    /// `n × rows`.
-    pub fn gemm_xwt(x: &[f32], w: &[f32], n: usize, rows: usize, cols: usize, y: &mut [f32]) {
-        assert!(x.len() == n * cols && w.len() == rows * cols && y.len() == n * rows);
+    /// `y += x · w[.., at..at + k]ᵀ`: `x` is `n × k`, `w` is `rows × cols` (row-major, rows =
+    /// outputs) of which the `k` columns from `at` are used, `y` is `n × rows`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_xwt(
+        x: &[f32],
+        w: &[f32],
+        n: usize,
+        rows: usize,
+        cols: usize,
+        at: usize,
+        k: usize,
+        y: &mut [f32],
+    ) {
+        assert!(
+            x.len() == n * k && y.len() == n * rows && at + k <= cols && w.len() == rows * cols
+        );
         let dim = |v: usize| i32::try_from(v).expect("matrix dimension fits in i32");
-        // SAFETY: the three slices hold exactly the n × cols, rows × cols and n × rows floats the
-        // call reads and writes (checked above), with the leading dimensions of their row-major
-        // layout; cblas_sgemm touches nothing else.
+        // SAFETY: x holds the n × k floats read, y the n × rows floats written (checked above);
+        // the B operand starts at column `at` of the rows × cols row-major `w`, and with leading
+        // dimension `cols` its last read is w[(rows - 1) · cols + at + k - 1], inside `w` because
+        // at + k <= cols. cblas_sgemm touches nothing else.
         unsafe {
             cblas_sgemm(
                 ROW_MAJOR,
@@ -169,11 +182,11 @@ mod accelerate {
                 TRANS,
                 dim(n),
                 dim(rows),
-                dim(cols),
+                dim(k),
                 1.0,
                 x.as_ptr(),
-                dim(cols),
-                w.as_ptr(),
+                dim(k),
+                w.as_ptr().add(at),
                 dim(cols),
                 1.0,
                 y.as_mut_ptr(),
@@ -183,11 +196,11 @@ mod accelerate {
     }
 }
 
-/// x ← x + ReLU(layer(input)) for `n` rows: a round's residual update.
-fn residual(l: &Layer, input: &[f32], n: usize, y: &mut Vec<f32>, x: &mut [f32]) {
-    dense(l, input, n, true, y);
-    for (v, d) in x.iter_mut().zip(y.iter()) {
-        *v += *d;
+/// x ← x + ReLU(y): a round's residual update, `y` being the layer's output before its ReLU.
+fn add_relu(x: &mut [f32], y: &[f32]) {
+    debug_assert_eq!(x.len(), y.len());
+    for (v, d) in x.iter_mut().zip(y) {
+        *v += d.max(0.0);
     }
 }
 
@@ -204,6 +217,58 @@ fn block(public: &[f32], n: usize, base: usize, count: usize, width: usize, out:
 /// For each position and each entity `j` of `links`: `scale[j]` × the sum, in link order, of the
 /// `d`-float rows of `src` (`src_count` rows per position) it links to. `n × links.count()` rows.
 fn aggregate(links: &Links, src: &[f32], src_count: usize, n: usize, d: usize, out: &mut Vec<f32>) {
+    match d {
+        32 => aggregate_w::<32>(links, src, src_count, n, out),
+        48 => aggregate_w::<48>(links, src, src_count, n, out),
+        64 => aggregate_w::<64>(links, src, src_count, n, out),
+        96 => aggregate_w::<96>(links, src, src_count, n, out),
+        _ => aggregate_any(links, src, src_count, n, d, out),
+    }
+}
+
+/// `aggregate` at a width known at compile time, so each row's sum is straight vector adds. The
+/// same additions in the same order as `aggregate_any`: bit for bit the same result.
+fn aggregate_w<const D: usize>(
+    links: &Links,
+    src: &[f32],
+    src_count: usize,
+    n: usize,
+    out: &mut Vec<f32>,
+) {
+    let count = links.count();
+    out.clear();
+    out.resize(n * count * D, 0.0);
+    for (s, pos) in src
+        .chunks_exact(src_count * D)
+        .zip(out.chunks_exact_mut(count * D))
+        .take(n)
+    {
+        for (j, o) in pos.chunks_exact_mut(D).enumerate() {
+            let mut acc = [0.0f32; D];
+            for &k in links.of(j) {
+                let row: &[f32; D] = s[k as usize * D..(k as usize + 1) * D]
+                    .try_into()
+                    .expect("D floats");
+                for t in 0..D {
+                    acc[t] += row[t];
+                }
+            }
+            let scale = links.scale[j];
+            for (v, a) in o.iter_mut().zip(acc) {
+                *v = a * scale;
+            }
+        }
+    }
+}
+
+fn aggregate_any(
+    links: &Links,
+    src: &[f32],
+    src_count: usize,
+    n: usize,
+    d: usize,
+    out: &mut Vec<f32>,
+) {
     let count = links.count();
     out.clear();
     out.resize(n * count * d, 0.0);
@@ -227,6 +292,34 @@ fn aggregate(links: &Links, src: &[f32], src_count: usize, n: usize, d: usize, o
 
 /// The mean of each position's `count` rows of `src`: `n` rows of `d`.
 fn mean_rows(src: &[f32], count: usize, n: usize, d: usize, out: &mut Vec<f32>) {
+    match d {
+        32 => mean_rows_w::<32>(src, count, n, out),
+        48 => mean_rows_w::<48>(src, count, n, out),
+        64 => mean_rows_w::<64>(src, count, n, out),
+        96 => mean_rows_w::<96>(src, count, n, out),
+        _ => mean_rows_any(src, count, n, d, out),
+    }
+}
+
+/// `mean_rows` at a compile-time width: the same sums, in the same order, as `mean_rows_any`.
+fn mean_rows_w<const D: usize>(src: &[f32], count: usize, n: usize, out: &mut Vec<f32>) {
+    out.clear();
+    out.resize(n * D, 0.0);
+    for (o, rows) in out.chunks_exact_mut(D).zip(src.chunks_exact(count * D)) {
+        let mut acc = [0.0f32; D];
+        for r in rows.chunks_exact(D) {
+            let r: &[f32; D] = r.try_into().expect("D floats");
+            for t in 0..D {
+                acc[t] += r[t];
+            }
+        }
+        for (v, a) in o.iter_mut().zip(acc) {
+            *v = a / count as f32;
+        }
+    }
+}
+
+fn mean_rows_any(src: &[f32], count: usize, n: usize, d: usize, out: &mut Vec<f32>) {
     out.clear();
     out.resize(n * d, 0.0);
     for (o, rows) in out.chunks_exact_mut(d).zip(src.chunks_exact(count * d)) {
@@ -239,6 +332,35 @@ fn mean_rows(src: &[f32], count: usize, n: usize, d: usize, out: &mut Vec<f32>) 
             *v /= count as f32;
         }
     }
+}
+
+/// `aggregate` and `mean_rows` at any width, for the test that checks the fixed-width versions
+/// give the same bits.
+pub fn aggregate_any_for_tests(
+    links: &Links,
+    src: &[f32],
+    src_count: usize,
+    n: usize,
+    d: usize,
+    out: &mut Vec<f32>,
+) {
+    aggregate_any(links, src, src_count, n, d, out);
+}
+pub fn aggregate_for_tests(
+    links: &Links,
+    src: &[f32],
+    src_count: usize,
+    n: usize,
+    d: usize,
+    out: &mut Vec<f32>,
+) {
+    aggregate(links, src, src_count, n, d, out);
+}
+pub fn mean_rows_any_for_tests(src: &[f32], count: usize, n: usize, d: usize, out: &mut Vec<f32>) {
+    mean_rows_any(src, count, n, d, out);
+}
+pub fn mean_rows_for_tests(src: &[f32], count: usize, n: usize, d: usize, out: &mut Vec<f32>) {
+    mean_rows(src, count, n, d, out);
 }
 
 /// One input block of a layer: a row per entity, or a row per position shared by its entities.
@@ -260,6 +382,115 @@ fn concat(parts: &[Part<'_>], n: usize, count: usize, d: usize, out: &mut Vec<f3
             }
         }
     }
+}
+
+/// `dense` of the parts' rows side by side (`concat`) without building them: one product per
+/// part against its block of the layer's columns, and a `Shared` part's product computed once per
+/// position and added to each of its `count` entities. `n × count` rows; every part is `d` wide.
+#[allow(clippy::too_many_arguments)]
+fn dense_parts(
+    l: &Layer,
+    parts: &[Part<'_>],
+    n: usize,
+    count: usize,
+    d: usize,
+    relu: bool,
+    shared: &mut Vec<f32>,
+    y: &mut Vec<f32>,
+) {
+    debug_assert_eq!(l.cols, parts.len() * d);
+    #[cfg(target_os = "macos")]
+    {
+        let rows = l.rows;
+        // Each position's starting row: the bias, plus the shared part's product when there is
+        // one (at most one shared part: the global block).
+        shared.clear();
+        shared.reserve(n * rows);
+        for _ in 0..n {
+            shared.extend_from_slice(&l.b);
+        }
+        for (j, p) in parts.iter().enumerate() {
+            if let Part::Shared(x) = p {
+                if n > 0 {
+                    accelerate::gemm_xwt(&x[..n * d], &l.w, n, rows, l.cols, j * d, d, shared);
+                }
+            }
+        }
+        y.clear();
+        y.reserve(n * count * rows);
+        for start in shared.chunks_exact(rows) {
+            for _ in 0..count {
+                y.extend_from_slice(start);
+            }
+        }
+        for (j, p) in parts.iter().enumerate() {
+            if let Part::Each(x) = p {
+                if n * count > 0 {
+                    accelerate::gemm_xwt(
+                        &x[..n * count * d],
+                        &l.w,
+                        n * count,
+                        rows,
+                        l.cols,
+                        j * d,
+                        d,
+                        y,
+                    );
+                }
+            }
+        }
+        if relu {
+            for v in y.iter_mut() {
+                *v = v.max(0.0);
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        concat(parts, n, count, d, shared);
+        dense_portable(l, shared, n * count, relu, y);
+    }
+}
+
+/// `dense_parts` itself, for the test that compares it with `concat` + `dense_portable`.
+#[allow(clippy::too_many_arguments)]
+pub fn dense_parts_for_tests(
+    l: &Layer,
+    each: &[&[f32]],
+    shared_parts: &[(usize, &[f32])],
+    n: usize,
+    count: usize,
+    d: usize,
+    relu: bool,
+    y: &mut Vec<f32>,
+) {
+    let mut parts: Vec<Part<'_>> = each.iter().map(|x| Part::Each(x)).collect();
+    for &(at, x) in shared_parts {
+        parts.insert(at, Part::Shared(x));
+    }
+    let mut scratch = Vec::new();
+    dense_parts(l, &parts, n, count, d, relu, &mut scratch, y);
+}
+
+/// `concat` then `dense_portable`: the reference `dense_parts_for_tests` is checked against.
+#[allow(clippy::too_many_arguments)]
+pub fn concat_dense_for_tests(
+    l: &Layer,
+    each: &[&[f32]],
+    shared_parts: &[(usize, &[f32])],
+    n: usize,
+    count: usize,
+    d: usize,
+    relu: bool,
+    y: &mut Vec<f32>,
+) {
+    let mut parts: Vec<Part<'_>> = each.iter().map(|x| Part::Each(x)).collect();
+    for &(at, x) in shared_parts {
+        parts.insert(at, Part::Shared(x));
+    }
+    let mut cat = Vec::new();
+    concat(&parts, n, count, d, &mut cat);
+    dense_portable(l, &cat, n * count, relu, y);
 }
 
 impl Forward {
@@ -305,50 +536,60 @@ impl Forward {
         dense(layer(GLOBAL_ENCODER), cat, n, true, global);
 
         for r in 0..arch.rounds {
-            // tile ← [tile, mean of its nodes, global]
+            // tile ← tile + ReLU(W·[tile, mean of its nodes, global])
             aggregate(&g.tile_nodes, node, NUM_NODES, n, d, a);
-            concat(&[Each(tile), Each(a), Shared(global)], n, NUM_TILES, d, cat);
-            residual(
-                layer(arch.round_layer(r, ROUND_TILE)),
+            let l = layer(arch.round_layer(r, ROUND_TILE));
+            dense_parts(
+                l,
+                &[Each(tile), Each(a), Shared(global)],
+                n,
+                NUM_TILES,
+                d,
+                true,
                 cat,
-                n * NUM_TILES,
                 y,
-                tile,
             );
-            // node ← [node, mean of its tiles, mean of its edges, mean of its neighbours, global]
+            add_relu(tile, y);
+            // node ← node + ReLU(W·[node, mean of its tiles, mean of its edges, mean of its
+            // neighbours, global])
             aggregate(&g.node_tiles, tile, NUM_TILES, n, d, a);
             aggregate(&g.node_edges, edge, NUM_EDGES, n, d, b);
             aggregate(&g.node_neighbours, node, NUM_NODES, n, d, c);
-            concat(
-                &[Each(node), Each(a), Each(b), Each(c), Shared(global)],
-                n,
-                NUM_NODES,
-                d,
-                cat,
-            );
-            residual(
-                layer(arch.round_layer(r, ROUND_NODE)),
-                cat,
-                n * NUM_NODES,
-                y,
-                node,
-            );
-            // edge ← [edge, sum of its two nodes, global]
+            let l = layer(arch.round_layer(r, ROUND_NODE));
+            let parts = [Each(node), Each(a), Each(b), Each(c), Shared(global)];
+            dense_parts(l, &parts, n, NUM_NODES, d, false, cat, y);
+            add_relu(node, y);
+            // edge ← edge + ReLU(W·[edge, sum of its two nodes, global])
             aggregate(&g.edge_nodes, node, NUM_NODES, n, d, a);
-            concat(&[Each(edge), Each(a), Shared(global)], n, NUM_EDGES, d, cat);
-            residual(
-                layer(arch.round_layer(r, ROUND_EDGE)),
+            let l = layer(arch.round_layer(r, ROUND_EDGE));
+            dense_parts(
+                l,
+                &[Each(edge), Each(a), Shared(global)],
+                n,
+                NUM_EDGES,
+                d,
+                true,
                 cat,
-                n * NUM_EDGES,
                 y,
-                edge,
             );
-            // global ← [global, mean of the nodes, mean of the edges, mean of the tiles]
+            add_relu(edge, y);
+            // global ← global + ReLU(W·[global, mean of the nodes, mean of the edges, mean of the
+            // tiles])
             mean_rows(node, NUM_NODES, n, d, a);
             mean_rows(edge, NUM_EDGES, n, d, b);
             mean_rows(tile, NUM_TILES, n, d, c);
-            concat(&[Each(global), Each(a), Each(b), Each(c)], n, 1, d, cat);
-            residual(layer(arch.round_layer(r, ROUND_GLOBAL)), cat, n, y, global);
+            let l = layer(arch.round_layer(r, ROUND_GLOBAL));
+            dense_parts(
+                l,
+                &[Each(global), Each(a), Each(b), Each(c)],
+                n,
+                1,
+                d,
+                true,
+                cat,
+                y,
+            );
+            add_relu(global, y);
         }
 
         // pooled = [global, mean of the nodes, mean of the edges, mean of the tiles]
@@ -359,12 +600,15 @@ impl Forward {
 
         out.policy.clear();
         out.policy.resize(n * ACTION_SPACE_SIZE, 0.0);
-        concat(&[Each(node), Shared(global)], n, NUM_NODES, d, cat);
-        dense(
-            layer(arch.head_layer(NODE_POLICY)),
-            cat,
-            n * NUM_NODES,
+        let l = layer(arch.head_layer(NODE_POLICY));
+        dense_parts(
+            l,
+            &[Each(node), Shared(global)],
+            n,
+            NUM_NODES,
+            d,
             false,
+            cat,
             y,
         );
         for (p, logits) in out
@@ -377,12 +621,15 @@ impl Forward {
                 p[CITY_BASE + k] = pair[1];
             }
         }
-        concat(&[Each(edge), Shared(global)], n, NUM_EDGES, d, cat);
-        dense(
-            layer(arch.head_layer(EDGE_POLICY)),
-            cat,
-            n * NUM_EDGES,
+        let l = layer(arch.head_layer(EDGE_POLICY));
+        dense_parts(
+            l,
+            &[Each(edge), Shared(global)],
+            n,
+            NUM_EDGES,
+            d,
             false,
+            cat,
             y,
         );
         for (p, logits) in out
@@ -392,12 +639,15 @@ impl Forward {
         {
             p[ROAD_BASE..ROAD_BASE + NUM_EDGES].copy_from_slice(logits);
         }
-        concat(&[Each(tile), Shared(global)], n, NUM_TILES, d, cat);
-        dense(
-            layer(arch.head_layer(TILE_POLICY)),
-            cat,
-            n * NUM_TILES,
+        let l = layer(arch.head_layer(TILE_POLICY));
+        dense_parts(
+            l,
+            &[Each(tile), Shared(global)],
+            n,
+            NUM_TILES,
+            d,
             false,
+            cat,
             y,
         );
         for (p, logits) in out

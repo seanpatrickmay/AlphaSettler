@@ -584,3 +584,106 @@ fn an_encoder_v2_file_is_refused_with_the_way_to_upgrade_it() {
         "only v2's hash gets the hint"
     );
 }
+
+#[test]
+fn dense_over_parts_matches_concatenating_them_first() {
+    use settler_net::forward::{concat_dense_for_tests, dense_parts_for_tests};
+    let d = Arch::DEFAULT.width;
+    let w = Weights::random(Arch::DEFAULT, 5);
+    let fill = |len: usize, salt: usize| -> Vec<f32> {
+        (0..len)
+            .map(|i| (((i + salt) * 7919) % 2001) as f32 / 1000.0 - 1.0)
+            .collect()
+    };
+    // (layer, entities per position, per-entity parts, whether a shared global part comes last)
+    let arch = w.arch;
+    let cases = [
+        (
+            arch.round_layer(0, settler_net::weights::ROUND_TILE),
+            19,
+            2,
+            true,
+        ),
+        (
+            arch.round_layer(0, settler_net::weights::ROUND_NODE),
+            54,
+            4,
+            true,
+        ),
+        (
+            arch.round_layer(1, settler_net::weights::ROUND_EDGE),
+            72,
+            2,
+            true,
+        ),
+        (
+            arch.round_layer(1, settler_net::weights::ROUND_GLOBAL),
+            1,
+            4,
+            false,
+        ),
+        (
+            arch.head_layer(settler_net::weights::NODE_POLICY),
+            54,
+            1,
+            true,
+        ),
+    ];
+    for (li, count, each_parts, shared) in cases {
+        let l = &w.layers[li];
+        for n in [1usize, 3, 8] {
+            let each: Vec<Vec<f32>> = (0..each_parts)
+                .map(|k| fill(n * count * d, 31 * k + n))
+                .collect();
+            let each_refs: Vec<&[f32]> = each.iter().map(|v| &v[..]).collect();
+            let global = fill(n * d, 977 + n);
+            let shared_parts: Vec<(usize, &[f32])> = if shared {
+                vec![(each_parts, &global[..])]
+            } else {
+                vec![]
+            };
+            for relu in [false, true] {
+                let (mut fast, mut slow) = (Vec::new(), Vec::new());
+                dense_parts_for_tests(l, &each_refs, &shared_parts, n, count, d, relu, &mut fast);
+                concat_dense_for_tests(l, &each_refs, &shared_parts, n, count, d, relu, &mut slow);
+                assert_eq!(fast.len(), slow.len());
+                for (a, b) in fast.iter().zip(&slow) {
+                    assert!(
+                        (a - b).abs() <= 1e-4 * b.abs().max(1.0),
+                        "layer {li} n {n}: {a} vs {b}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn fixed_width_aggregation_gives_the_same_bits_as_any_width() {
+    use settler_net::forward::{
+        aggregate_any_for_tests, aggregate_for_tests, mean_rows_any_for_tests, mean_rows_for_tests,
+    };
+    use settler_net::graph::graph;
+    let g = graph();
+    for d in [32usize, 48, 64, 96] {
+        for n in [1usize, 5] {
+            for (links, src_count) in [
+                (&g.node_tiles, 19),
+                (&g.node_neighbours, 54),
+                (&g.edge_nodes, 54),
+                (&g.tile_nodes, 54),
+            ] {
+                let src: Vec<f32> = (0..n * src_count * d)
+                    .map(|i| ((i * 104729) % 2001) as f32 / 997.0 - 1.0)
+                    .collect();
+                let (mut fast, mut slow) = (Vec::new(), Vec::new());
+                aggregate_for_tests(links, &src, src_count, n, d, &mut fast);
+                aggregate_any_for_tests(links, &src, src_count, n, d, &mut slow);
+                assert_eq!(fast, slow, "aggregate d {d} n {n}");
+                mean_rows_for_tests(&src, src_count, n, d, &mut fast);
+                mean_rows_any_for_tests(&src, src_count, n, d, &mut slow);
+                assert_eq!(fast, slow, "mean_rows d {d} n {n}");
+            }
+        }
+    }
+}
