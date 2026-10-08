@@ -151,9 +151,7 @@ The opening model trades about a third of a pip for coverage: it opens on all fi
 
 The opening model is a gain for gen-034 in the trading game at 100 and at 600 simulations (the only
 net and game measured), so `+o` should be on wherever gen-034 plays for strength, and the next loop
-should try it in self-play too: the main net then trains on games that open on all five resources
-far more often, which is where its value head is most wrong.
-Setup roads and a draft search over the model (spec Section 6) are the follow-ups for openings;
-D2's underrating of all-five openings also argues for 3d-2's whole-board features in the encoder,
-since two rounds of message passing may not carry a seat's resource coverage across the board
-(a hypothesis, not measured here).
+should use it in self-play, so that the main net trains on games opened by the stronger opening
+policy. Openings are judged by win rate and calibration only: which resources an opening touches is
+an outcome the models should weigh, not a target. Setup roads and a draft search over the model
+(spec Section 6) are the follow-ups for openings.
