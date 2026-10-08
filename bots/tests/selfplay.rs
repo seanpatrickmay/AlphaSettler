@@ -317,6 +317,37 @@ fn gumbel_self_play_records_an_improved_policy_on_every_searched_decision() {
     }
 }
 
+/// Draws are on in self-play. Without them (g = 0) the move played is the halving winner, which
+/// differs from the target's argmax on only a few decisions (ties, and the unvisited moves'
+/// completedQ): 6 of 375 on this game. With g drawn it is 66 of 255 here (46% on real data). So a
+/// tenth of the decisions playing a move other than the target's argmax separates the two.
+#[test]
+fn gumbel_self_play_draws_so_the_move_played_often_is_not_the_target_argmax() {
+    let g = play_with(0, no_trades(), &Exploration::gumbel(8), 8, &heuristic);
+    let differing = g
+        .decisions
+        .iter()
+        .filter(|d| {
+            let target = d
+                .target
+                .as_ref()
+                .expect("a Gumbel search records its target");
+            let mut argmax = 0;
+            for (i, &t) in target.iter().enumerate() {
+                if t > target[argmax] {
+                    argmax = i;
+                }
+            }
+            d.legal[argmax] != g.actions[d.index as usize]
+        })
+        .count();
+    assert!(
+        differing * 10 > g.decisions.len(),
+        "only {differing} of {} decisions played other than the target's argmax: the draws look off",
+        g.decisions.len()
+    );
+}
+
 #[test]
 fn gumbel_self_play_is_deterministic_and_thread_independent() {
     let ex = Exploration::gumbel(6);

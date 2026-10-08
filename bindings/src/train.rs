@@ -179,8 +179,8 @@ fn encode<'py>(
 
 /// Recorded games (dicts with `seed`, `config`, `actions`, `decisions[]` with `index`, `actor`,
 /// `visits`, `full_search` and an optional `target`, `winner` and `vp`), each replayed once and
-/// checked. Build it a record
-/// file at a time with `extend`, so the window is never all Python dicts at once.
+/// checked. Build it a record file at a time with `extend`, so the window is never all Python
+/// dicts at once.
 #[pyclass(name = "TrainingSet", module = "alphasettler._engine")]
 struct PyTrainingSet {
     inner: TrainingSet,

@@ -1,9 +1,9 @@
 """3b self-play records (spec Section 4): playout cap randomization, root noise on full searches
 and opening sampling, for the heuristic bot (`ismcts`, the warm start) or a network (`net:NAME`).
 Each game carries a `selfplay` block: the bot, the net file's sha256, both simulation caps and the
-exploration settings. Decisions carry no observations; the seed and actions reproduce them. With `gumbel` (P2), every
-move is a Gumbel root search and each decision carries its improved policy as `target`; the block
-then holds `gumbel_simulations` instead of the exploration settings."""
+exploration settings. Decisions carry no observations; the seed and actions reproduce them. With
+`gumbel` (P2), every move is a Gumbel root search and each decision carries its improved policy as
+`target`; the block then holds `gumbel_simulations` instead of the exploration settings."""
 
 from __future__ import annotations
 
@@ -47,7 +47,8 @@ def settings(net: str | None, nets_dir: str | Path, full_simulations: int, fast_
     else:
         for what, n in (("full", full_simulations), ("fast", fast_simulations)):
             if not SELFPLAY_MIN_SIMULATIONS <= n <= MAX_SIMULATIONS:
-                raise ValueError(f"{what} simulations must be {SELFPLAY_MIN_SIMULATIONS}..={MAX_SIMULATIONS}, got {n}")
+                raise ValueError(
+                    f"{what} simulations must be {SELFPLAY_MIN_SIMULATIONS}..={MAX_SIMULATIONS}, got {n}")
         if not (math.isfinite(full_probability) and 0 <= full_probability <= 1):
             raise ValueError(f"the full-search probability must be in [0, 1], got {full_probability}")
     path = None if net is None else resolve_net(net, str(nets_dir))

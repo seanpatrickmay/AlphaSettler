@@ -375,3 +375,21 @@ fn the_default_root_is_puct_and_reports_no_improved_policy() {
     };
     assert_eq!(run(&rich(1), &mut UniformEvaluator, &cfg, 1).improved, None);
 }
+
+/// 0 simulations is refused whatever the root mode (the assert in `search_tree`), so the Gumbel
+/// root's `simulations - 1` never underflows.
+#[test]
+#[should_panic(expected = "simulations and batch must be positive")]
+fn a_gumbel_root_refuses_an_empty_budget_like_puct() {
+    run(&rich(1), &mut UniformEvaluator, &gumbel(0, true), 1);
+}
+
+#[test]
+#[should_panic(expected = "simulations and batch must be positive")]
+fn a_puct_root_refuses_an_empty_budget() {
+    let cfg = SearchConfig {
+        simulations: 0,
+        ..SearchConfig::default()
+    };
+    run(&rich(1), &mut UniformEvaluator, &cfg, 1);
+}

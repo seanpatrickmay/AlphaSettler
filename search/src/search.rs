@@ -469,6 +469,8 @@ fn gumbel_root<E: Evaluator>(
         .map(|&l| if draw { l + gumbel::gumbel(sim.rng) } else { l })
         .collect();
     let mut remaining = gumbel::candidates(&base, &keys);
+    // `search_tree` refuses an empty budget (its assert, as for PUCT) before it gets here, so this
+    // cannot underflow.
     let n = sim.cfg.simulations - 1;
     let phases = gumbel::phases(remaining.len());
     let mut left = n;
@@ -481,6 +483,8 @@ fn gumbel_root<E: Evaluator>(
         let count = if last {
             left
         } else {
+            // `.min(left)` caps a phase by the budget left, so the root gets exactly
+            // `simulations - 1` visits and at tiny budgets some candidates get none (ledger S3).
             (gumbel::per_candidate(n, phases, remaining.len()) * remaining.len() as u32).min(left)
         };
         let order = &remaining;

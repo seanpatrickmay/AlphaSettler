@@ -17,7 +17,9 @@ finished generation.
 
 With trades (set when the loop is set up: `init(..., trades=True)`, `fast-loop --trades`), self-play
 and the gate play the trading game (spec 3c Section 5): every self-play seat may offer, and both
-gate sides are `+t`. A resumed loop keeps the setting it was set up with.With `gumbel` (set when the loop is set up: `init(..., gumbel=SIMS)`, `fast-loop --gumbel SIMS`;
+gate sides are `+t`. A resumed loop keeps the setting it was set up with.
+
+With `gumbel` (set when the loop is set up: `init(..., gumbel=SIMS)`, `fast-loop --gumbel SIMS`;
 spec P2 Section 5), every self-play move is a Gumbel root search of SIMS simulations whose improved
 policy is the decision's policy target; the gate is unchanged. A resumed loop keeps that too.
 """
