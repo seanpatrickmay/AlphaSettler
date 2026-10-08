@@ -46,6 +46,20 @@ pub fn absolute_value(logits: &[f32], actor: PlayerId) -> [f32; NUM_PLAYERS] {
     std::array::from_fn(|q| p[rel(q as PlayerId, actor)])
 }
 
+/// The net's win probabilities, by absolute seat, for `s` seen by `viewer`: the public block from
+/// `s.observation(viewer)`, the hidden block from `s` itself, the value head rotated back to
+/// absolute seats. This is the evaluation a search leaf whose world is `s` gets: exactly the
+/// value of a one-leaf `NetEvaluator::evaluate`, and within float rounding of the same leaf in a
+/// larger batch (the Accelerate forward pass, `forward::dense`, matches a position run alone only
+/// to about 1e-5 relative; the same batch run twice is bit-identical).
+pub fn position_value(weights: &Weights, s: &State, viewer: PlayerId) -> [f32; NUM_PLAYERS] {
+    let (mut public, mut hidden) = (vec![0.0; PUBLIC_LEN], vec![0.0; HIDDEN_LEN]);
+    encode_state(s, viewer, &mut public, &mut hidden);
+    let mut out = Outputs::default();
+    Forward::new().run(weights, &public, &hidden, 1, &mut out);
+    absolute_value(&out.value[..NUM_PLAYERS], viewer)
+}
+
 pub struct NetEvaluator {
     weights: Arc<Weights>,
     rollout: u32,

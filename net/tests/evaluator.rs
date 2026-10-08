@@ -4,7 +4,7 @@ use common::*;
 use settler_engine::rng::Rng;
 use settler_engine::*;
 use settler_net::encode::{abs, encode_state, HIDDEN_LEN, PUBLIC_LEN};
-use settler_net::evaluator::{absolute_value, masked_prior, NetEvaluator};
+use settler_net::evaluator::{absolute_value, masked_prior, position_value, NetEvaluator};
 use settler_net::weights::{Arch, Weights};
 use settler_search::{search_actions, Belief, Evaluator, Leaf, WorldSampler};
 use std::sync::Arc;
@@ -250,4 +250,28 @@ fn rollouts_keep_the_leaf_prior_and_score_the_position_they_reach() {
     }
     assert!(differ > 0);
     assert!(rolled.evaluations() > plain.evaluations());
+}
+
+#[test]
+fn position_value_is_a_one_leaf_evaluation_of_the_same_world() {
+    let w = net();
+    let mut eval = NetEvaluator::new(w.clone());
+    let mut checked = 0;
+    for s in random_positions(0..3, 17, no_trades()) {
+        let legal = searchable(&s);
+        for viewer in 0..4u8 {
+            // One leaf per call: both sides are one-position batches, so they match exactly (a
+            // search's batched leaves agree with them only within float rounding).
+            let leaf = eval.evaluate(&[Leaf {
+                world: &s,
+                actor: viewer,
+                legal: &legal,
+            }]);
+            let v = position_value(&w, &s, viewer);
+            assert_eq!(v, leaf[0].value, "viewer {viewer}");
+            assert!((v.iter().sum::<f32>() - 1.0).abs() < 1e-5, "{v:?}");
+            checked += 1;
+        }
+    }
+    assert!(checked > 40, "{checked}");
 }

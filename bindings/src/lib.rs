@@ -2,6 +2,7 @@
 //! in `settler-engine`, bots and the arena in `settler-bots`.
 
 mod convert;
+mod opening;
 mod train;
 
 use convert::*;
@@ -159,7 +160,8 @@ impl PyGame {
     }
 }
 
-/// A native bot. Not thread-shared in practice; the mutex only satisfies PyO3's Sync bound.
+/// A native bot. `act` runs with the GIL released, so the mutex is what serialises two threads
+/// acting with the same bot.
 #[pyclass(name = "Bot", module = "alphasettler._engine")]
 struct PyBot {
     name: &'static str,
@@ -186,8 +188,10 @@ impl PyBot {
         self.name
     }
 
-    /// The bot's choice for whoever must act in `game` now, as an action id.
-    fn act(&self, game: PyRef<'_, PyGame>) -> PyResult<u32> {
+    /// The bot's choice for whoever must act in `game` now, as an action id. The bot decides with
+    /// the GIL released (the lock is taken inside, so a second thread acting with the same bot
+    /// waits without holding the GIL), so bots on several Python threads search at once.
+    fn act(&self, py: Python<'_>, game: PyRef<'_, PyGame>) -> PyResult<u32> {
         let s = game.inner.state();
         if s.is_over() {
             return Err(value_error("the game is over"));
@@ -198,11 +202,13 @@ impl PyBot {
             return Err(value_error("no legal actions in this position"));
         }
         let obs = s.observation(s.current_actor());
-        let mut bot = self
-            .inner
-            .lock()
+        let a = py
+            .detach(|| {
+                let mut bot = self.inner.lock().map_err(|_| ())?;
+                Ok::<_, ()>(bot.act(&obs, &legal))
+            })
             .map_err(|_| value_error("bot state is poisoned"))?;
-        Ok(bot.act(&obs, &legal).encode() as u32)
+        Ok(a.encode() as u32)
     }
 
     /// Show the bot new events as `viewer` saw them (dicts shaped like `Game.log` entries).
@@ -625,5 +631,6 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("MAX_ROLLOUT", settler_bots::ismcts::MAX_ROLLOUT)?;
     m.add("DEFAULT_NETS_DIR", settler_bots::netbot::DEFAULT_NETS_DIR)?;
     train::register(m)?;
+    opening::register(m)?;
     Ok(())
 }

@@ -40,7 +40,7 @@ pub fn int_arg<T: TryFrom<i128>>(v: &Bound<'_, PyAny>, what: &str) -> PyResult<T
 }
 
 /// A Python int in `0..end`, as `usize`.
-fn index_arg(v: &Bound<'_, PyAny>, end: usize, what: &str) -> PyResult<usize> {
+pub fn index_arg(v: &Bound<'_, PyAny>, end: usize, what: &str) -> PyResult<usize> {
     let wide = py_int(v, what)?;
     if !(0..end as i128).contains(&wide) {
         return Err(value_error(format!("{what} {wide} out of range 0..{end}")));
