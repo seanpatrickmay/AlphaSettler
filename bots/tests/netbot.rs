@@ -91,6 +91,10 @@ fn net_names_parse_and_bad_ones_are_rejected_without_touching_the_disk() {
         "net:a@300+t5",
         "net:a+t@300",
         "net:a@300+T",
+        "net:a@300+g+g",
+        "net:a+g@300",
+        "net:a@300+g2",
+        "net:a@300+G",
     ] {
         assert_eq!(parse_net_name(bad), None, "{bad}");
         assert!(make_bot(bad, 0).is_none(), "{bad}");
@@ -170,6 +174,38 @@ fn net_bots_search_with_the_given_leaf_batch() {
     assert_eq!(bot.config().batch, NET_BATCH + 5);
     assert_eq!(bot.config().simulations, 20);
     assert!(std::sync::Arc::ptr_eq(bot.evaluator().weights(), &w));
+}
+
+#[test]
+fn gumbel_net_names_build_the_gumbel_bot_in_any_order() {
+    let dir = nets_dir("gumbel");
+    let names = ["net:tiny@16+g", "net:tiny@16+t+g", "net:tiny@16+g+s2+t"];
+    let roster = Roster::new(&names, &dir).unwrap();
+    for name in names {
+        assert_eq!(roster.make(name, 0).unwrap().name(), "net", "{name}");
+    }
+    let w = load_net(&dir, "tiny").unwrap();
+    let mut s = State::new(5, trading());
+    let mut rng = settler_engine::rng::Rng::new(5);
+    let mut compared = 0;
+    for i in 0..400 {
+        if s.is_over() {
+            break;
+        }
+        let legal = s.legal_actions();
+        if i % 9 == 0 && legal.len() > 1 {
+            let obs = s.observation(s.current_actor());
+            let named = roster.make("net:tiny@16+t+g", 3).unwrap().act(&obs, &legal);
+            let direct = net_bot(3, w.clone(), 16, 0)
+                .with_offers(true)
+                .with_gumbel(true)
+                .act(&obs, &legal);
+            assert_eq!(named, direct, "move {i}");
+            compared += 1;
+        }
+        s.apply(legal[rng.below(legal.len() as u32) as usize]);
+    }
+    assert!(compared >= 10, "only {compared} positions compared");
 }
 
 #[test]

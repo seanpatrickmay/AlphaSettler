@@ -1,5 +1,6 @@
 //! Network bots (spec Section 3): `net:NAME` (1,000 simulations), `net:NAME@N` and
-//! `net:NAME@N+rD`, each optionally with `+sK` and `+t` in any order, with the same limits on N,
+//! `net:NAME@N+rD`, each optionally with `+sK`, `+t` and `+g` in any order (`+g` is split off by
+//! `ismcts::split_gumbel` before `parse_net_name` reads the rest), with the same limits on N,
 //! D and K as `ismcts`: IsmctsBot searching with a `NetEvaluator`. NAME is `[A-Za-z0-9_-]{1,64}`
 //! and names the file `<nets-dir>/NAME.bin`; the character set keeps every name a plain file name
 //! inside the directory.

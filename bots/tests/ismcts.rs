@@ -578,6 +578,102 @@ fn the_offer_suffix_combines_with_the_others_in_any_order() {
 }
 
 #[test]
+fn the_gumbel_suffix_parses_in_any_order_and_only_once() {
+    use settler_bots::ismcts::{split_gumbel, split_trades};
+    assert_eq!(
+        split_gumbel("ismcts@100"),
+        Some(("ismcts@100".to_owned(), false))
+    );
+    assert_eq!(
+        split_gumbel("ismcts@100+g"),
+        Some(("ismcts@100".to_owned(), true))
+    );
+    assert_eq!(
+        split_gumbel("net:gen-034@32+g"),
+        Some(("net:gen-034@32".to_owned(), true))
+    );
+    for name in [
+        "ismcts@100+g+t+r5+s3",
+        "ismcts@100+t+g+r5+s3",
+        "ismcts@100+r5+s3+t+g",
+        "ismcts@100+s3+g+r5+t",
+    ] {
+        let (rest, gumbel) = split_gumbel(name).unwrap();
+        assert!(gumbel, "{name}");
+        assert_eq!(
+            split_trades(&rest),
+            Some(("ismcts@100+r5+s3".to_owned(), true)),
+            "{name}"
+        );
+        assert!(make_bot(name, 0).is_some(), "{name}");
+    }
+    for bad in [
+        "ismcts@100+g+g",
+        "ismcts@100+g2",
+        "ismcts@100+G",
+        "ismcts@100+gt",
+        "ismcts@100+g+",
+        "ismcts+g@100",
+        "greedy+g",
+        "random+g",
+        "+g",
+    ] {
+        assert!(make_bot(bad, 0).is_none(), "{bad}");
+    }
+    assert!(make_bot("ismcts+g", 0).is_some());
+}
+
+#[test]
+fn a_gumbel_name_builds_the_gumbel_bot_and_plain_names_stay_puct() {
+    use settler_search::RootMode;
+    assert_eq!(IsmctsBot::new(0, 10, 0).config().root, RootMode::Puct);
+    assert_eq!(
+        IsmctsBot::new(0, 10, 0).with_gumbel(true).config().root,
+        RootMode::Gumbel { draw: false }
+    );
+    let mut differ = 0;
+    for seed in 0..12 {
+        let s = main_with(seed, [3, 3, 3, 3, 3], no_trades());
+        let (obs, legal) = (s.observation(0), s.legal_actions());
+        let named = make_bot("ismcts@40+g", 7).unwrap().act(&obs, &legal);
+        let mut g = IsmctsBot::new(7, 40, 0).with_gumbel(true);
+        let direct = g.act(&obs, &legal);
+        let plain_named = make_bot("ismcts@40", 7).unwrap().act(&obs, &legal);
+        let mut p = IsmctsBot::new(7, 40, 0);
+        let puct = p.act(&obs, &legal);
+        assert_eq!(named, direct, "seed {seed}");
+        assert_eq!(plain_named, puct, "seed {seed}");
+        let (gr, pr) = (g.take_last_search().unwrap(), p.take_last_search().unwrap());
+        assert!(gr.improved.is_some(), "seed {seed}: Gumbel improved policy");
+        assert!(
+            pr.improved.is_none(),
+            "seed {seed}: PUCT has no improved policy"
+        );
+        differ += (gr.visits != pr.visits) as u32;
+    }
+    assert!(
+        differ > 0,
+        "the Gumbel root spent its visits as PUCT did on every position"
+    );
+}
+
+#[test]
+fn a_gumbel_bot_keeps_its_setup_factor() {
+    let mut g = Game::new(3, no_trades());
+    let mut bot = IsmctsBot::new(3, 20, 0)
+        .with_setup_factor(5)
+        .with_gumbel(true);
+    assert_eq!(g.observation(0).phase, Phase::SetupSettlement);
+    act_and_apply(&mut bot, &mut g);
+    let r = bot.take_last_search().unwrap();
+    assert_eq!(r.simulations, 100);
+    assert!(
+        r.improved.is_some(),
+        "the setup settlement was a Gumbel search"
+    );
+}
+
+#[test]
 fn only_a_bot_with_the_offer_suffix_searches_offers() {
     let is_offer = |a: &Action| matches!(a, Action::OfferTrade { .. });
     for seed in 0..3 {

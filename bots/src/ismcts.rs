@@ -9,8 +9,8 @@ use crate::Bot;
 use settler_engine::rng::{mix, Rng};
 use settler_engine::{Action, Event, Observation, Phase, PlayerId};
 use settler_search::{
-    search, search_moves, Belief, Evaluator, Noised, RootNoise, SearchConfig, SearchResult,
-    DEFAULT_MAX_STATES,
+    search, search_moves, Belief, Evaluator, Noised, RootMode, RootNoise, SearchConfig,
+    SearchResult, DEFAULT_MAX_STATES,
 };
 
 pub const DEFAULT_SIMULATIONS: u32 = 1000;
@@ -81,6 +81,29 @@ pub fn split_trades(name: &str) -> Option<(String, bool)> {
         out.push_str(part);
     }
     Some((out, offers))
+}
+
+/// A searching bot's name with its `+g` suffix (spec P2 Section 4: Gumbel root search, no
+/// draws) removed, and whether it had one. `+g` may sit anywhere among the suffixes, at most once
+/// (`None` for a repeat); every other part is kept in order for `split_trades`, which refuses any
+/// other `g` part (`+g2`, `+gt`) and anything malformed.
+pub fn split_gumbel(name: &str) -> Option<(String, bool)> {
+    let Some(i) = name.find('+') else {
+        return Some((name.to_owned(), false));
+    };
+    let (mut out, mut gumbel) = (name[..i].to_owned(), false);
+    for part in name[i + 1..].split('+') {
+        if part == "g" {
+            if gumbel {
+                return None;
+            }
+            gumbel = true;
+        } else {
+            out.push('+');
+            out.push_str(part);
+        }
+    }
+    Some((out, gumbel))
 }
 
 /// How one decision is searched and chosen; self-play varies these move by move.
@@ -197,6 +220,17 @@ impl<E: Evaluator> IsmctsBot<E> {
     /// confirms offers by searching, but never offers, and assumes nobody does.
     pub fn with_offers(mut self, offers: bool) -> IsmctsBot<E> {
         self.cfg.offers = offers;
+        self
+    }
+
+    /// Search the root by Gumbel sequential halving with no Gumbel draws (a `+g` name, spec P2
+    /// Section 4); below the root the search is PUCT as before. Off, the root is PUCT.
+    pub fn with_gumbel(mut self, gumbel: bool) -> IsmctsBot<E> {
+        self.cfg.root = if gumbel {
+            RootMode::Gumbel { draw: false }
+        } else {
+            RootMode::Puct
+        };
         self
     }
 

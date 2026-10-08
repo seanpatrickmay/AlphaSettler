@@ -106,3 +106,21 @@ def test_offer_suffixes_build_net_bots_in_any_order(nets):
         assert a in g.legal_actions()
         g.apply(a)
     assert all(n > 0 for n in trade_roots.values()), trade_roots
+
+
+@pytest.mark.parametrize("name", ["net:tiny@10+g", "net:tiny@10+t+g+s2", "net:tiny@10+g+r2", "ismcts@10+g"])
+def test_the_gumbel_suffix_builds_bots_that_play_legal_moves(nets, name):
+    g = Game(4, CONFIG)
+    bot = Bot(name, 1, nets_dir=str(nets))
+    for _ in range(40):
+        if g.is_over:
+            break
+        a = bot.act(g)
+        assert a in g.legal_actions()
+        g.apply(a)
+
+
+@pytest.mark.parametrize("bad", ["net:tiny@10+g+g", "net:tiny+g@10", "net:tiny@10+G", "ismcts@10+gg", "greedy+g"])
+def test_malformed_gumbel_names_are_unknown_bots(nets, bad):
+    with pytest.raises(ValueError, match="unknown bot"):
+        Bot(bad, 0, nets_dir=str(nets))
