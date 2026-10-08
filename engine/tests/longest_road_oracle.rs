@@ -3,7 +3,7 @@
 
 use settler_engine::legal::legal_actions;
 use settler_engine::rng::Rng;
-use settler_engine::rules::awards::longest_road;
+use settler_engine::rules::awards::{longest_road, longest_trail};
 use settler_engine::topology::{topo, NUM_EDGES};
 use settler_engine::*;
 
@@ -146,5 +146,31 @@ fn matches_reference_in_random_games() {
                 );
             }
         }
+    }
+}
+
+/// `longest_trail` returns the length the reference finds, and edges that are the player's,
+/// as many as the length, and one trail: the longest trail within them uses all of them.
+#[test]
+fn the_longest_trail_is_one_trail_of_the_longest_length() {
+    let mut rng = Rng::new(7);
+    for case in 0..20_000 {
+        let count = 1 + rng.below(15);
+        let roads = random_roads(&mut rng, count);
+        let blocked = if rng.below(2) == 0 {
+            0
+        } else {
+            rng.next_u64() & rng.next_u64() & ((1u64 << 54) - 1)
+        };
+        let (len, trail) = longest_trail(roads, blocked);
+        let at = format!("case {case}: roads {roads:#x} blocked {blocked:#x}");
+        assert_eq!(len, reference(roads, blocked), "{at}");
+        assert_eq!(trail & !roads, 0, "{at}: the trail is the player's roads");
+        assert_eq!(trail.count_ones(), len as u32, "{at}");
+        assert_eq!(
+            longest_road(trail, blocked),
+            len,
+            "{at}: its edges are one trail"
+        );
     }
 }

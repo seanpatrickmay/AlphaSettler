@@ -7,14 +7,23 @@ use crate::topology::{topo, Topology};
 use crate::types::*;
 
 /// Longest trail (no edge reused) in `roads`; trails may end at but not pass through `blocked` nodes.
+pub fn longest_road(roads: u128, blocked: u64) -> u8 {
+    longest_trail(roads, blocked).0
+}
+
+/// The longest trail in `roads` (no edge reused; it may end at but not pass through a `blocked`
+/// node): its length and its edges, as a mask of board edge ids. Of equally long trails the
+/// first found is returned: starts in the order their nodes first appear among `roads` in
+/// ascending edge order, from each node its roads in that same order, and a later trail
+/// replaces the best only if strictly longer (spec 3d-2: a deterministic order).
 ///
 /// Searches only from nodes where some longest trail must start: dead ends, branch points, and
 /// blocked nodes. A trail starting at an unblocked degree-2 node either extends backwards
 /// (so it wasn't longest) or is closed and can be rotated onto a non-degree-2 node; the one
 /// exception is a component that is a pure cycle, which gets one start of its own.
-pub fn longest_road(roads: u128, blocked: u64) -> u8 {
+pub fn longest_trail(roads: u128, blocked: u64) -> (u8, u128) {
     if roads == 0 {
-        return 0;
+        return (0, 0);
     }
     let g = LocalGraph::new(roads, blocked);
     let mut starts = 0u32;
@@ -35,14 +44,24 @@ pub fn longest_road(roads: u128, blocked: u64) -> u8 {
         starts |= 1 << v;
         reached |= g.flood(1 << v);
     }
-    let mut best = 0;
+    let mut best = (0u8, 0u32);
     let mut rest = starts;
     while rest != 0 {
         let v = rest.trailing_zeros() as usize;
         rest &= rest - 1;
-        best = best.max(g.walk(v, 0, 0));
+        let found = g.walk(v, 0, 0);
+        if found.0 > best.0 {
+            best = found;
+        }
     }
-    best
+    let mut trail = 0u128;
+    let mut used = best.1;
+    while used != 0 {
+        let i = used.trailing_zeros() as usize;
+        used &= used - 1;
+        trail |= 1u128 << g.edge[i];
+    }
+    (best.0, trail)
 }
 
 /// One player's road network, renumbered compactly so the trail search runs on `u32` masks
@@ -53,6 +72,8 @@ struct LocalGraph {
     degree: [u8; 32],
     /// Up to three (local edge, other local node) pairs per node.
     adj: [[(u8, u8); 3]; 32],
+    /// The board edge id of each local edge (local edges number `roads` in ascending order).
+    edge: [u8; 16],
 }
 
 impl LocalGraph {
@@ -69,6 +90,7 @@ impl LocalGraph {
             blocked: 0,
             degree: [0; 32],
             adj: [[(0, 0); 3]; 32],
+            edge: [0; 16],
         };
         let mut id = |n: u8, g: &mut LocalGraph| -> u8 {
             if local[n as usize] == u8::MAX {
@@ -81,6 +103,7 @@ impl LocalGraph {
             local[n as usize]
         };
         for (i, e) in bits128(roads).enumerate() {
+            g.edge[i] = e;
             let (a, b) = t.edge_nodes[e as usize];
             let (la, lb) = (id(a, &mut g), id(b, &mut g));
             g.adj[la as usize][g.degree[la as usize] as usize] = (i as u8, lb);
@@ -110,14 +133,19 @@ impl LocalGraph {
         reached
     }
 
-    fn walk(&self, v: usize, used: u32, len: u8) -> u8 {
+    /// The longest trail from `v` having used the local edges in `used` (length `len` so far):
+    /// its length and every local edge it used. The first found wins a tie.
+    fn walk(&self, v: usize, used: u32, len: u8) -> (u8, u32) {
         if len > 0 && self.blocked & (1 << v) != 0 {
-            return len;
+            return (len, used);
         }
-        let mut best = len;
+        let mut best = (len, used);
         for &(e, w) in &self.adj[v][..self.degree[v] as usize] {
             if used & (1 << e) == 0 {
-                best = best.max(self.walk(w as usize, used | (1 << e), len + 1));
+                let found = self.walk(w as usize, used | (1 << e), len + 1);
+                if found.0 > best.0 {
+                    best = found;
+                }
             }
         }
         best

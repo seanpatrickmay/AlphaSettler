@@ -170,3 +170,30 @@ fn road_build_updates_longest_road() {
     s.apply(Action::BuildRoad(edges[4]));
     assert_eq!(s.longest_road_owner, Some(0));
 }
+
+#[test]
+fn the_longest_trail_names_its_edges_and_a_tie_goes_to_the_first_found() {
+    // A Y at node 4: edges 1 (0-4), 2 (1-4) and 7 (4-8). Every trail through node 4 uses two of
+    // them (length 2). The walk starts at node 0 (the first node of the lowest edge, 1), crosses
+    // node 4 and tries edge 2 before edge 7: 0-4-1 is found first and a later trail of the same
+    // length does not replace it.
+    let y = (1u128 << 1) | (1 << 2) | (1 << 7);
+    assert_eq!(longest_trail(y, 0), (2, (1 << 1) | (1 << 2)));
+    assert_eq!(longest_road(y, 0), 2);
+    assert_eq!(longest_trail(0, 0), (0, 0));
+    // A ring: all six edges.
+    let ring = topo().tile_nodes[9];
+    let mut nodes = ring.to_vec();
+    nodes.push(ring[0]);
+    let roads = mask128(&path_edges(&nodes));
+    assert_eq!(longest_trail(roads, 0), (6, roads));
+}
+
+#[test]
+fn a_blocked_node_ends_every_trail_through_it() {
+    // The Y blocked at node 4: no trail crosses it, so the longest is one edge. The walk from
+    // node 0 meets node 4 after edge 1 and stops: edge 1 is found first.
+    let y = (1u128 << 1) | (1 << 2) | (1 << 7);
+    assert_eq!(longest_trail(y, 1 << 4), (1, 1 << 1));
+    assert_eq!(longest_road(y, 1 << 4), 1);
+}
