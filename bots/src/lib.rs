@@ -7,6 +7,7 @@ pub mod greedy;
 pub mod heuristic;
 pub mod ismcts;
 pub mod netbot;
+pub mod opening;
 pub mod random;
 pub mod selfplay;
 
