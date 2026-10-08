@@ -278,6 +278,16 @@ fn fixed_exploration_is_3a_self_play() {
     assert_eq!(digest(&play(5, no_trades(), 12, 3)), PLAY_5_AT_12_ROLLOUT_3);
 }
 
+/// The digest of a trading-game self-play game under the 3b exploration at 6 / 3 simulations,
+/// computed at eb1f739 before the Gumbel root (P2): PUCT self-play must not change.
+#[test]
+fn standard_exploration_plays_the_games_it_played_before_p2() {
+    assert_eq!(
+        digest(&play_with(2, trading(), &small_explore(), 8, &heuristic)),
+        0x94f447a9c3baf5b2
+    );
+}
+
 /// Noise is drawn only for full searches: with no full searches, noise on or off plays the same
 /// games (fast searches stay un-noised).
 #[test]

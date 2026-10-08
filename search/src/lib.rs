@@ -3,6 +3,7 @@
 
 pub mod belief;
 pub mod evaluator;
+pub mod gumbel;
 pub mod noise;
 pub mod puct;
 pub mod search;
@@ -13,7 +14,7 @@ pub use belief::{Belief, HandTracker, DEFAULT_MAX_STATES};
 pub use evaluator::{Eval, Evaluator, Leaf, UniformEvaluator};
 pub use noise::{dirichlet, gamma, normal, unit, Noised, RootNoise};
 pub use search::{
-    search, search_actions, search_moves, search_tree, terminal_value, visible_chance,
+    search, search_actions, search_moves, search_tree, terminal_value, visible_chance, RootMode,
     SearchConfig, SearchResult,
 };
 pub use world::WorldSampler;

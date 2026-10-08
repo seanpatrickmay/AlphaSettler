@@ -18,7 +18,7 @@ pub fn unit(rng: &mut Rng) -> f64 {
 }
 
 /// Uniform in (0, 1): safe to take the log of.
-fn open_unit(rng: &mut Rng) -> f64 {
+pub(crate) fn open_unit(rng: &mut Rng) -> f64 {
     ((rng.next_u64() >> 11) as f64 + 0.5) / (1u64 << 53) as f64
 }
 

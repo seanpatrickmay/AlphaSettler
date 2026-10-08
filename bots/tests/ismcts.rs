@@ -422,6 +422,14 @@ fn the_generic_refactor_leaves_3a_ismcts_games_unchanged() {
     );
 }
 
+/// The digest of a trading-game match of `ismcts@200+t+s2`, computed at eb1f739 before the
+/// Gumbel root (P2): bots without `+g` must play the same games (spec P2 Section 4).
+#[test]
+fn bots_without_the_gumbel_suffix_play_the_games_they_played_before_p2() {
+    let records = run_match("ismcts@200+t+s2", "greedy", 0..2, trading(), 1).unwrap();
+    assert_eq!(digest(&records), 0x840a576a3ed2426e);
+}
+
 #[test]
 fn a_sampled_move_was_visited_and_is_the_recorded_action() {
     use settler_bots::ismcts::{sample_by_visits, MoveOptions};

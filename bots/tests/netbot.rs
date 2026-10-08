@@ -1,7 +1,7 @@
 mod common;
 
 use common::trading;
-use settler_bots::arena::{belief_resets, play_game, run_match_in};
+use settler_bots::arena::{belief_resets, play_game, run_match_in, GameRecord};
 use settler_bots::ismcts::IsmctsBot;
 use settler_bots::netbot::{
     load_net, net_bot, net_bot_with, parse_net_name, valid_net_name, NET_BATCH,
@@ -131,6 +131,33 @@ fn a_net_bot_plays_whole_games_independent_of_thread_count() {
     assert_eq!(roster.make("net:tiny@10+r2", 0).unwrap().name(), "net");
     assert_eq!(roster.make("greedy", 0).unwrap().name(), "greedy");
     assert!(roster.make("net:other", 0).is_none());
+}
+
+/// FNV-1a over (winner, final VP, turns, actions) of each record, as in tests/ismcts.rs.
+fn record_digest(records: &[GameRecord]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for r in records {
+        eat(&[r.winner.unwrap_or(u8::MAX)]);
+        eat(&r.vp);
+        eat(&r.turns.to_le_bytes());
+        eat(&r.actions.to_le_bytes());
+    }
+    h
+}
+
+/// The digest of a trading-game match of `net:tiny@16+t` (random weights, seed 1), computed at
+/// eb1f739 before the Gumbel root (P2): net bots without `+g` must play the same games.
+#[test]
+fn net_bots_without_the_gumbel_suffix_play_the_games_they_played_before_p2() {
+    let dir = nets_dir("p2-pin");
+    let records = run_match_in("net:tiny@16+t", "greedy", 0..1, trading(), 1, &dir).unwrap();
+    assert_eq!(record_digest(&records), 0xf4d5c47b40f849a3);
 }
 
 #[test]
