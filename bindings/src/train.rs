@@ -92,11 +92,16 @@ fn recorded_game(g: &Bound<'_, PyAny>) -> PyResult<RecordedGame> {
     for d in field(g, "decisions", "game record")?.try_iter()? {
         let d = d?;
         let d = d.cast::<PyDict>()?;
+        let target = match d.get_item("target")? {
+            Some(t) if !t.is_none() => Some(t.extract::<Vec<f32>>()?),
+            _ => None,
+        };
         decisions.push(RecordedDecision {
             index: int_arg(&field(d, "index", "decision")?, "decision index")?,
             actor: seat(&field(d, "actor", "decision")?, "decision actor")?,
             visits: int_list(&field(d, "visits", "decision")?, "visits")?,
             full_search: field(d, "full_search", "decision")?.extract()?,
+            target,
         });
     }
     let vp: Vec<u8> = int_list(&field(g, "vp", "game record")?, "vp")?;
@@ -173,7 +178,8 @@ fn encode<'py>(
 }
 
 /// Recorded games (dicts with `seed`, `config`, `actions`, `decisions[]` with `index`, `actor`,
-/// `visits`, `full_search`, `winner` and `vp`), each replayed once and checked. Build it a record
+/// `visits`, `full_search` and an optional `target`, `winner` and `vp`), each replayed once and
+/// checked. Build it a record
 /// file at a time with `extend`, so the window is never all Python dicts at once.
 #[pyclass(name = "TrainingSet", module = "alphasettler._engine")]
 struct PyTrainingSet {
@@ -239,7 +245,7 @@ impl PyTrainingSet {
         batch_dict(py, &b)
     }
 
-    /// Decisions that are policy targets (full searches with at least one visit).
+    /// Decisions that are policy targets (with a target, or full searches with at least one visit).
     #[getter]
     fn policy_decisions(&self) -> usize {
         self.inner.policy_decisions()

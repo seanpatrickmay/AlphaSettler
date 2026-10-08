@@ -14,6 +14,8 @@ use settler_engine::{Action, GameConfig, PlayerId, State, ACTION_SPACE_SIZE, NUM
 pub const VP_TARGET_DEN: f32 = 10.0;
 /// Most positions one `sample` call returns (about 9.7 KB each, so about 640 MB).
 pub const MAX_SAMPLE: usize = 1 << 16;
+/// How far a recorded `target` may sum from 1.
+pub const TARGET_TOLERANCE: f64 = 1e-4;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordedDecision {
@@ -23,6 +25,9 @@ pub struct RecordedDecision {
     /// Root visits aligned with the legal moves at `index`, in engine order (offers included).
     pub visits: Vec<u32>,
     pub full_search: bool,
+    /// A Gumbel search's improved policy (spec P2 Section 5), aligned with the legal moves and
+    /// summing to 1. When present it is the policy target, whatever the visits.
+    pub target: Option<Vec<f32>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -46,10 +51,11 @@ pub struct Batch {
     /// n × ACTION_SPACE_SIZE: 1 at the policy id (`policy::policy_id`, seat-relative for steals
     /// and trade confirmations) of each legal move, domestic offers included.
     pub mask: Vec<u8>,
-    /// n × ACTION_SPACE_SIZE: root visits normalised over the mask (uniform if none), at the same
-    /// policy ids.
+    /// n × ACTION_SPACE_SIZE: the decision's `target` if it has one, else root visits normalised
+    /// over the mask (uniform if none), at the same policy ids.
     pub policy: Vec<f32>,
-    /// n: 1 for a full search with at least one visit (a policy target).
+    /// n: 1 for a policy target: a decision with a `target`, or a full search with at least one
+    /// visit.
     pub full: Vec<u8>,
     /// n × 4, seat-relative: one-hot winner, ¼ each for a turn-cap draw.
     pub outcome: Vec<f32>,
@@ -69,16 +75,17 @@ impl Batch {
         self.policy.resize(m0 + ACTION_SPACE_SIZE, 0.0);
         // u64: visit counts come from files and may sum past u32::MAX.
         let total: u64 = d.visits.iter().map(|&v| v as u64).sum();
-        for (a, &v) in legal.iter().zip(&d.visits) {
+        for (j, (a, &v)) in legal.iter().zip(&d.visits).enumerate() {
             let k = m0 + policy_id(*a, actor);
             self.mask[k] = 1;
-            self.policy[k] = if total > 0 {
-                v as f32 / total as f32
-            } else {
-                1.0 / legal.len() as f32
+            self.policy[k] = match &d.target {
+                Some(t) => t[j],
+                None if total > 0 => v as f32 / total as f32,
+                None => 1.0 / legal.len() as f32,
             };
         }
-        self.full.push((d.full_search && total > 0) as u8);
+        self.full
+            .push((d.target.is_some() || (d.full_search && total > 0)) as u8);
         let outcome: [f32; NUM_PLAYERS] = match game.winner {
             Some(w) => std::array::from_fn(|r| (r == rel(w, actor)) as u8 as f32),
             None => [1.0 / NUM_PLAYERS as f32; NUM_PLAYERS],
@@ -102,9 +109,8 @@ impl Batch {
     }
 }
 
-/// Replay `g` once, checking it against its record.
 /// Checks that `g` replays, and returns the indices of its decisions that are policy targets
-/// (`Batch::full` 1: a full search with at least one visit).
+/// (`Batch::full` 1: a decision with a valid `target`, or a full search with at least one visit).
 fn check_game(g: &RecordedGame, buf: &mut Vec<Action>) -> Result<Vec<u32>, String> {
     let mut targets = Vec::new();
     g.config.validate()?;
@@ -130,8 +136,30 @@ fn check_game(g: &RecordedGame, buf: &mut Vec<Action>) -> Result<Vec<u32>, Strin
                     buf.len()
                 ));
             }
+            if let Some(t) = &d.target {
+                if t.len() != buf.len() {
+                    return Err(format!(
+                        "move {i}: {} target entries for {} legal moves",
+                        t.len(),
+                        buf.len()
+                    ));
+                }
+                if let Some((j, x)) = t
+                    .iter()
+                    .enumerate()
+                    .find(|(_, x)| !(x.is_finite() && **x >= 0.0))
+                {
+                    return Err(format!(
+                        "move {i}: target entry {j} is {x}, not a probability"
+                    ));
+                }
+                let total: f64 = t.iter().map(|&x| x as f64).sum();
+                if (total - 1.0).abs() > TARGET_TOLERANCE {
+                    return Err(format!("move {i}: the target sums to {total}, not 1"));
+                }
+            }
             let visited = d.visits.iter().any(|&v| v > 0);
-            if d.full_search && visited {
+            if d.target.is_some() || (d.full_search && visited) {
                 targets.push(k as u32);
             }
         }
@@ -236,12 +264,13 @@ impl TrainingSet {
         self.full
     }
 
-    /// Panics unless `game < games()`.
-    /// Decisions that are policy targets (`Batch::full` 1): full searches with at least one visit.
+    /// Decisions that are policy targets (`Batch::full` 1): decisions with a target, and full
+    /// searches with at least one visit.
     pub fn policy_decisions(&self) -> usize {
         self.targets.len()
     }
 
+    /// Panics unless `game < games()`.
     pub fn game_decisions(&self, game: usize) -> usize {
         self.games[game].decisions.len()
     }

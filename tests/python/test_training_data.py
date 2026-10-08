@@ -277,6 +277,38 @@ def test_malformed_records_are_value_errors_not_crashes(tmp_path):
             ts.sample(n, 0, 1)
 
 
+def test_a_gumbel_record_trains_on_its_improved_policy(tmp_path):
+    games = explore_games(tmp_path, 2, gumbel=6)
+    ts = TrainingSet(games)
+    assert ts.policy_decisions == ts.decisions == ts.full_decisions
+    checked = 0
+    for gi, g in enumerate(games):
+        for di, d in enumerate(g["decisions"][:30]):
+            b = ts.position(gi, di)
+            policy = floats(b["policy"])
+            for a, t in zip(d["legal"], d["target"]):
+                assert policy[policy_id(a, d["actor"])] == pytest.approx(t, abs=1e-7)
+            assert sum(policy) == pytest.approx(1.0, abs=1e-4)
+            assert list(b["full"]) == [1]
+            checked += 1
+    assert checked > 30
+
+
+@pytest.mark.parametrize("edit, message", [
+    (lambda t: t.pop(), "target entries"),
+    (lambda t: t.append(0.0), "target entries"),
+    (lambda t: t.__setitem__(0, t[0] + 0.5), "sums to"),
+    (lambda t: t.__setitem__(0, -1.0), "target entry 0"),
+    (lambda t: t.__setitem__(0, "x"), "game 0"),
+], ids=["short", "long", "sum", "negative", "not-a-number"])
+def test_a_malformed_target_is_a_value_error_naming_the_decision(tmp_path, edit, message):
+    (g,) = explore_games(tmp_path, 1, gumbel=6)
+    bad = json.loads(json.dumps(g))
+    edit(bad["decisions"][0]["target"])
+    with pytest.raises(ValueError, match=message):
+        TrainingSet([bad])
+
+
 def test_a_temp_name_is_never_a_record_file(tmp_path):
     """F3: a half-written record is `.NAME.tmp-HOST-PID`: hidden, and not matched by `*.jsonl.gz`."""
     final = tmp_path / "20261002-selfplay-ismcts-f6-q3.jsonl.gz"

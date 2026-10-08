@@ -29,6 +29,7 @@ fn recorded_every(seed: u64, config: GameConfig, every: usize) -> RecordedGame {
                 actor: s.current_actor(),
                 visits: buf.iter().map(|_| rng.below(4)).collect(),
                 full_search: decisions.len() % 2 == 0,
+                target: None,
             });
         }
         let a = buf[rng.below(buf.len() as u32) as usize];
@@ -213,6 +214,93 @@ fn a_record_that_does_not_replay_is_an_error() {
     assert!(err(long).contains("after the game ended"));
     let e = err(RecordedGame { seed: 9, ..g });
     assert!(e.starts_with("game 0 (seed 9)"), "{e}");
+}
+
+/// `g` with an improved policy on every decision ((j + 1) / Σ over its legal moves), every visit
+/// count zero and every search marked fast: only the targets make policy targets.
+fn with_targets(g: &RecordedGame) -> RecordedGame {
+    let mut g = g.clone();
+    for d in &mut g.decisions {
+        let n = d.visits.len();
+        let total = (n * (n + 1) / 2) as f32;
+        d.target = Some((1..=n).map(|j| j as f32 / total).collect());
+        d.visits.iter_mut().for_each(|v| *v = 0);
+        d.full_search = false;
+    }
+    g
+}
+
+#[test]
+fn a_decision_with_a_target_trains_on_it_whatever_its_visits() {
+    let g = with_targets(&recorded(1, decided()));
+    let set = TrainingSet::new(vec![g.clone()]).unwrap();
+    assert_eq!(set.policy_decisions(), g.decisions.len());
+    assert_eq!(
+        set.full_decisions(),
+        0,
+        "full_decisions still counts the flag"
+    );
+    let mut s = State::new(g.seed, g.config);
+    let mut next = 0;
+    for (i, &a) in g.actions.iter().enumerate() {
+        if next < g.decisions.len() && g.decisions[next].index as usize == i {
+            let d = &g.decisions[next];
+            let mut b = Batch::default();
+            set.position(0, next, &mut b);
+            let t = d.target.as_ref().unwrap();
+            let legal = s.legal_actions();
+            for (j, &l) in legal.iter().enumerate() {
+                assert_eq!(b.policy[policy_id(l, d.actor)], t[j], "move {i}");
+            }
+            let row: f64 = b.policy.iter().map(|&x| x as f64).sum();
+            assert!((row - 1.0).abs() < 1e-5, "move {i}: {row}");
+            assert_eq!(b.full, vec![1], "move {i}");
+            next += 1;
+        }
+        s.apply(a);
+    }
+    let a = set.sample_full(64, 3, 2).unwrap();
+    assert!(a.full.iter().all(|&f| f == 1));
+}
+
+#[test]
+fn a_bad_target_is_an_error_naming_the_decision() {
+    let g = with_targets(&recorded(1, decided()));
+    let k = g
+        .decisions
+        .iter()
+        .position(|d| d.visits.len() >= 2)
+        .expect("a decision with a choice");
+    let at = g.decisions[k].index;
+    let bad = |edit: &dyn Fn(&mut Vec<f32>)| {
+        let mut b = g.clone();
+        edit(b.decisions[k].target.as_mut().unwrap());
+        err(b)
+    };
+    for (e, want) in [
+        (
+            bad(&|t| {
+                t.pop();
+            }),
+            "target entries",
+        ),
+        (bad(&|t| t.push(0.0)), "target entries"),
+        (bad(&|t| t.iter_mut().for_each(|x| *x *= 0.9)), "sums to"),
+        (bad(&|t| t[0] = f32::NAN), "target entry 0"),
+        (
+            bad(&|t| {
+                t[1] += t[0] + 1.0;
+                t[0] = -1.0;
+            }),
+            "target entry 0",
+        ),
+    ] {
+        assert!(e.starts_with("game 0 (seed 1): "), "{e}");
+        assert!(
+            e.contains(&format!("move {at}: ")) && e.contains(want),
+            "{e}"
+        );
+    }
 }
 
 /// F2: records join a set a file at a time; a bad batch is reported by its index in the whole set
