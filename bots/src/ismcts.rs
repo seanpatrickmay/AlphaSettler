@@ -371,6 +371,11 @@ impl<E: Evaluator + Send> Bot for IsmctsBot<E> {
             ("belief_resets", self.resets),
             ("belief_truncations", self.past_truncations + live),
             ("searches", self.searches),
+            // 1 for a `+g` bot (Gumbel root search), 0 for a PUCT root.
+            (
+                "gumbel_root",
+                matches!(self.cfg.root, RootMode::Gumbel { .. }) as u64,
+            ),
         ]
     }
 }

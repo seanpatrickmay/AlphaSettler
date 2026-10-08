@@ -657,6 +657,28 @@ fn a_gumbel_name_builds_the_gumbel_bot_and_plain_names_stay_puct() {
     );
 }
 
+/// Whether a boxed bot reports a Gumbel root search.
+fn gumbel_root(bot: &dyn Bot) -> u64 {
+    let d: std::collections::HashMap<_, _> = bot.diagnostics().into_iter().collect();
+    d["gumbel_root"]
+}
+
+#[test]
+fn make_bot_gives_gumbel_roots_exactly_to_names_with_the_gumbel_suffix() {
+    for (name, expected) in [
+        ("ismcts@10", 0),
+        ("ismcts@10+t", 0),
+        ("ismcts@10+s2+t", 0),
+        ("ismcts@10+g", 1),
+        ("ismcts@10+t+g", 1),
+        ("ismcts@10+g+s2+t", 1),
+        ("ismcts@10+r2+g", 1),
+    ] {
+        let bot = make_bot(name, 0).unwrap();
+        assert_eq!(gumbel_root(bot.as_ref()), expected, "{name}");
+    }
+}
+
 #[test]
 fn a_gumbel_bot_keeps_its_setup_factor() {
     let mut g = Game::new(3, no_trades());

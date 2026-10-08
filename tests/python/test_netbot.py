@@ -120,6 +120,22 @@ def test_the_gumbel_suffix_builds_bots_that_play_legal_moves(nets, name):
         g.apply(a)
 
 
+@pytest.mark.parametrize(
+    "name, gumbel",
+    [
+        ("net:tiny@10", 0),
+        ("net:tiny@10+t+s2", 0),
+        ("net:tiny@10+g", 1),
+        ("net:tiny@10+t+g", 1),
+        ("net:tiny@10+g+s2+t", 1),
+        ("ismcts@10", 0),
+        ("ismcts@10+g", 1),
+    ],
+)
+def test_only_names_with_the_gumbel_suffix_search_the_root_by_gumbel(nets, name, gumbel):
+    assert Bot(name, 0, nets_dir=str(nets)).diagnostics()["gumbel_root"] == gumbel
+
+
 @pytest.mark.parametrize("bad", ["net:tiny@10+g+g", "net:tiny+g@10", "net:tiny@10+G", "ismcts@10+gg", "greedy+g"])
 def test_malformed_gumbel_names_are_unknown_bots(nets, bad):
     with pytest.raises(ValueError, match="unknown bot"):

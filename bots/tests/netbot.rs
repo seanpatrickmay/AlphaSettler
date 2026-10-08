@@ -184,6 +184,21 @@ fn gumbel_net_names_build_the_gumbel_bot_in_any_order() {
     for name in names {
         assert_eq!(roster.make(name, 0).unwrap().name(), "net", "{name}");
     }
+    let gumbel_root = |name: &str| {
+        let bot = roster.make(name, 0).unwrap();
+        let d: std::collections::HashMap<_, _> = bot.diagnostics().into_iter().collect();
+        d["gumbel_root"]
+    };
+    for name in names {
+        assert_eq!(gumbel_root(name), 1, "{name}");
+    }
+    let plain = ["net:tiny@16", "net:tiny@16+t", "net:tiny@16+s2+t"];
+    let roster_plain = Roster::new(&plain, &dir).unwrap();
+    for name in plain {
+        let bot = roster_plain.make(name, 0).unwrap();
+        let d: std::collections::HashMap<_, _> = bot.diagnostics().into_iter().collect();
+        assert_eq!(d["gumbel_root"], 0, "{name}");
+    }
     let w = load_net(&dir, "tiny").unwrap();
     let mut s = State::new(5, trading());
     let mut rng = settler_engine::rng::Rng::new(5);
