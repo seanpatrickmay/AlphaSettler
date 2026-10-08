@@ -9,10 +9,12 @@ import pytest
 
 from alphasettler import Game, files, records
 from alphasettler._engine import (
-    NET_BATCH, NET_HIDDEN_LEN, NET_PUBLIC_LEN, NOISE_ALPHA, NOISE_WEIGHT, SAMPLE_TURNS, SEARCH_BATCH, TrainingSet,
-    action_space_size, encode, net_forward, resolve_net, write_random_net,
+    NET_BATCH, NET_HIDDEN_LEN, NET_PUBLIC_LEN, NOISE_ALPHA, NOISE_WEIGHT, OPENING_EPSILON, OPENING_TOP, SAMPLE_TURNS,
+    SEARCH_BATCH, TrainingSet, action_space_size, encode, net_forward, resolve_net, selfplay_explore,
+    write_random_net,
 )
 from alphasettler.selfplay import write_explore
+from opening_games import opening_model_file
 
 CONFIG = {"max_offers_per_turn": 0}
 TRADING = {"max_offers_per_turn": 2, "max_trade_cards": 1}
@@ -92,6 +94,44 @@ def test_gumbel_self_play_needs_at_least_two_simulations(tmp_path):
         write_explore(tmp_path / "no.jsonl.gz", 0, 1, config=CONFIG, full_simulations=6, fast_simulations=3,
                       full_probability=0.25, gumbel=1)
     assert not (tmp_path / "no.jsonl.gz").exists()
+
+
+def test_opening_self_play_records_no_setup_settlement_and_names_its_model(tmp_path):
+    model = opening_model_file(tmp_path / "opening.bin")
+    games = explore_games(tmp_path, 2, config=TRADING, opening=model)
+    plain = explore_games(tmp_path, 2, config=TRADING, name="plain.jsonl.gz")
+    assert (OPENING_EPSILON, OPENING_TOP) == (0.25, 5)
+    for g, p in zip(games, plain):
+        assert g["selfplay"] == {**p["selfplay"], "opening_sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+                                 "opening_epsilon": OPENING_EPSILON, "opening_top": OPENING_TOP}
+        assert g["belief_resets"] == 0 and records.replay_mismatches(g) == []
+        recorded = {d["index"] for d in g["decisions"]}
+        replay = Game(g["seed"], g["config"])
+        settlements = roads = 0
+        for i, a in enumerate(g["actions"]):
+            if replay.phase == "setup_settlement":
+                assert i not in recorded, f"game {g['seed']} move {i}: a setup settlement was recorded"
+                settlements += 1
+            elif replay.phase == "setup_road":
+                roads += i in recorded
+            replay.apply(a)
+        assert settlements == 8 and roads > 0
+    assert any(g["actions"][:16] != p["actions"][:16] for g, p in zip(games, plain)), "the model opens the games"
+
+
+def test_opening_self_play_refuses_gumbel_and_bad_model_files(tmp_path):
+    model = opening_model_file(tmp_path / "opening.bin")
+    bad = tmp_path / "bad.bin"
+    bad.write_bytes(model.read_bytes()[:-4])
+    for kw, message in [({"opening": model, "gumbel": 6}, "--opening and --gumbel"),
+                        ({"opening": bad}, "opening model .*bad.bin.*truncated"),
+                        ({"opening": tmp_path / "missing.bin"}, "cannot read opening model")]:
+        with pytest.raises(ValueError, match=message):
+            write_explore(tmp_path / "no.jsonl.gz", 0, 1, config=CONFIG, full_simulations=6, fast_simulations=3,
+                          full_probability=0.25, **kw)
+        assert not (tmp_path / "no.jsonl.gz").exists()
+    with pytest.raises(ValueError, match="Gumbel self-play"):  # the native check, below the Python one
+        selfplay_explore(0, 1, 1, 6, 3, 0.25, CONFIG, None, None, 6, str(model))
 
 
 def policy_id(action: int, actor: int) -> int:

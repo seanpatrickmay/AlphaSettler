@@ -435,11 +435,13 @@ fn selfplay<'py>(
 /// probability `full_probability`, else `fast_simulations`), root noise on full searches and
 /// opening sampling. With `gumbel` (a simulation count), every move is instead a Gumbel root
 /// search of that many simulations, recorded with its improved policy as `target` (spec P2
-/// Section 5); the three PUCT arguments are then not used. With `net`, every seat is the network
-/// `<nets_dir>/<net>.bin` (loaded once); otherwise the heuristic. Decisions carry no
-/// observations. Releases the GIL while games run.
+/// Section 5); the three PUCT arguments are then not used. With `opening` (an `ASOPEN` file),
+/// the opening model picks every setup settlement, epsilon-greedy over its best spots, with no
+/// search and no recorded decision (spec 3d-1b Section 2); refused with `gumbel`. With `net`,
+/// every seat is the network `<nets_dir>/<net>.bin` (loaded once); otherwise the heuristic.
+/// Decisions carry no observations. Releases the GIL while games run.
 #[pyfunction]
-#[pyo3(signature = (seed_start, games, threads, full_simulations, fast_simulations, full_probability, config=None, net=None, nets_dir=None, gumbel=None))]
+#[pyo3(signature = (seed_start, games, threads, full_simulations, fast_simulations, full_probability, config=None, net=None, nets_dir=None, gumbel=None, opening=None))]
 #[allow(clippy::too_many_arguments)]
 fn selfplay_explore<'py>(
     py: Python<'py>,
@@ -453,10 +455,12 @@ fn selfplay_explore<'py>(
     net: Option<&str>,
     nets_dir: Option<PathBuf>,
     gumbel: Option<&Bound<'py, PyAny>>,
+    opening: Option<PathBuf>,
 ) -> PyResult<Bound<'py, PyList>> {
     use settler_bots::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
     use settler_bots::netbot::{load_net, DEFAULT_NETS_DIR, NET_BATCH};
-    use settler_bots::selfplay::{run_with, Exploration};
+    use settler_bots::opening_model::OpeningModel;
+    use settler_bots::selfplay::{run_with_opening, Exploration};
     use settler_net::evaluator::NetEvaluator;
     let seed_start: u64 = int_arg(seed_start, "seed_start")?;
     let games: u64 = int_arg(games, "games")?;
@@ -483,23 +487,29 @@ fn selfplay_explore<'py>(
         Some(n) => Some(load_net(&dir, n).map_err(value_error)?),
         None => None,
     };
+    let model = match &opening {
+        Some(path) => Some(OpeningModel::load(path).map_err(value_error)?),
+        None => None,
+    };
     let played = py
         .detach(|| match &weights {
-            None => run_with(
+            None => run_with_opening(
                 seed_start..end,
                 config,
                 &ex,
                 settler_search::SearchConfig::default().batch,
                 &|| HeuristicEvaluator::new(DEFAULT_WEIGHTS, 0),
                 threads,
+                model.as_ref(),
             ),
-            Some(w) => run_with(
+            Some(w) => run_with_opening(
                 seed_start..end,
                 config,
                 &ex,
                 NET_BATCH,
                 &|| NetEvaluator::new(w.clone()),
                 threads,
+                model.as_ref(),
             ),
         })
         .map_err(value_error)?;
@@ -624,6 +634,8 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
         settler_bots::selfplay::NOISE.alpha_total as f64,
     )?;
     m.add("SAMPLE_TURNS", settler_bots::selfplay::SAMPLE_TURNS)?;
+    m.add("OPENING_EPSILON", settler_bots::selfplay::OPENING_EPSILON)?;
+    m.add("OPENING_TOP", settler_bots::selfplay::OPENING_TOP)?;
     m.add_function(wrap_pyfunction!(fit_heuristic, m)?)?;
     m.add("MAX_SEEDS", settler_bots::arena::MAX_SEEDS)?;
     m.add(

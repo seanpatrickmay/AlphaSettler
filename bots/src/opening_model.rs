@@ -200,18 +200,35 @@ impl OpeningModel {
     }
 }
 
-/// The setup settlement a `+o` bot plays (spec 3d-1 Section 4.5): each legal settlement placed on
-/// a copy of the position, scored by the model from the viewer's seat, the highest own-win
-/// probability played; ties go to the first in `legal` (engine order). No search runs.
+/// Each legal setup settlement with the model's own-win probability for the viewer, in `legal`'s
+/// (engine) order: the spot placed on a copy of the position and scored from the viewer's seat
+/// (spec 3d-1 Section 4.5). Actions other than settlements are left out. `+o`
+/// (`choose_settlement`) and self-play's `selfplay::explore_settlement` both score with this.
+pub fn settlement_scores(
+    model: &OpeningModel,
+    obs: &Observation,
+    legal: &[Action],
+) -> Vec<(Action, f32)> {
+    legal
+        .iter()
+        .filter_map(|&a| {
+            let Action::BuildSettlement(n) = a else {
+                return None;
+            };
+            let mut placed = obs.settlements;
+            placed[obs.viewer as usize] |= 1u64 << n;
+            let p = model.probabilities(&opening_features(&obs.board, &placed, obs.viewer))[0];
+            Some((a, p))
+        })
+        .collect()
+}
+
+/// The setup settlement a `+o` bot plays (spec 3d-1 Section 4.5): the highest own-win
+/// probability of `settlement_scores`; ties go to the first in `legal` (engine order). No search
+/// runs.
 pub fn choose_settlement(model: &OpeningModel, obs: &Observation, legal: &[Action]) -> Action {
     let mut best: Option<(Action, f32)> = None;
-    for &a in legal {
-        let Action::BuildSettlement(n) = a else {
-            continue;
-        };
-        let mut placed = obs.settlements;
-        placed[obs.viewer as usize] |= 1u64 << n;
-        let p = model.probabilities(&opening_features(&obs.board, &placed, obs.viewer))[0];
+    for (a, p) in settlement_scores(model, obs, legal) {
         let better = match best {
             None => true,
             Some((_, b)) => p > b,

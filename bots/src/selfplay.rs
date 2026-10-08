@@ -7,14 +7,18 @@
 //! decision.
 //! P2: Gumbel self-play (`Exploration::gumbel`) searches every move with the Gumbel root and
 //! records its improved policy as the decision's `target`.
+//! 3d-1b: with an opening model (`play_with_opening`, `run_with_opening`) the model picks every
+//! setup settlement (`explore_settlement`: ε-greedy over its best spots), with no search and no
+//! recorded decision; without one, self-play is unchanged.
 
 use crate::arena::{belief_resets, bot_seed, split_seeds, EventFeed, MAX_SEEDS};
 use crate::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
 use crate::ismcts::{IsmctsBot, MoveOptions, MAX_SIMULATIONS};
+use crate::opening_model::{settlement_scores, OpeningModel};
 use crate::Bot;
 use settler_engine::legal::legal_actions;
 use settler_engine::rng::{mix, Rng};
-use settler_engine::{Action, GameConfig, PlayerId, State, NUM_PLAYERS};
+use settler_engine::{Action, GameConfig, Observation, Phase, PlayerId, State, NUM_PLAYERS};
 use settler_search::{unit, Evaluator, RootMode, RootNoise, SearchConfig};
 use std::ops::Range;
 
@@ -29,6 +33,10 @@ pub const NOISE: RootNoise = RootNoise {
     alpha_total: 10.0,
 };
 pub const SAMPLE_TURNS: u32 = 8;
+/// 3d-1b (spec Section 2): with an opening model, the chance a setup settlement is drawn from
+/// the model's `OPENING_TOP` best spots instead of being its best spot.
+pub const OPENING_EPSILON: f64 = 0.25;
+pub const OPENING_TOP: usize = 5;
 const EXPLORE_SALT: u64 = 0xE7B1;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -150,6 +158,28 @@ impl Exploration {
     }
 }
 
+/// The setup settlement self-play plays with an opening model (spec 3d-1b Section 2): every legal
+/// settlement scored as `+o` scores it (`settlement_scores`); with probability
+/// `1 - OPENING_EPSILON` the best (ties to the first in engine order: `choose_settlement`'s
+/// spot), else one drawn uniformly from the `OPENING_TOP` best (all of them if fewer are legal).
+/// Both draws come from `rng`, the game's exploration stream.
+pub fn explore_settlement(
+    model: &OpeningModel,
+    obs: &Observation,
+    legal: &[Action],
+    rng: &mut Rng,
+) -> Action {
+    let mut scored = settlement_scores(model, obs, legal);
+    // A stable sort, best first: equal scores keep engine order.
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let explore = unit(rng) < OPENING_EPSILON;
+    match scored.len() {
+        0 => legal[0],
+        n if explore => scored[rng.below(n.min(OPENING_TOP) as u32) as usize].0,
+        _ => scored[0].0,
+    }
+}
+
 /// One self-play game; `make_eval` builds each seat's evaluator, `batch` is the leaf batch.
 pub fn play_with<E, F>(
     seed: u64,
@@ -157,6 +187,24 @@ pub fn play_with<E, F>(
     ex: &Exploration,
     batch: usize,
     make_eval: &F,
+) -> SelfPlayGame
+where
+    E: Evaluator + Send,
+    F: Fn() -> E,
+{
+    play_with_opening(seed, config, ex, batch, make_eval, None)
+}
+
+/// `play_with`, and with `opening` the model picks every setup settlement
+/// (`explore_settlement`, spec 3d-1b Section 2): no search runs and no decision is recorded for
+/// those moves. Without a model this is `play_with` exactly.
+pub fn play_with_opening<E, F>(
+    seed: u64,
+    config: GameConfig,
+    ex: &Exploration,
+    batch: usize,
+    make_eval: &F,
+    opening: Option<&OpeningModel>,
 ) -> SelfPlayGame
 where
     E: Evaluator + Send,
@@ -186,35 +234,45 @@ where
         legal_actions(&s, &mut buf);
         let actor = s.current_actor() as usize;
         feed.deliver(actor, &mut bots[actor]);
-        let full = unit(&mut rng) < ex.full_probability;
-        let opts = MoveOptions {
-            simulations: if full {
-                ex.full_simulations
-            } else {
-                ex.fast_simulations
-            },
-            noise: match ex.noise {
-                Some(n) if full => Some((n, rng.next_u64())),
-                _ => None,
-            },
-            sample: (s.turn < ex.sample_turns).then(|| rng.next_u64()),
+        let a = match (s.phase, opening) {
+            // 3d-1b: the model's pick, from this game's exploration stream. The seat's bot has
+            // its events (above) but does not decide, so nothing is searched or recorded.
+            (Phase::SetupSettlement, Some(model)) => {
+                explore_settlement(model, &s.observation(actor as PlayerId), &buf, &mut rng)
+            }
+            _ => {
+                let full = unit(&mut rng) < ex.full_probability;
+                let opts = MoveOptions {
+                    simulations: if full {
+                        ex.full_simulations
+                    } else {
+                        ex.fast_simulations
+                    },
+                    noise: match ex.noise {
+                        Some(n) if full => Some((n, rng.next_u64())),
+                        _ => None,
+                    },
+                    sample: (s.turn < ex.sample_turns).then(|| rng.next_u64()),
+                };
+                let a = bots[actor].act_with(&s.observation(actor as PlayerId), &buf, &opts);
+                if let Some(r) = bots[actor].take_last_search() {
+                    decisions.push(Decision {
+                        index: actions.len() as u32,
+                        actor: actor as PlayerId,
+                        legal: buf.clone(),
+                        visits: r.visits,
+                        full_search: full,
+                        target: r.improved,
+                    });
+                }
+                a
+            }
         };
-        let a = bots[actor].act_with(&s.observation(actor as PlayerId), &buf, &opts);
         assert!(
             buf.contains(&a),
             "self-play chose illegal action {a:?} in phase {:?}",
             s.phase
         );
-        if let Some(r) = bots[actor].take_last_search() {
-            decisions.push(Decision {
-                index: actions.len() as u32,
-                actor: actor as PlayerId,
-                legal: buf.clone(),
-                visits: r.visits,
-                full_search: full,
-                target: r.improved,
-            });
-        }
         actions.push(a);
         step.clear();
         s.apply_with(a, None, &mut step);
@@ -244,8 +302,33 @@ where
     E: Evaluator + Send,
     F: Fn() -> E + Sync,
 {
+    run_with_opening(seeds, config, ex, batch, make_eval, threads, None)
+}
+
+/// `run_with` with `play_with_opening`'s `opening`. A model with Gumbel self-play is refused
+/// (spec 3d-1b Section 3).
+pub fn run_with_opening<E, F>(
+    seeds: Range<u64>,
+    config: GameConfig,
+    ex: &Exploration,
+    batch: usize,
+    make_eval: &F,
+    threads: usize,
+    opening: Option<&OpeningModel>,
+) -> Result<Vec<SelfPlayGame>, String>
+where
+    E: Evaluator + Send,
+    F: Fn() -> E + Sync,
+{
     config.validate()?;
     ex.validate()?;
+    if ex.gumbel && opening.is_some() {
+        return Err(
+            "the opening model is not used with Gumbel self-play: Gumbel self-play \
+                    stays the P2 measurement it was (spec 3d-1b Section 3)"
+                .into(),
+        );
+    }
     if batch == 0 {
         return Err("the leaf batch must be positive".into());
     }
@@ -258,7 +341,7 @@ where
             .into_iter()
             .map(|part| {
                 scope.spawn(move || {
-                    part.map(|seed| play_with(seed, config, ex, batch, make_eval))
+                    part.map(|seed| play_with_opening(seed, config, ex, batch, make_eval, opening))
                         .collect::<Vec<_>>()
                 })
             })

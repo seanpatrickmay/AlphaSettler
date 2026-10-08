@@ -5,9 +5,12 @@ use settler_bots::heuristic::{
     fit, log_likelihood, samples_from_games, HeuristicEvaluator, ReplayGame, Sample,
     DEFAULT_WEIGHTS, NUM_FEATURES,
 };
+use settler_bots::opening::OPENING_FEATURES;
+use settler_bots::opening_model::{settlement_scores, OpeningLayer, OpeningModel};
 use settler_bots::selfplay::{
-    play, play_with, run, run_with, Exploration, SelfPlayGame, FAST_SIMULATIONS, FULL_PROBABILITY,
-    FULL_SIMULATIONS, MIN_SIMULATIONS, NOISE, SAMPLE_TURNS,
+    play, play_with, play_with_opening, run, run_with, run_with_opening, Exploration, SelfPlayGame,
+    FAST_SIMULATIONS, FULL_PROBABILITY, FULL_SIMULATIONS, MIN_SIMULATIONS, NOISE, OPENING_EPSILON,
+    OPENING_TOP, SAMPLE_TURNS,
 };
 use settler_engine::rng::Rng;
 use settler_engine::*;
@@ -502,5 +505,160 @@ fn trading_self_play_records_offers_answers_and_confirmations() {
     assert!(
         offers > 0 && answers > 0 && confirmations > 0,
         "{offers} visited offers, {answers} answers, {confirmations} confirmations"
+    );
+}
+
+/// A 78 -> 16 -> 4 opening model with small weights drawn from `seed` (as tests/opening_model.rs
+/// builds them): its spots score apart.
+fn opening_model(seed: u64) -> OpeningModel {
+    let mut rng = Rng::new(seed);
+    let mut layers = Vec::new();
+    for (cols, rows) in [(OPENING_FEATURES, 16), (16, NUM_PLAYERS)] {
+        let mut x = || (rng.next_u64() >> 40) as f32 / (1u64 << 24) as f32 * 0.2 - 0.1;
+        let w = (0..rows * cols).map(|_| x()).collect();
+        let b = (0..rows).map(|_| x()).collect();
+        layers.push(OpeningLayer { rows, cols, w, b });
+    }
+    OpeningModel { layers }
+}
+
+/// Every weight 0: every spot scores 1/4, a tie broken by engine order.
+fn tied_model() -> OpeningModel {
+    OpeningModel {
+        layers: vec![OpeningLayer {
+            rows: NUM_PLAYERS,
+            cols: OPENING_FEATURES,
+            w: vec![0.0; NUM_PLAYERS * OPENING_FEATURES],
+            b: vec![0.0; NUM_PLAYERS],
+        }],
+    }
+}
+
+/// The model's settlements in `s` (the actor's view), best first, equal scores in engine order.
+fn ranked_spots(model: &OpeningModel, s: &State) -> Vec<Action> {
+    let legal = s.legal_actions();
+    let mut scored = settlement_scores(model, &s.observation(s.current_actor()), &legal);
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.into_iter().map(|(a, _)| a).collect()
+}
+
+/// With an opening model (spec 3d-1b Section 2) self-play's setup settlements are the model's:
+/// none is searched or recorded, each is one of its OPENING_TOP best spots, about four in five
+/// are its best one, and the setup roads are still searched and recorded.
+#[test]
+fn an_opening_model_picks_every_setup_settlement_from_its_top_spots_unrecorded() {
+    assert_eq!((OPENING_EPSILON, OPENING_TOP), (0.25, 5));
+    for (what, model) in [("random", opening_model(7)), ("tied", tied_model())] {
+        let (mut picks, mut off_best, mut road_decisions) = (0, 0, 0);
+        for seed in 0..6 {
+            let g = play_with_opening(
+                seed,
+                trading(),
+                &small_explore(),
+                8,
+                &heuristic,
+                Some(&model),
+            );
+            assert_eq!(g.belief_resets, 0, "{what} seed {seed}");
+            let mut s = State::new(seed, trading());
+            let mut decisions = g.decisions.iter().peekable();
+            for (i, &a) in g.actions.iter().enumerate() {
+                let decision = decisions.next_if(|d| d.index as usize == i);
+                match s.phase {
+                    Phase::SetupSettlement => {
+                        assert!(
+                            decision.is_none(),
+                            "{what} seed {seed} move {i}: a setup settlement was recorded"
+                        );
+                        let ranked = ranked_spots(&model, &s);
+                        let top = &ranked[..ranked.len().min(OPENING_TOP)];
+                        assert!(
+                            top.contains(&a),
+                            "{what} seed {seed} move {i}: {a:?} not in {top:?}"
+                        );
+                        if what == "tied" {
+                            // Ties go to engine order: the first five legal settlements.
+                            assert!(
+                                s.legal_actions()[..OPENING_TOP].contains(&a),
+                                "seed {seed} move {i}"
+                            );
+                        }
+                        picks += 1;
+                        off_best += (a != ranked[0]) as u32;
+                    }
+                    Phase::SetupRoad { .. } => road_decisions += decision.is_some() as u32,
+                    _ => {}
+                }
+                s.apply(a);
+            }
+        }
+        assert_eq!(picks, 6 * 8, "{what}");
+        // 1 - ε + ε / K = 0.8 of the 48 picks are expected on the best spot.
+        assert!(
+            off_best > 0 && off_best < picks / 2,
+            "{what}: {off_best} of {picks} picks off the best spot"
+        );
+        assert!(
+            road_decisions > 0,
+            "{what}: setup roads are searched and recorded"
+        );
+    }
+}
+
+#[test]
+fn opening_model_self_play_is_deterministic_and_thread_independent() {
+    let model = opening_model(7);
+    let ex = small_explore();
+    let a = run_with_opening(0..4, trading(), &ex, 8, &heuristic, 1, Some(&model)).unwrap();
+    assert_eq!(
+        a,
+        run_with_opening(0..4, trading(), &ex, 8, &heuristic, 3, Some(&model)).unwrap()
+    );
+    assert_eq!(
+        a[2],
+        play_with_opening(2, trading(), &ex, 8, &heuristic, Some(&model))
+    );
+    let plain = run_with(0..4, trading(), &ex, 8, &heuristic, 1).unwrap();
+    assert!(
+        a.iter()
+            .zip(&plain)
+            .any(|(x, y)| x.actions[..16] != y.actions[..16]),
+        "the model changes the openings"
+    );
+}
+
+#[test]
+fn opening_model_self_play_refuses_gumbel_self_play() {
+    let model = opening_model(7);
+    let ex = Exploration::gumbel(8);
+    let e = run_with_opening(0..1, no_trades(), &ex, 8, &heuristic, 1, Some(&model)).unwrap_err();
+    assert!(e.contains("Gumbel"), "{e}");
+    assert!(run_with_opening(0..1, no_trades(), &ex, 8, &heuristic, 1, None).is_ok());
+}
+
+/// Without a model `play_with_opening` is `play_with`: the 3a and P2 digests hold through it.
+#[test]
+fn self_play_without_an_opening_model_plays_the_games_it_played_before_3d1b() {
+    assert_eq!(
+        digest(&play_with_opening(
+            2,
+            trading(),
+            &small_explore(),
+            8,
+            &heuristic,
+            None
+        )),
+        0x94f447a9c3baf5b2
+    );
+    assert_eq!(
+        digest(&play_with_opening(
+            3,
+            no_trades(),
+            &Exploration::fixed(10),
+            8,
+            &heuristic,
+            None
+        )),
+        0x517b49ad6e41ec1e
     );
 }

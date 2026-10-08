@@ -360,6 +360,32 @@ fn a_model_that_ties_picks_the_first_legal_spot() {
 }
 
 #[test]
+fn the_scores_cover_every_legal_spot_in_engine_order_and_the_plus_o_spot_is_the_first_best() {
+    let m = model(&[16], 3);
+    for seed in 0..4 {
+        let s = State::new(seed, trading());
+        let legal = s.legal_actions();
+        let obs = s.observation(0);
+        let scores = settlement_scores(&m, &obs, &legal);
+        assert_eq!(scores.iter().map(|&(a, _)| a).collect::<Vec<_>>(), legal);
+        assert!(
+            scores.iter().all(|&(_, p)| p > 0.0 && p < 1.0),
+            "seed {seed}"
+        );
+        let best = scores
+            .iter()
+            .map(|&(_, p)| p)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let first_best = scores.iter().find(|&&(_, p)| p == best).unwrap().0;
+        assert_eq!(
+            choose_settlement(&m, &obs, &legal),
+            first_best,
+            "seed {seed}"
+        );
+    }
+}
+
+#[test]
 fn a_spot_scored_before_it_is_placed_has_the_features_training_sees_after() {
     let mut g = Game::new(4, GameConfig::default());
     let mut checked = 0;

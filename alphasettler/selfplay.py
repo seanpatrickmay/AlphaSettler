@@ -3,7 +3,10 @@ and opening sampling, for the heuristic bot (`ismcts`, the warm start) or a netw
 Each game carries a `selfplay` block: the bot, the net file's sha256, both simulation caps and the
 exploration settings. Decisions carry no observations; the seed and actions reproduce them. With
 `gumbel` (P2), every move is a Gumbel root search and each decision carries its improved policy as
-`target`; the block then holds `gumbel_simulations` instead of the exploration settings."""
+`target`; the block then holds `gumbel_simulations` instead of the exploration settings. With `opening`
+(3d-1b), an opening model file picks every setup settlement, epsilon-greedy over its best spots, with
+no search and no decision; the block then also holds `opening_sha256`, `opening_epsilon` and
+`opening_top`."""
 
 from __future__ import annotations
 
@@ -13,12 +16,14 @@ from pathlib import Path
 
 from alphasettler import files, records
 from alphasettler._engine import (
-    DEFAULT_NETS_DIR, MAX_SIMULATIONS, NET_BATCH, NOISE_ALPHA, NOISE_WEIGHT, SAMPLE_TURNS, SEARCH_BATCH,
-    SELFPLAY_MIN_SIMULATIONS, resolve_net, selfplay_explore,
+    DEFAULT_NETS_DIR, MAX_SIMULATIONS, NET_BATCH, NOISE_ALPHA, NOISE_WEIGHT, OPENING_EPSILON, OPENING_TOP, SAMPLE_TURNS,
+    SEARCH_BATCH, SELFPLAY_MIN_SIMULATIONS, opening_forward, resolve_net, selfplay_explore,
 )
 
 # Games per native call. Python sees Ctrl-C only between calls, and every finished batch is on disk.
 BATCH_GAMES = 100
+OPENING_WITH_GUMBEL = ("--opening and --gumbel cannot be used together: Gumbel self-play stays the P2 measurement "
+                       "it was (spec 3d-1b Section 3)")
 
 
 def check_gumbel(simulations: int) -> None:
@@ -26,6 +31,16 @@ def check_gumbel(simulations: int) -> None:
     if not (isinstance(simulations, int) and SELFPLAY_MIN_SIMULATIONS <= simulations <= MAX_SIMULATIONS):
         raise ValueError(f"gumbel simulations must be {SELFPLAY_MIN_SIMULATIONS}..={MAX_SIMULATIONS}, "
                          f"got {simulations!r}")
+
+
+def check_opening(path: str | Path, gumbel: int | None = None) -> str:
+    """The sha256 of the opening model file `path`, once the Rust loader every `+o` bot uses has read
+    it (its ValueError, naming the file, otherwise). With `gumbel` it is a ValueError: the opening
+    model is not used with Gumbel self-play."""
+    if gumbel is not None:
+        raise ValueError(OPENING_WITH_GUMBEL)
+    opening_forward(str(path), [])
+    return files.sha256_file(path)
 
 
 def mode_mismatch(root: str | Path, stored: int | None, asked: int | None) -> str | None:
@@ -39,9 +54,11 @@ def mode_mismatch(root: str | Path, stored: int | None, asked: int | None) -> st
 
 
 def settings(net: str | None, nets_dir: str | Path, full_simulations: int, fast_simulations: int,
-             full_probability: float, gumbel: int | None = None) -> dict:
-    """The `selfplay` block. Checks every argument, and loads the net, without playing a game.
-    With `gumbel`, the PUCT arguments are not used."""
+             full_probability: float, gumbel: int | None = None, opening: str | Path | None = None) -> dict:
+    """The `selfplay` block. Checks every argument, loads the net and reads the opening model,
+    without playing a game. With `gumbel`, the PUCT arguments are not used; `opening` with `gumbel`
+    is a ValueError."""
+    opening_sha256 = None if opening is None else check_opening(opening, gumbel)
     if gumbel is not None:
         check_gumbel(gumbel)
     else:
@@ -60,7 +77,7 @@ def settings(net: str | None, nets_dir: str | Path, full_simulations: int, fast_
     batch = SEARCH_BATCH if net is None else NET_BATCH
     if gumbel is not None:
         return {**who, "gumbel_simulations": gumbel, "batch": batch}
-    return {
+    block = {
         **who,
         "full_simulations": full_simulations,
         "fast_simulations": fast_simulations,
@@ -70,17 +87,20 @@ def settings(net: str | None, nets_dir: str | Path, full_simulations: int, fast_
         "sample_turns": SAMPLE_TURNS,
         "batch": batch,
     }
+    if opening_sha256 is not None:  # only then: records without a model are unchanged
+        block.update(opening_sha256=opening_sha256, opening_epsilon=OPENING_EPSILON, opening_top=OPENING_TOP)
+    return block
 
 
 def write_explore(out: str | Path, seed_start: int, games: int, *, config: dict, full_simulations: int,
                   fast_simulations: int, full_probability: float, net: str | None = None,
                   nets_dir: str | Path | None = None, threads: int | None = None,
-                  counts: dict | None = None, gumbel: int | None = None) -> dict:
+                  counts: dict | None = None, gumbel: int | None = None, opening: str | Path | None = None) -> dict:
     """Play `games` games from `seed_start` and write them to the new file `out`. Arguments are
     checked before the file is created. `counts` (if given) is updated as batches finish, so a
     caller that catches KeyboardInterrupt still knows what was kept."""
     nets_dir = DEFAULT_NETS_DIR if nets_dir is None else nets_dir
-    meta = settings(net, nets_dir, full_simulations, fast_simulations, full_probability, gumbel)
+    meta = settings(net, nets_dir, full_simulations, fast_simulations, full_probability, gumbel, opening)
     counts = {} if counts is None else counts
     counts.update(games=0, decisions=0, full_decisions=0, belief_resets=0)
     threads = threads or os.cpu_count() or 1
@@ -88,7 +108,8 @@ def write_explore(out: str | Path, seed_start: int, games: int, *, config: dict,
     with records.open_writer(out) as w:
         for lo in range(seed_start, end, BATCH_GAMES):
             batch = selfplay_explore(lo, min(BATCH_GAMES, end - lo), threads, full_simulations, fast_simulations,
-                                     full_probability, config, net, str(nets_dir), gumbel)
+                                     full_probability, config, net, str(nets_dir), gumbel,
+                                     None if opening is None else str(opening))
             for g in batch:
                 w.write_game({**g, "selfplay": meta}, config)
                 counts["games"] += 1

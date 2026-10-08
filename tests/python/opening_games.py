@@ -13,8 +13,9 @@ The distance rule does not depend on the board, so these actions replay on any s
 from pathlib import Path
 
 from alphasettler import records
-from alphasettler._engine import resolve_config
+from alphasettler._engine import OPENING_FEATURES, resolve_config
 from alphasettler.arena import TRADES
+from alphasettler.opening import write_model
 
 FIXED_NODES = [9, 12, 18, 41, 31, 10, 4, 29]
 FIXED_ACTIONS = [34, 141, 37, 144, 43, 153, 66, 185, 56, 170, 35, 142, 29, 134, 54, 168]
@@ -41,3 +42,12 @@ def truncate(path_or_dir: Path) -> Path:
         path = path / "selfplay-fixed.jsonl.gz"
     path.write_bytes(path.read_bytes()[:-20])
     return path
+
+
+def opening_model_file(path: Path, scale: float = 0.02) -> Path:
+    """A one-layer opening model (78 features -> 4 seats) with fixed weights times `scale`, written
+    through the Rust loader: its spots score apart, so its picks are not engine order. `scale=0.0`
+    writes a zero model (every spot ties)."""
+    w = [((i * 37) % 11 - 5) * scale for i in range(4 * OPENING_FEATURES)]
+    write_model(path, [(4, OPENING_FEATURES, w, [0.0] * 4)])
+    return Path(path)
