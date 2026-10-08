@@ -463,12 +463,21 @@ fn the_forward_pass_matches_a_plain_reference() {
     }
 }
 
+/// Within float rounding, not bit for bit: on macOS a batch is one matrix product (`dense`), whose
+/// summation order may depend on the batch size. A fixed sequence of batches is still exact, so a
+/// seed replays the same game.
 #[test]
-fn each_row_is_independent_of_the_rest_of_the_batch() {
+fn each_row_matches_its_result_alone_within_rounding() {
     let w = Weights::random(Arch::DEFAULT, 9);
     let (n, public, hidden) = inputs(211);
     let (mut fwd, mut all, mut one) = (Forward::new(), Outputs::default(), Outputs::default());
     fwd.run(&w, &public, &hidden, n, &mut all);
+    let close = |a: &[f32], b: &[f32]| {
+        a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(x, y)| (x - y).abs() <= 1e-5 * y.abs().max(1.0))
+    };
     for i in 0..n {
         fwd.run(
             &w,
@@ -477,15 +486,61 @@ fn each_row_is_independent_of_the_rest_of_the_batch() {
             1,
             &mut one,
         );
-        assert_eq!(
-            one.policy[..],
-            all.policy[i * ACTION_SPACE_SIZE..(i + 1) * ACTION_SPACE_SIZE]
+        assert!(
+            close(
+                &one.policy,
+                &all.policy[i * ACTION_SPACE_SIZE..(i + 1) * ACTION_SPACE_SIZE]
+            ),
+            "policy {i}"
         );
-        assert_eq!(
-            one.value[..],
-            all.value[i * NUM_PLAYERS..(i + 1) * NUM_PLAYERS]
+        assert!(
+            close(
+                &one.value,
+                &all.value[i * NUM_PLAYERS..(i + 1) * NUM_PLAYERS]
+            ),
+            "value {i}"
         );
-        assert_eq!(one.aux[..], all.aux[i * NUM_PLAYERS..(i + 1) * NUM_PLAYERS]);
+        assert!(
+            close(&one.aux, &all.aux[i * NUM_PLAYERS..(i + 1) * NUM_PLAYERS]),
+            "aux {i}"
+        );
+    }
+}
+
+#[test]
+fn the_same_batch_twice_gives_bit_identical_outputs() {
+    let w = Weights::random(Arch::DEFAULT, 9);
+    let (n, public, hidden) = inputs(211);
+    let (mut fwd, mut first, mut again) = (Forward::new(), Outputs::default(), Outputs::default());
+    fwd.run(&w, &public, &hidden, n, &mut first);
+    for _ in 0..3 {
+        Forward::new().run(&w, &public, &hidden, n, &mut again);
+        assert_eq!(first, again);
+    }
+}
+
+#[test]
+fn dense_matches_the_portable_kernel_within_rounding() {
+    use settler_net::forward::{dense_for_tests, dense_portable};
+    let w = Weights::random(Arch::DEFAULT, 4);
+    for layer in &w.layers {
+        for n in [1usize, 7, 54, 433] {
+            let x: Vec<f32> = (0..n * layer.cols)
+                .map(|i| ((i * 7919) % 2001) as f32 / 1000.0 - 1.0)
+                .collect();
+            let (mut fast, mut slow) = (Vec::new(), Vec::new());
+            dense_for_tests(layer, &x, n, true, &mut fast);
+            dense_portable(layer, &x, n, true, &mut slow);
+            assert_eq!(fast.len(), slow.len());
+            for (a, b) in fast.iter().zip(&slow) {
+                assert!(
+                    (a - b).abs() <= 1e-4 * b.abs().max(1.0),
+                    "{}x{} n {n}: {a} vs {b}",
+                    layer.rows,
+                    layer.cols
+                );
+            }
+        }
     }
 }
 

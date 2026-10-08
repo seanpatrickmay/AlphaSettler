@@ -212,7 +212,16 @@ fn a_batch_evaluates_each_leaf_as_if_alone() {
             actor: leaf.actor,
             legal: leaf.legal,
         }]);
-        assert_eq!(alone[0], together[i], "leaf {i}");
+        // The same within float rounding: on macOS the batch is one matrix product, whose
+        // summation order may depend on the batch size (`forward::dense`).
+        let close = |a: &[f32], b: &[f32]| {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|(x, y)| (x - y).abs() <= 1e-5 * y.abs().max(1.0))
+        };
+        assert!(close(&alone[0].value, &together[i].value), "leaf {i} value");
+        assert!(close(&alone[0].prior, &together[i].prior), "leaf {i} prior");
     }
     assert_eq!(eval.evaluations(), 2 * leaves.len() as u64);
 }
