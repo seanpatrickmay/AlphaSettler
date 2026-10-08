@@ -74,6 +74,44 @@ Warm-start check (done criterion 3, recorded): `net:gen-000 vs ismcts@1000: win 
 0.468] 95% CI over 200 seeds (800 games, 346 wins, 0 draws), z vs 0.25 = 10.06, mean VP 7.93, mean turns
 91.0`, belief resets 0, 32:05 wall time.
 
+## The Accelerate forward pass (2026-10-08, commits 285d5d7 and 1cd6a37)
+
+Net `runs/3c/nets/gen-034.bin` (network v2, encoder v3, width 48, 2 rounds), trades off, 1,000
+simulations, one core, `net_speed speed PATH 500 1000 B`:
+
+| batch | 3b (row-by-row dot products) | Accelerate `cblas_sgemm` | + parts in place, fixed-width aggregation, fused ReLU |
+|---|---|---|---|
+| 8 | 4,171 simulations/s | 22,125 | **28,515** (35.07 ms/decision, 6.8x) |
+| 16 | — | 23,809 | 31,272 |
+| 32 | — | 24,830 | 33,084 |
+
+Self-play with the loop's settings (600 / 100 simulations, p 0.25, the trading game, 10 threads):
+200 games in 164 s, 73.1 games/min, against about 16.7 before (4.4x). Ten threads give about 3x one
+core: the M1 Pro has one AMX unit per CPU cluster, which every core of the cluster shares.
+
+Profile after the change (one core, batch 8): 47% inside Accelerate, 17% neighbour aggregation, 10%
+encoding positions, the rest copies, biases and pooling; the search itself 1%, move generation under 1%.
+
+Batch strength, `net_speed paired runs/3c/nets/gen-034.bin 200 1000 ismcts@1000` (same 200 seeds):
+batch 8 0.534 ± 0.019, batch 16 0.534 ± 0.020 (paired difference +0.000 ± 0.017), batch 32 0.511 ±
+0.018 (−0.022 ± 0.017, z −1.35). `NET_BATCH` stays 8 until leaves per tree and positions per network
+call are separate settings (batching across games).
+
+Forward pass alone on 1,024 real positions from `runs/3c/gen-034` (positions/s; fp16 rows: largest
+win-probability difference from ours 0.004):
+
+| backend | batch 8 | 32 | 128 | 512 |
+|---|---|---|---|---|
+| ours, 1 thread | 28,728 | 34,872 | 32,111 | 30,075 |
+| ours, 10 threads (total) | 140,560 | **169,744** | 118,189 | 93,212 |
+| PyTorch CPU, 1 thread | 8,808 | 10,346 | 10,470 | 7,755 |
+| PyTorch MPS (GPU) fp16 | 6,610 | 22,797 | 35,645 | 41,469 |
+| Core ML GPU fp16, compiled for the batch | 5,731 | 16,697 | 27,494 | 65,112 |
+| Core ML Neural Engine fp16, compiled for the batch | 18,781 | 18,199 | fails to compile | fails to compile |
+
+The GPU and Neural Engine would run beside the CPU, not instead of it; the GPU pays only with about 512
+positions in flight (batching across games) and a Rust bridge to Core ML, so it is deferred.
+
 ## History: the flat MLP (network v1, format 1, refused since Plan 5b)
 
 `public 1,557 → 512 → 512 → 512`, a 665-way policy head, value on [trunk ‖ hidden 30] → 256 → 4.
