@@ -1,10 +1,11 @@
 """Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic`, `train`,
-`sprt`, `fast-train`, `fast-score`, `fast-loop`, `train-loop` and `net-upgrade`; `net-upgrade`
-rewrites a 3b (encoder v2) net for encoder v3. `selfplay --simulations S` writes 3a records;
+`sprt`, `fast-train`, `fast-score`, `fast-loop`, `train-loop`, `net-upgrade` and `opening-train`;
+`net-upgrade` rewrites a 3b (encoder v2) net for encoder v3. `selfplay --simulations S` writes 3a records;
 `selfplay --pcr` and `selfplay --net NAME` write 3b exploration records; `train` (the train extra)
 trains a network on them; `train-loop` (the train extra) runs the resumable self-play, train and
 gate generations; `fast-train` and `fast-score` (the train extra) train and score candidate nets on
-a fixed pool of generations, and `fast-loop` runs small generations trained that way."""
+a fixed pool of generations, and `fast-loop` runs small generations trained that way. `opening-train`
+(the train extra) fits the opening model of spec 3d-1 on recorded games' setups."""
 
 from __future__ import annotations
 
@@ -176,6 +177,14 @@ def _parser() -> argparse.ArgumentParser:
     nu = sub.add_parser("net-upgrade", help="rewrite an encoder v2 net (3b's) for encoder v3, same no-trade moves")
     nu.add_argument("old", help="the encoder v2 weights file")
     nu.add_argument("new", help="the weights file to write (must not exist)")
+
+    ot = sub.add_parser("opening-train", help="train the opening model on recorded games' setups (train extra)")
+    ot.add_argument("--games", nargs="+", required=True, metavar="DIR", help="generation directories of records")
+    ot.add_argument("--out", required=True, help="the model file to write, e.g. <nets-dir>/opening.bin (must not exist)")
+    ot.add_argument("--compare-net", default=None, metavar="NAME",
+                    help="also score this net's value head on the held-out positions")
+    ot.add_argument("--nets-dir", default=DEFAULT_NETS_DIR, help="where --compare-net finds NAME.bin")
+    ot.add_argument("--seed", type=int, default=0)
 
     lp = sub.add_parser("train-loop",
                         help="self-play, train and gate generations; rerun to resume (needs the train extra)")
@@ -545,6 +554,29 @@ def _net_upgrade(args) -> int:
     return 0
 
 
+def _opening_train(args) -> int:
+    if _train_missing():
+        return 2
+    from alphasettler._engine import resolve_net
+    from alphasettler.train.opening import OpeningConfig, format_report, train_opening
+
+    out = Path(args.out)
+    if out.exists():
+        raise ValueError(f"{out} already exists; write the opening model to a new path")
+    if args.compare_net is not None:
+        resolve_net(args.compare_net, args.nets_dir)  # a bad net fails now, before the games are read
+    cfg = OpeningConfig(seed=args.seed)
+    cfg.check()
+    try:
+        s = train_opening([Path(d) for d in args.games], out, cfg, args.compare_net, args.nets_dir)
+    except KeyboardInterrupt:
+        print("interrupted: nothing written", file=sys.stderr)
+        return 130
+    for line in format_report(s, out):
+        print(line)
+    return 0
+
+
 def _oracle_missing() -> int:
     from oracle import CATANATRON_REQUIREMENT
 
@@ -648,6 +680,8 @@ def main(argv: list[str] | None = None) -> int:
             return _train_loop(args)
         elif args.command == "net-upgrade":
             return _net_upgrade(args)
+        elif args.command == "opening-train":
+            return _opening_train(args)
         else:
             for name in (args.a, args.b, args.baseline):
                 _check_bot_name(name, args.nets_dir)

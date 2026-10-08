@@ -41,9 +41,8 @@ HELD_OUT_EVERY = 20
 _READ_ERRORS = (EOFError, gzip.BadGzipFile, zlib.error, UnicodeDecodeError, json.JSONDecodeError)
 
 
-def record_files(gen_dir: str | Path) -> list[Path]:
-    """Finished record files in `gen_dir`, by name; temporary (dot) files are not."""
-    return sorted(p for p in Path(gen_dir).glob("*.jsonl.gz") if not p.name.startswith("."))
+# Finished record files in a generation directory (it lives in `records`, which needs no torch).
+record_files = records.record_files
 
 
 @dataclass
