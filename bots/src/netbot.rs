@@ -1,7 +1,8 @@
 //! Network bots (spec Section 3): `net:NAME` (1,000 simulations), `net:NAME@N` and
-//! `net:NAME@N+rD`, each optionally with `+sK`, `+t` and `+g` in any order (`+g` is split off by
-//! `ismcts::split_gumbel` before `parse_net_name` reads the rest), with the same limits on N,
-//! D and K as `ismcts`: IsmctsBot searching with a `NetEvaluator`. NAME is `[A-Za-z0-9_-]{1,64}`
+//! `net:NAME@N+rD`, each optionally with `+sK`, `+t`, `+g` and `+o` (an opening model picks the
+//! setup settlements, spec 3d-1 Section 4.5) in any order (`+g` is split off by
+//! `ismcts::split_gumbel` before `parse_net_name` reads the rest), with the same limits on N, D
+//! and K as `ismcts`: IsmctsBot searching with a `NetEvaluator`. NAME is `[A-Za-z0-9_-]{1,64}`
 //! and names the file `<nets-dir>/NAME.bin`; the character set keeps every name a plain file name
 //! inside the directory.
 
@@ -25,12 +26,27 @@ pub fn valid_net_name(net: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// `net:NAME` -> (NAME, 1000, 0, 1, false); `net:NAME@N` -> (NAME, N, 0, 1, false);
-/// `net:NAME@N+rD` -> (NAME, N, D, 1, false). `+sK` sets the setup factor to K and `+t` the last
-/// field (the bot may offer); the suffixes come in any order (`ismcts::split_trades`).
-pub fn parse_net_name(name: &str) -> Option<(&str, u32, u32, u32, bool)> {
-    let (canon, offers) = ismcts::split_trades(name)?;
-    let (canon, factor) = ismcts::split_setup(&canon)?;
+/// A parsed `net:` bot name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NetName<'a> {
+    pub net: &'a str,
+    pub simulations: u32,
+    pub rollout: u32,
+    /// `+sK`: setup settlements search K times the simulations (1 without it).
+    pub setup_factor: u32,
+    /// `+t`: the bot may offer.
+    pub offers: bool,
+    /// `+o`: `<nets_dir>/opening.bin` picks the setup settlements.
+    pub opening: bool,
+}
+
+/// `net:NAME` -> 1,000 simulations, no rollout; `net:NAME@N` -> N simulations; `net:NAME@N+rD`
+/// -> D rollout moves. `+sK`, `+t` and `+o` set the other fields; the suffixes come in any order
+/// (`ismcts::split_suffixes`). A name with `+g` gives `None`: callers split it off first with
+/// `ismcts::split_gumbel`, as `Roster` does.
+pub fn parse_net_name(name: &str) -> Option<NetName<'_>> {
+    let (canon, flags) = ismcts::split_suffixes(name)?;
+    let (canon, setup_factor) = ismcts::split_setup(&canon)?;
     let rest = name.strip_prefix("net:")?;
     let end = rest.find(['@', '+']).unwrap_or(rest.len());
     let net = &rest[..end];
@@ -39,7 +55,14 @@ pub fn parse_net_name(name: &str) -> Option<(&str, u32, u32, u32, bool)> {
     }
     let tail = &canon["net:".len() + net.len()..];
     let (simulations, rollout) = ismcts::parse_name(&format!("ismcts{tail}"))?;
-    Some((net, simulations, rollout, factor, offers))
+    Some(NetName {
+        net,
+        simulations,
+        rollout,
+        setup_factor,
+        offers: flags.offers,
+        opening: flags.opening,
+    })
 }
 
 pub fn net_path(nets_dir: &Path, net: &str) -> PathBuf {

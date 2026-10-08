@@ -1,10 +1,13 @@
 //! IsmctsBot: tracks hidden cards from the event log and searches each real decision with
 //! single-observer ISMCTS (spec Sections 2-3), domestic-trade answers and confirmations included
-//! (spec 3c Section 3). It makes offers only with `with_offers` (a `+t` name). Generic over the
-//! evaluator: the heuristic for `ismcts` names, the network for `net:` names (`crate::netbot`).
+//! (spec 3c Section 3). It makes offers only with `with_offers` (a `+t` name), and with
+//! `with_opening` (a `net:` name's `+o`) an opening model picks its setup settlements without a
+//! search (spec 3d-1 Section 4.5). Generic over the evaluator: the heuristic for `ismcts` names,
+//! the network for `net:` names (`crate::netbot`).
 
 use crate::greedy;
 use crate::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
+use crate::opening_model::{choose_settlement, OpeningModel};
 use crate::Bot;
 use settler_engine::rng::{mix, Rng};
 use settler_engine::{Action, Event, Observation, Phase, PlayerId};
@@ -12,6 +15,7 @@ use settler_search::{
     search, search_moves, Belief, Evaluator, Noised, RootMode, RootNoise, SearchConfig,
     SearchResult, DEFAULT_MAX_STATES,
 };
+use std::sync::Arc;
 
 pub const DEFAULT_SIMULATIONS: u32 = 1000;
 pub const MAX_SIMULATIONS: u32 = 1_000_000;
@@ -58,20 +62,31 @@ pub fn split_setup(name: &str) -> Option<(&str, u32)> {
         .then_some((&name[..i], k))
 }
 
-/// A searching bot's name with its `+t` suffix removed and its `+rD` / `+sK` suffixes put in the
-/// order `parse_name` and `split_setup` read (`+rD` before `+sK`), and whether it had `+t`. The
-/// suffixes are everything from the first `+`, in any order, each kind at most once; `None` for a
-/// repeated or unknown one (`+t5`, `+T`, a bare `+`). Their values are checked by those parsers.
-pub fn split_trades(name: &str) -> Option<(String, bool)> {
+/// The flag suffixes of a searching bot's name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Flags {
+    /// `+t`: the bot may make domestic offers.
+    pub offers: bool,
+    /// `+o`: an opening model picks the setup settlements (`net:` names only).
+    pub opening: bool,
+}
+
+/// A searching bot's name with its `+t` and `+o` suffixes removed and its `+rD` / `+sK` suffixes
+/// put in the order `parse_name` and `split_setup` read (`+rD` before `+sK`), and which flags it
+/// had. The suffixes are everything from the first `+`, in any order, each kind at most once;
+/// `None` for a repeated or unknown one (`+t5`, `+T`, `+oo`, `+g` (split off first by
+/// `split_gumbel`), a bare `+`). Values are checked by those parsers.
+pub fn split_suffixes(name: &str) -> Option<(String, Flags)> {
     let Some(i) = name.find('+') else {
-        return Some((name.to_owned(), false));
+        return Some((name.to_owned(), Flags::default()));
     };
-    let (mut rollout, mut setup, mut offers) = (None, None, false);
+    let (mut rollout, mut setup, mut flags) = (None, None, Flags::default());
     for part in name[i + 1..].split('+') {
         match part.as_bytes().first() {
             Some(b'r') if rollout.is_none() => rollout = Some(part),
             Some(b's') if setup.is_none() => setup = Some(part),
-            Some(b't') if part.len() == 1 && !offers => offers = true,
+            Some(b't') if part.len() == 1 && !flags.offers => flags.offers = true,
+            Some(b'o') if part.len() == 1 && !flags.opening => flags.opening = true,
             _ => return None,
         }
     }
@@ -80,13 +95,20 @@ pub fn split_trades(name: &str) -> Option<(String, bool)> {
         out.push('+');
         out.push_str(part);
     }
-    Some((out, offers))
+    Some((out, flags))
+}
+
+/// `split_suffixes` for bots that take no opening model (`ismcts` names): the name and whether it
+/// had `+t`; `None` if it has `+o`.
+pub fn split_trades(name: &str) -> Option<(String, bool)> {
+    let (canon, flags) = split_suffixes(name)?;
+    (!flags.opening).then_some((canon, flags.offers))
 }
 
 /// A searching bot's name with its `+g` suffix (spec P2 Section 4: Gumbel root search, no
 /// draws) removed, and whether it had one. `+g` may sit anywhere among the suffixes, at most once
-/// (`None` for a repeat); every other part is kept in order for `split_trades`, which refuses any
-/// other `g` part (`+g2`, `+gt`) and anything malformed.
+/// (`None` for a repeat); every other part is kept in order for `split_trades` / `split_suffixes`,
+/// which refuse any other `g` part (`+g2`, `+gt`) and anything malformed.
 pub fn split_gumbel(name: &str) -> Option<(String, bool)> {
     let Some(i) = name.find('+') else {
         return Some((name.to_owned(), false));
@@ -152,6 +174,8 @@ pub struct IsmctsBot<E = HeuristicEvaluator> {
     cfg: SearchConfig,
     /// Setup settlements search `cfg.simulations` x this (1: no extra search).
     setup_factor: u32,
+    /// `+o`: picks setup settlements without a search.
+    opening: Option<Arc<OpeningModel>>,
     eval: E,
     tracked: Tracked,
     last: Option<SearchResult>,
@@ -193,6 +217,7 @@ impl<E: Evaluator> IsmctsBot<E> {
             rng: Rng::new(seed),
             cfg,
             setup_factor: 1,
+            opening: None,
             eval,
             tracked: Tracked::Unseen,
             last: None,
@@ -231,6 +256,13 @@ impl<E: Evaluator> IsmctsBot<E> {
         } else {
             RootMode::Puct
         };
+        self
+    }
+
+    /// Let `model` pick every setup settlement (a `+o` name): no search runs for them; every
+    /// other decision is unchanged. `act` applies it; self-play's `act_with` does not.
+    pub fn with_opening(mut self, model: Arc<OpeningModel>) -> IsmctsBot<E> {
+        self.opening = Some(model);
         self
     }
 
@@ -345,6 +377,12 @@ impl<E: Evaluator + Send> Bot for IsmctsBot<E> {
     }
 
     fn act(&mut self, obs: &Observation, legal: &[Action]) -> Action {
+        if let (Phase::SetupSettlement, Some(model)) = (obs.phase, self.opening.clone()) {
+            // As `act_with` does for a decision it does not search.
+            self.last = None;
+            self.counted_in_observe = false;
+            return choose_settlement(&model, obs, legal);
+        }
         let factor = if obs.phase == Phase::SetupSettlement {
             self.setup_factor
         } else {
