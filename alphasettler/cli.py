@@ -175,6 +175,9 @@ def _parser() -> argparse.ArgumentParser:
                     help="first run only: self-play and gate in the trading game, every seat +t")
     fl.add_argument("--gumbel", type=_positive_int, default=None, metavar="SIMS",
                     help="first run only: every self-play move a Gumbel root search of SIMS simulations")
+    fl.add_argument("--opening", default=None, metavar="FILE",
+                    help="first run only: an opening model (ASOPEN) picks self-play's setup settlements, "
+                         "and both gate sides are +o")
 
     nu = sub.add_parser("net-upgrade", help="rewrite an encoder v2 net (3b's) for encoder v3, same no-trade moves")
     nu.add_argument("old", help="the encoder v2 weights file")
@@ -233,6 +236,9 @@ def _parser() -> argparse.ArgumentParser:
     lp.add_argument("--threads", type=_positive_int, default=None)
     lp.add_argument("--gumbel", type=_positive_int, default=None, metavar="SIMS",
                     help="first run only: every self-play move a Gumbel root search of SIMS simulations")
+    lp.add_argument("--opening", default=None, metavar="FILE",
+                    help="first run only: an opening model (ASOPEN) picks self-play's setup settlements, "
+                         "and both gate sides are +o")
     return p
 
 
@@ -502,7 +508,7 @@ def _fast_score(args) -> int:
 def _fast_loop(args) -> int:
     if _train_missing():
         return 2
-    from alphasettler.selfplay import mode_mismatch
+    from alphasettler.selfplay import mode_mismatch, opening_mismatch
     from alphasettler.train.fastloop import STATE, FastLoop, FastLoopSettings
 
     root = Path(args.dir)
@@ -511,7 +517,7 @@ def _fast_loop(args) -> int:
             print("error: a new fast loop needs --seed-dirs, --start-net and --first", file=sys.stderr)
             return 2
         FastLoop.init(root, args.seed_dirs, args.start_net, args.first, trades=args.trades,
-                      gumbel=args.gumbel)
+                      gumbel=args.gumbel, opening=args.opening)
     s = FastLoopSettings(generations=args.generations, games=args.games, window_games=args.window_games,
                          minutes=args.minutes, lr=args.lr, gate_seeds=args.gate_seeds,
                          gate_simulations=args.gate_simulations, device=args.device, threads=args.threads)
@@ -521,6 +527,10 @@ def _fast_loop(args) -> int:
               file=sys.stderr)
         return 2
     error = mode_mismatch(root, loop.gumbel, args.gumbel)
+    if error is not None:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    error = opening_mismatch(root, loop.opening, args.opening)
     if error is not None:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -545,7 +555,7 @@ def _train_loop(args) -> int:
         steps_factor=args.steps_factor, batch=args.batch, width=args.width, rounds=args.rounds,
         gate_seeds=args.gate_seeds, gate_simulations=args.gate_simulations, max_turns=args.max_turns,
         device=args.device, threads=args.threads,
-        gumbel=args.gumbel,
+        gumbel=args.gumbel, opening=args.opening,
     )
     loop = Loop(Path(args.dir), s)
     try:

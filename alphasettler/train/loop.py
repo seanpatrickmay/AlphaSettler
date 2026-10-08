@@ -16,7 +16,11 @@ before a later step uses it, and `nets/best.bin` is brought back to the manifest
 
 Generation 0 is the warm start: 3a's `ismcts` self-plays with the same exploration, net 0 is
 trained from scratch and becomes the best net without a match. Generation k >= 1 self-plays with
-the best net, trains from generation k-1's weights and is gated against the best net."""
+the best net, trains from generation k-1's weights and is gated against the best net.
+
+With `opening` (`--opening FILE`, set when the run starts and kept on every resume, as `--gumbel`
+is; spec 3d-1b), the opening model FILE is copied to `nets/opening.bin`, picks every self-play setup
+settlement (generation 0's too), and both gate sides are `+o`. The manifest holds its sha256."""
 
 from __future__ import annotations
 
@@ -28,7 +32,9 @@ from pathlib import Path
 
 from alphasettler import files, records
 from alphasettler import selfplay as selfplay_mod
-from alphasettler._engine import MAX_SEEDS, MAX_SIMULATIONS, NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, resolve_config
+from alphasettler._engine import (
+    MAX_SEEDS, MAX_SIMULATIONS, NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, OPENING_FILE, resolve_config,
+)
 from alphasettler.arena import run as arena_run
 
 MANIFEST = "manifest.json"
@@ -70,6 +76,7 @@ class LoopSettings:
     device: str = "auto"
     threads: int | None = None
     gumbel: int | None = None  # Gumbel self-play simulations, kept from the run's first start
+    opening: str | None = None  # an opening model file, copied to nets/opening.bin when the run starts
 
 
 def gen_name(k: int) -> str:
@@ -128,6 +135,8 @@ def _check(s: LoopSettings) -> None:
     selfplay_mod.settings(None, ".", s.full_simulations, s.fast_simulations, s.full_probability)
     if s.gumbel is not None:
         selfplay_mod.check_gumbel(s.gumbel)
+    if s.opening is not None:
+        selfplay_mod.check_opening(s.opening, s.gumbel)
     for lr in (s.warm_lr, s.lr):
         TrainConfig(lr=lr, steps_factor=s.steps_factor, batch=s.batch, threads=s.threads, width=s.width,
                     rounds=s.rounds).check()
@@ -143,6 +152,7 @@ class Loop:
         resolve_config(self.config)  # an out-of-range turn cap fails now
         self.manifest = self._load()
         self.gumbel = self._mode(settings.gumbel)
+        self.opening = self._opening_model(settings.opening)
 
     def _load(self) -> dict:
         path = self.root / MANIFEST
@@ -168,6 +178,34 @@ class Loop:
         self.manifest["gumbel"] = stored
         return stored
 
+    def _opening_model(self, asked: str | None) -> str | None:
+        """The opening model's sha256, or None for self-play without one. Set when the run starts
+        (`--opening FILE`; `run` copies it to `nets/opening.bin`) and kept on every resume; a
+        manifest from before 3d-1b has none. Asking for another model is a ValueError."""
+        if not (self.root / MANIFEST).exists():
+            digest = None if asked is None else files.sha256_file(asked)
+            self.manifest["opening"] = digest
+            return digest
+        stored = self.manifest.get("opening")
+        error = selfplay_mod.opening_mismatch(self.root, stored, asked)
+        if error is not None:
+            raise ValueError(error)
+        self.manifest["opening"] = stored
+        return stored
+
+    def _place_opening(self) -> None:
+        """Put the run's opening model at `nets/opening.bin` (copied from `--opening FILE` when it
+        is not there) and check it is the model the run was set up with."""
+        if self.opening is None:
+            return
+        path = self.nets / OPENING_FILE
+        if not path.exists() and self.s.opening is not None:
+            self.nets.mkdir(parents=True, exist_ok=True)
+            files.atomic_copy(self.s.opening, path)
+        if not path.is_file() or files.sha256_file(path) != self.opening:
+            raise ValueError(f"{path} is not the opening model {self.root} was set up with (sha256 {self.opening}): "
+                             f"restore it, or resume with --opening and that file")
+
     def _save(self) -> None:
         files.atomic_write_text(self.root / MANIFEST, _dumps(self.manifest, indent=1))
 
@@ -184,6 +222,7 @@ class Loop:
         self.root.mkdir(parents=True, exist_ok=True)
         self._clean_temps()
         self._sync_best()
+        self._place_opening()
         done = 0
         for k in range(self.s.generations + 1):
             for step in STEPS:
@@ -252,6 +291,8 @@ class Loop:
         }
         if self.gumbel is not None:  # only then: plans written before P2 still match
             plan["gumbel"] = self.gumbel
+        if self.opening is not None:  # only then: plans written before 3d-1b still match
+            plan["opening"] = self.opening
         plan_path = gdir / "selfplay.json"
         if plan_path.exists():
             if json.loads(plan_path.read_text()) != plan:
@@ -272,7 +313,7 @@ class Loop:
                     tmp, lo, min(self.s.chunk_games, end - lo), config=self.config,
                     full_simulations=self.s.full_simulations, fast_simulations=self.s.fast_simulations,
                     full_probability=self.s.full_probability, net=net, nets_dir=self.nets, threads=self.s.threads,
-                    gumbel=self.gumbel)
+                    gumbel=self.gumbel, opening=None if self.opening is None else self.nets / OPENING_FILE)
                 files.fsync_file(tmp)
                 os.replace(tmp, path)
                 print(f"  {path.name}: seeds {lo}..{min(end, lo + self.s.chunk_games)}", flush=True)
@@ -346,7 +387,8 @@ class Loop:
         self._net(best)
         gdir = self.root / gen_name(k)
         sims = self.s.gate_simulations
-        candidate, baseline = f"net:{gen_name(k)}@{sims}", f"net:{gen_name(best)}@{sims}"
+        suffix = "" if self.opening is None else "+o"
+        candidate, baseline = f"net:{gen_name(k)}@{sims}{suffix}", f"net:{gen_name(best)}@{sims}{suffix}"
         tmp = files.temp_path(gdir / "gate.jsonl")
         recs, summary = arena_run(candidate, baseline, self.s.gate_seeds, GATE_SEED_START, self.s.threads,
                                   self.config, tmp, self.nets)

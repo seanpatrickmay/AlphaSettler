@@ -1,16 +1,19 @@
 """The fast loop (alphasettler/train/fastloop.py): set-up, generations, the window, resuming and
 the regression gate. Needs the `train` extra, like test_train.py."""
 
+import hashlib
 import json
 
 import pytest
 
 from alphasettler import records
+from alphasettler._engine import OPENING_FILE
 from alphasettler.arena import TRADES
 from alphasettler.train.fastloop import GATE_MIN_Z, STATE, FastLoop, FastLoopSettings, count_games, promoted
 from alphasettler.train.loop import SEEDS_PER_GENERATION, gen_name
 from alphasettler.train.model import Net, save
 
+from opening_games import opening_model_file
 from test_train import cli, generation
 
 TINY = dict(games=2, chunk_games=2, full_simulations=6, fast_simulations=3, full_probability=0.5, window_games=3,
@@ -189,3 +192,95 @@ def test_a_gumbel_budget_below_two_is_refused_before_anything_is_written(tmp_pat
     with pytest.raises(ValueError, match="gumbel simulations"):
         FastLoop.init(tmp_path / "bad", [seed], tmp_path / "start.bin", first=1, gumbel=1)
     assert not (tmp_path / "bad").exists()
+
+
+SETUP_SETTLEMENTS = {0, 2, 4, 6, 8, 10, 12, 14}  # the first 16 moves: settlement, road, eight times
+
+
+def test_cli_fast_loop_with_an_opening_model_self_plays_and_gates_with_it(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    model = opening_model_file(tmp_path / "model.bin")
+    digest = hashlib.sha256(model.read_bytes()).hexdigest()
+    root = tmp_path / "loop"
+    r = cli("fast-loop", "--dir", str(root), "--generations", "2", "--first", "1", "--trades", "--opening", str(model),
+            "--seed-dirs", str(seed), "--start-net", str(tmp_path / "start.bin"), "--games", "2",
+            "--window-games", "3", "--minutes", "0.01", "--gate-seeds", "1", "--gate-simulations", "6",
+            "--device", "cpu", "--threads", "2")
+    assert r.returncode == 0, r.stderr
+    assert (root / "nets" / OPENING_FILE).read_bytes() == model.read_bytes()
+    state = json.loads((root / STATE).read_text())
+    assert state["opening"] == digest and [g["gen"] for g in state["generations"]] == [1, 2]
+    for g in state["generations"]:
+        assert g["selfplay"]["opening"] == digest and g["selfplay"]["belief_resets"] == 0
+        assert g["gate"]["candidate"].endswith("@6+t+o") and g["gate"]["baseline"].endswith("@6+t+o"), g["gate"]
+        assert g["gate"]["belief_resets"] == 0
+    for k in (1, 2):
+        paths = sorted((root / gen_name(k)).glob("selfplay-local-*.jsonl.gz"))
+        assert paths
+        for path in paths:
+            for game in records.read(path):
+                assert game["selfplay"]["opening_sha256"] == digest
+                assert not SETUP_SETTLEMENTS & {d["index"] for d in game["decisions"]}
+
+
+@pytest.mark.parametrize("set_up, message", [
+    (False, "without --opening"),
+    (True, "with another opening model"),
+], ids=["set-up-without", "another-model"])
+def test_cli_fast_loop_keeps_the_opening_model_it_was_set_up_with(tmp_path, set_up, message):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    model = opening_model_file(tmp_path / "model.bin")
+    other = opening_model_file(tmp_path / "other.bin", scale=0.0)
+    root = tmp_path / "loop"
+    FastLoop.init(root, [seed], tmp_path / "start.bin", first=1, opening=model if set_up else None)
+    want = hashlib.sha256(model.read_bytes()).hexdigest() if set_up else None
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).opening == want
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--opening", str(other if set_up else model))
+    assert r.returncode == 2 and message in r.stderr, r.stderr
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0")
+    assert r.returncode == 0, r.stderr
+    assert json.loads((root / STATE).read_text())["opening"] == want, "a resume without the flag keeps it"
+    if set_up:
+        r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--opening", str(model))
+        assert r.returncode == 0, "the same file repeats the setting"
+
+
+def test_a_loop_set_up_before_the_opening_model_existed_reads_as_set_up_without_it(tmp_path):
+    root, _ = setup(tmp_path)
+    state = json.loads((root / STATE).read_text())
+    del state["opening"]
+    (root / STATE).write_text(json.dumps(state))
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).opening is None
+    model = opening_model_file(tmp_path / "model.bin")
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--opening", str(model))
+    assert r.returncode == 2 and "without --opening" in r.stderr
+
+
+def test_a_bad_opening_model_or_one_with_gumbel_is_refused_before_anything_is_written(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    model = opening_model_file(tmp_path / "model.bin")
+    bad = tmp_path / "bad.bin"
+    bad.write_bytes(model.read_bytes()[:-4])
+    for kw, message in [({"opening": bad}, "truncated"), ({"opening": tmp_path / "missing.bin"}, "cannot read opening model"),
+                        ({"opening": model, "gumbel": 100}, "--opening and --gumbel")]:
+        with pytest.raises(ValueError, match=message):
+            FastLoop.init(tmp_path / "bad-loop", [seed], tmp_path / "start.bin", first=1, **kw)
+        assert not (tmp_path / "bad-loop").exists()
+    r = cli("fast-loop", "--dir", str(tmp_path / "cli"), "--generations", "0", "--first", "1", "--seed-dirs", str(seed),
+            "--start-net", str(tmp_path / "start.bin"), "--opening", str(model), "--gumbel", "100")
+    assert r.returncode == 2 and "--opening and --gumbel" in r.stderr
+    assert not (tmp_path / "cli").exists()
+
+
+def test_a_changed_opening_model_in_the_nets_directory_stops_the_loop(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    FastLoop.init(root, [seed], tmp_path / "start.bin", first=1, opening=opening_model_file(tmp_path / "model.bin"))
+    opening_model_file(root / "nets" / OPENING_FILE, scale=0.0)  # replaced in place after set-up
+    with pytest.raises(ValueError, match="not the opening model"):
+        FastLoop(root, FastLoopSettings(generations=1, **TINY)).run()
+    assert not list((root / "gen-001").glob("selfplay-local-*.jsonl.gz")), "nothing was played with it"

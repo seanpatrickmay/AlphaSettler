@@ -53,6 +53,18 @@ def mode_mismatch(root: str | Path, stored: int | None, asked: int | None) -> st
     return f"{root} was set up {was}, and a loop keeps the self-play mode it was set up with"
 
 
+def opening_mismatch(root: str | Path, stored: str | None, asked: str | Path | None) -> str | None:
+    """The error for asking `--opening FILE` of a loop in `root` that was set up with the opening
+    model whose sha256 is `stored` (None: without one, as every loop from before 3d-1b was), or None
+    if the ask is allowed: no flag keeps the loop's model, the same file (by sha256) repeats it."""
+    if asked is None:
+        return None
+    if files.sha256_file(asked) == stored:
+        return None
+    was = "without --opening" if stored is None else f"with another opening model (sha256 {stored})"
+    return f"{root} was set up {was}, and a loop keeps the opening model it was set up with"
+
+
 def settings(net: str | None, nets_dir: str | Path, full_simulations: int, fast_simulations: int,
              full_probability: float, gumbel: int | None = None, opening: str | Path | None = None) -> dict:
     """The `selfplay` block. Checks every argument, loads the net and reads the opening model,

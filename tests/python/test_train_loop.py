@@ -16,8 +16,10 @@ from dataclasses import replace
 import pytest
 
 from alphasettler import files, records
-from alphasettler._engine import NET_MAX_ROUNDS, NET_MAX_WIDTH
+from alphasettler._engine import NET_MAX_ROUNDS, NET_MAX_WIDTH, OPENING_FILE
 from alphasettler.train.loop import Loop, LoopSettings, json_float, promoted
+
+from opening_games import opening_model_file
 
 TINY = LoopSettings(generations=1, games=2, warm_games=2, chunk_games=1, full_simulations=4, fast_simulations=2,
                     full_probability=0.5, batch=16, width=8, rounds=1, gate_seeds=1, gate_simulations=4,
@@ -294,7 +296,8 @@ def test_new_flags_apply_only_to_steps_not_yet_run(tmp_path, reference):
 @pytest.mark.parametrize("change", [{"generations": -1}, {"generations": 100}, {"lr": 0.0}, {"warm_lr": math.nan}, {"games": 0},
                                     {"window": 0}, {"gate_seeds": 0}, {"gate_simulations": 0}, {"device": "gpu"},
                                     {"warm_games": 10_000_001}, {"width": 0}, {"rounds": 0},
-                                    {"width": NET_MAX_WIDTH + 1}, {"rounds": NET_MAX_ROUNDS + 1}, {"width": 2.5}, {"gumbel": 1}])
+                                    {"width": NET_MAX_WIDTH + 1}, {"rounds": NET_MAX_ROUNDS + 1}, {"width": 2.5}, {"gumbel": 1},
+                                    {"opening": "missing-opening.bin"}])
 def test_bad_settings_are_an_error_before_anything_is_written(tmp_path, change):
     with pytest.raises(ValueError):
         Loop(tmp_path / "run", replace(TINY, **change))
@@ -505,4 +508,55 @@ def test_a_train_loop_set_up_without_gumbel_refuses_it(tmp_path, reference):
     with pytest.raises(ValueError, match="without --gumbel"):
         Loop(old, replace(TINY, gumbel=4))
     assert Loop(old, TINY).gumbel is None
+    assert Loop(old, TINY).run() == 0, "resuming without the flag is accepted, nothing redone"
+
+
+SETUP_SETTLEMENTS = {0, 2, 4, 6, 8, 10, 12, 14}
+
+
+def test_an_opening_train_loop_self_plays_and_gates_with_its_model(tmp_path):
+    model = opening_model_file(tmp_path / "model.bin")
+    with pytest.raises(ValueError, match="--opening and --gumbel"):
+        Loop(tmp_path / "both", replace(TINY, opening=str(model), gumbel=4))
+    assert not (tmp_path / "both").exists()
+    d = tmp_path / "o"
+    s = replace(TINY, opening=str(model))
+    assert Loop(d, s).run() == 6
+    m = manifest(d)
+    assert m["opening"] == sha256(model)
+    assert (d / "nets" / OPENING_FILE).read_bytes() == model.read_bytes()
+    g0, g1 = m["generations"]
+    assert g0["selfplay"]["opening"] == g1["selfplay"]["opening"] == sha256(model)
+    assert g1["gate"]["candidate"] == "net:gen-001@4+o" and g1["gate"]["baseline"].endswith("@4+o")
+    for k in (0, 1):
+        paths = sorted((d / f"gen-00{k}").glob("selfplay-local-*.jsonl.gz"))
+        assert paths
+        for path in paths:
+            for g in records.read(path):
+                assert g["selfplay"]["opening_sha256"] == sha256(model)
+                assert not SETUP_SETTLEMENTS & {x["index"] for x in g["decisions"]}
+    assert Loop(d, replace(s, opening=None)).opening == sha256(model), "a resume without the flag keeps it"
+    assert Loop(d, replace(s, opening=None)).run() == 0
+    other = opening_model_file(tmp_path / "other.bin", scale=0.0)
+    with pytest.raises(ValueError, match="with another opening model"):
+        Loop(d, replace(s, opening=str(other)))
+
+
+def test_a_train_loop_set_up_without_an_opening_model_refuses_one(tmp_path, reference):
+    model = opening_model_file(tmp_path / "model.bin")
+    assert manifest(reference)["opening"] is None
+    assert all("+o" not in manifest(reference)["generations"][1]["gate"][side] for side in ("candidate", "baseline"))
+    with pytest.raises(ValueError, match="without --opening"):
+        Loop(reference, replace(TINY, opening=str(model)))
+    r = cli("train-loop", "--dir", str(reference), "--generations", "1", "--opening", str(model))
+    assert r.returncode == 2 and "without --opening" in r.stderr
+    # A run set up before 3d-1b has no "opening" key: it reads as set up without one.
+    old = tmp_path / "before-3d1b"
+    shutil.copytree(reference, old)
+    m = manifest(old)
+    del m["opening"]
+    (old / "manifest.json").write_text(json.dumps(m))
+    with pytest.raises(ValueError, match="without --opening"):
+        Loop(old, replace(TINY, opening=str(model)))
+    assert Loop(old, TINY).opening is None
     assert Loop(old, TINY).run() == 0, "resuming without the flag is accepted, nothing redone"

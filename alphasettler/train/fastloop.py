@@ -22,6 +22,11 @@ gate sides are `+t`. A resumed loop keeps the setting it was set up with.
 With `gumbel` (set when the loop is set up: `init(..., gumbel=SIMS)`, `fast-loop --gumbel SIMS`;
 spec P2 Section 5), every self-play move is a Gumbel root search of SIMS simulations whose improved
 policy is the decision's policy target; the gate is unchanged. A resumed loop keeps that too.
+
+With `opening` (set when the loop is set up: `init(..., opening=FILE)`, `fast-loop --opening FILE`;
+spec 3d-1b), the opening model FILE is copied to `nets/opening.bin`, picks every self-play setup
+settlement, and both gate sides are `+o`. A resumed loop keeps it (state.json holds its sha256, and
+the copy is checked before every self-play and gate); it cannot be combined with `gumbel`.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from pathlib import Path
 
 from alphasettler import files, records
 from alphasettler import selfplay as selfplay_mod
+from alphasettler._engine import OPENING_FILE
 from alphasettler.arena import TRADES, run as arena_run
 from alphasettler.train.loop import GATE_SEED_START, SEEDS_PER_GENERATION, gen_name, json_float
 
@@ -81,32 +87,48 @@ class FastLoop:
         self.state = json.loads((self.root / STATE).read_text())
         self.trades = bool(self.state.get("trades", False))  # state files from before 3c have none
         self.gumbel = self.state.get("gumbel")  # state files from before P2 have none: PUCT self-play
+        self.opening = self.state.get("opening")  # the model's sha256; state files from before 3d-1b have none
         rules = dict(TRADES) if self.trades else {"max_offers_per_turn": 0}
         self.config = {**rules, "max_turns": settings.max_turns}
 
     @staticmethod
     def init(root: str | Path, seed_dirs: list[str | Path], start_net: str | Path, first: int,
-             trades: bool = False, gumbel: int | None = None) -> None:
+             trades: bool = False, gumbel: int | None = None, opening: str | Path | None = None) -> None:
         """Create `root` with `seed_dirs` (oldest first) as the starting records and `start_net`
         as the best net; generation numbering starts at `first`; `trades` plays the trading game;
-        `gumbel` (simulations) makes every self-play move a Gumbel root search."""
+        `gumbel` (simulations) makes every self-play move a Gumbel root search; `opening` (an
+        opening model file, copied to `nets/opening.bin`) picks self-play's setup settlements."""
         root = Path(root)
         if (root / STATE).exists():
             raise ValueError(f"{root / STATE} exists: the loop is already set up (resume it with fast-loop)")
         if gumbel is not None:
             selfplay_mod.check_gumbel(gumbel)
+        opening_sha256 = None if opening is None else selfplay_mod.check_opening(opening, gumbel)
         nets = root / "nets"
         nets.mkdir(parents=True, exist_ok=True)
         files.atomic_copy(start_net, nets / "start.bin")
         files.atomic_copy(start_net, nets / "best.bin")
+        if opening is not None:
+            files.atomic_copy(opening, nets / OPENING_FILE)
         dirs = [str(Path(d).resolve()) for d in seed_dirs]
         state = {"seed_dirs": [{"dir": d, "games": count_games(Path(d))} for d in dirs],
-                 "first": first, "trades": trades, "gumbel": gumbel, "best": "start", "latest": "start",
-                 "generations": []}
+                 "first": first, "trades": trades, "gumbel": gumbel, "opening": opening_sha256, "best": "start",
+                 "latest": "start", "generations": []}
         files.atomic_write_text(root / STATE, json.dumps(state, indent=1) + "\n")
 
     def _save(self) -> None:
         files.atomic_write_text(self.root / STATE, json.dumps(self.state, indent=1) + "\n")
+
+    def _opening_file(self) -> Path | None:
+        """`nets/opening.bin` if the loop was set up with an opening model, checked against the
+        sha256 it was set up with (ValueError if missing or changed); None without one."""
+        if self.opening is None:
+            return None
+        path = self.nets / OPENING_FILE
+        if not path.is_file() or files.sha256_file(path) != self.opening:
+            raise ValueError(f"{path} is not the opening model {self.root} was set up with (sha256 {self.opening}): "
+                             f"restore that file")
+        return path
 
     def _record_dirs(self) -> list[tuple[Path, int]]:
         """Every record directory with its game count, oldest first."""
@@ -142,6 +164,8 @@ class FastLoop:
         files.remove_dead_temps(self.nets, "*.bin")
         best = self.state["best"]
         mode = "" if self.gumbel is None else f" (Gumbel root, {self.gumbel} simulations)"
+        if self.opening is not None:
+            mode += " (setup settlements from the opening model)"
         print(f"{name}: selfplay with net:{best}{mode}", flush=True)
         sp = self._selfplay(k, gdir, best)
         print(f"{name}: train", flush=True)
@@ -167,7 +191,7 @@ class FastLoop:
                     tmp, lo, min(self.s.chunk_games, end - lo), config=self.config,
                     full_simulations=self.s.full_simulations, fast_simulations=self.s.fast_simulations,
                     full_probability=self.s.full_probability, net=best, nets_dir=self.nets, threads=self.s.threads,
-                    gumbel=self.gumbel)
+                    gumbel=self.gumbel, opening=self._opening_file())
                 files.fsync_file(tmp)
                 os.replace(tmp, path)
                 print(f"  {path.name}: seeds {lo}..{min(end, lo + self.s.chunk_games)}", flush=True)
@@ -178,7 +202,7 @@ class FastLoop:
                 totals["belief_resets"] += g["belief_resets"]
         print(f"  {totals['games']} games, {totals['decisions']} decisions, belief resets {totals['belief_resets']}",
               flush=True)
-        return {"net": best, "seed_start": start, "gumbel": self.gumbel, **totals}
+        return {"net": best, "seed_start": start, "gumbel": self.gumbel, "opening": self.opening, **totals}
 
     def _train(self, k: int, gdir: Path, games: int) -> dict:
         from alphasettler.train.fast import FastConfig, fast_train, load_pool
@@ -204,8 +228,9 @@ class FastLoop:
 
     def _gate(self, k: int, gdir: Path, best: str) -> dict:
         sims = self.s.gate_simulations
-        offers = "+t" if self.trades else ""
-        candidate, baseline = f"net:{gen_name(k)}@{sims}{offers}", f"net:{best}@{sims}{offers}"
+        self._opening_file()  # a +o gate reads nets/opening.bin: check it first
+        suffix = ("+t" if self.trades else "") + ("" if self.opening is None else "+o")
+        candidate, baseline = f"net:{gen_name(k)}@{sims}{suffix}", f"net:{best}@{sims}{suffix}"
         tmp = files.temp_path(gdir / "gate.jsonl")
         recs, summary = arena_run(candidate, baseline, self.s.gate_seeds, GATE_SEED_START, self.s.threads,
                                   self.config, tmp, self.nets)
