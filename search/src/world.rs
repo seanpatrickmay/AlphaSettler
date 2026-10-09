@@ -255,6 +255,13 @@ impl WorldSampler {
         Ok(sampler)
     }
 
+    /// The template world: everything public plus the viewer's own cards (hidden parts from one
+    /// sample). 3d-4 reads the viewer's root compound moves from it: they depend only on the
+    /// viewer's hand, the bank and the board.
+    pub fn template(&self) -> &State {
+        &self.template
+    }
+
     /// A uniform deal of the unseen dev cards to opponents (new cards first) and the deck,
     /// conditioned on every capped opponent holding at most their cap of VP cards (see `new`).
     /// Drawn exactly: first the joint VP-card counts (truncated multivariate hypergeometric), then

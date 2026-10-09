@@ -2,6 +2,7 @@
 //! (spec: docs/superpowers/specs/2026-10-01-bot-3a-ismcts-design.md).
 
 pub mod belief;
+pub mod compound;
 pub mod evaluator;
 pub mod gumbel;
 pub mod noise;

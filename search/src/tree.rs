@@ -1,5 +1,6 @@
-//! The search tree: nodes in one arena; a decision node's children are keyed by action id, a
-//! chance node's by the outcome the searching player sees (dice sum, resource or dev card index).
+//! The search tree: nodes in one arena; a decision node's children are keyed by action id (or, at
+//! a compound node, `compound::COMPOUND_BIT` | a build's id), a chance node's by the outcome the
+//! searching player sees (dice sum, resource or dev card index).
 
 use settler_engine::{Action, NUM_PLAYERS};
 
