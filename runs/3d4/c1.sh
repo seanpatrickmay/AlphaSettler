@@ -7,7 +7,8 @@ ls runs/p2/arm.sh runs/p2/tables.py docs/bot/results-3d1b.md docs/bot/results-3d
   runs/3d3/sprt-E.log runs/p2/E-state-at-cut.json runs/3d2/nets/A.bin runs/3d2/gen-034-v4.bin > /dev/null
 test "$(ls runs/3d3/pool/*.bin | wc -l | tr -d ' ')" = 10
 grep -n '^sprt: ' runs/p2/sprt-C-vs-A.log runs/3d2/sprt-D.log runs/3d3/sprt-E.log | tee runs/3d4/verdicts.log
-grep -q '^sprt: H1' runs/3d3/sprt-E.log && { echo "3d-3 was H1: this script is the A branch only" >&2; exit 1; }
+! grep -q '^sprt: H1' runs/p2/sprt-C-vs-A.log runs/3d2/sprt-D.log runs/3d3/sprt-E.log \
+  || { echo "an arm was H1: this script is the A branch only" >&2; exit 1; }
 mkdir -p runs/3d4/nets
 printf 'ARM=A\nRUNS=runs/p2\nB_SRC=runs/3d2/nets/A.bin\n' > runs/3d4/arm.env
 set -a; . runs/3d4/arm.env; set +a
