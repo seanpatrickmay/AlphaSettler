@@ -179,6 +179,9 @@ def _parser() -> argparse.ArgumentParser:
                     help="first run only: an opening model (ASOPEN) picks self-play's setup settlements, "
                          "and both gate sides are +o; a resume with the same file restores a missing "
                          "nets/opening.bin")
+    fl.add_argument("--league", nargs="+", default=None, metavar="NET",
+                    help="first run only: about half the self-play games seat two league bots, a past net (these "
+                         "net files and every net the loop promotes) and a style (roads, army, production)")
 
     nu = sub.add_parser("net-upgrade", help="rewrite an encoder v2 or v3 net for encoder v4, same moves")
     nu.add_argument("old", help="the encoder v2 or v3 weights file")
@@ -509,7 +512,7 @@ def _fast_score(args) -> int:
 def _fast_loop(args) -> int:
     if _train_missing():
         return 2
-    from alphasettler.selfplay import mode_mismatch, opening_mismatch
+    from alphasettler.selfplay import league_mismatch, mode_mismatch, opening_mismatch
     from alphasettler.train.fastloop import STATE, FastLoop, FastLoopSettings
 
     root = Path(args.dir)
@@ -518,7 +521,7 @@ def _fast_loop(args) -> int:
             print("error: a new fast loop needs --seed-dirs, --start-net and --first", file=sys.stderr)
             return 2
         FastLoop.init(root, args.seed_dirs, args.start_net, args.first, trades=args.trades,
-                      gumbel=args.gumbel, opening=args.opening)
+                      gumbel=args.gumbel, opening=args.opening, league=args.league)
     s = FastLoopSettings(generations=args.generations, games=args.games, window_games=args.window_games,
                          minutes=args.minutes, lr=args.lr, gate_seeds=args.gate_seeds,
                          gate_simulations=args.gate_simulations, device=args.device, threads=args.threads, opening=args.opening)
@@ -532,6 +535,10 @@ def _fast_loop(args) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 2
     error = opening_mismatch(root, loop.opening, args.opening)
+    if error is not None:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    error = league_mismatch(root, loop.league, args.league)
     if error is not None:
         print(f"error: {error}", file=sys.stderr)
         return 2

@@ -3,12 +3,17 @@ the regression gate. Needs the `train` extra, like test_train.py."""
 
 import hashlib
 import json
+import struct
 
 import pytest
 
 from alphasettler import records
-from alphasettler._engine import OPENING_FILE
+from alphasettler._engine import (
+    LEAGUE_STYLES, NET_ENCODING_HASH, NET_V3_ENCODING_HASH, OPENING_FILE, SELFPLAY_FAST_SIMULATIONS, TrainingSet,
+)
 from alphasettler.arena import TRADES
+from alphasettler.selfplay import write_explore
+from alphasettler.train import fastloop
 from alphasettler.train.fastloop import GATE_MIN_Z, STATE, FastLoop, FastLoopSettings, count_games, promoted
 from alphasettler.train.loop import SEEDS_PER_GENERATION, gen_name
 from alphasettler.train.model import Net, save
@@ -307,3 +312,176 @@ def test_cli_fast_loop_restores_a_missing_opening_model_from_the_same_file_only(
     state = json.loads((root / STATE).read_text())
     assert [g["gen"] for g in state["generations"]] == [1]
     assert state["generations"][0]["selfplay"]["opening"] == hashlib.sha256(model.read_bytes()).hexdigest()
+
+
+LEAGUE_TINY = {**TINY, "games": 6, "chunk_games": 6, "league_simulations": 6}
+
+
+def league_nets(tmp_path, n=2):
+    """`n` tiny net files outside any loop: a league's set-up pool."""
+    paths = []
+    for i in range(n):
+        path = tmp_path / "pool" / f"old-{i}.bin"
+        path.parent.mkdir(exist_ok=True)
+        save(Net(8, 1), path)
+        paths.append(path)
+    return paths
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_a_league_loop_self_plays_against_its_pool_and_adds_each_promoted_net(tmp_path, monkeypatch):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    pool = league_nets(tmp_path)
+    root = tmp_path / "loop"
+    FastLoop.init(root, [seed], tmp_path / "start.bin", first=1, trades=True, league=pool)
+    state = json.loads((root / STATE).read_text())
+    assert state["league"] == {"nets": [{"name": f"league-{i:03d}", "source": str(p.resolve()), "sha256": sha(p)}
+                                        for i, p in enumerate(pool)]}
+    for i, p in enumerate(pool):
+        assert (root / "nets" / f"league-{i:03d}.bin").read_bytes() == p.read_bytes()
+    monkeypatch.setattr(fastloop, "promoted", lambda z: True)  # gen-001 is promoted, so gen 2 meets it
+    assert FastLoop(root, FastLoopSettings(generations=2, **LEAGUE_TINY)).run() == 2
+    g1, g2 = json.loads((root / STATE).read_text())["generations"]
+    assert g1["gate"]["promoted"] and g1["gate"]["candidate"] == "net:gen-001@6+t", g1["gate"]
+    set_up = ["net:league-000@6+t", "net:league-001@6+t"]
+    assert g1["selfplay"]["league"]["nets"] == set_up
+    assert g2["selfplay"]["league"]["nets"] == set_up + ["net:gen-001@6+t"]
+    total = 0
+    for k, g in ((1, g1), (2, g2)):
+        lg = g["selfplay"]["league"]
+        assert lg["styles"] == [f"style:{s}@6+t" for s in LEAGUE_STYLES]
+        games = [x for p in sorted((root / gen_name(k)).glob("selfplay-local-*.jsonl.gz")) for x in records.read(p)]
+        assert len(games) == 6 and g["selfplay"]["belief_resets"] == 0
+        seats = dict.fromkeys(lg["nets"] + lg["styles"], 0)
+        league_games = [x for x in games if "league" in x]
+        for x in league_games:
+            assert x["selfplay"]["league_nets"] == lg["nets"] and x["selfplay"]["league_styles"] == lg["styles"]
+            pool_seats = {i for i, n in enumerate(x["league"]) if n is not None}
+            assert not pool_seats & {d["actor"] for d in x["decisions"]}, "league seats are not recorded"
+            for n in x["league"]:
+                if n is not None:
+                    seats[n] += 1
+        assert (lg["games"], lg["seats"]) == (len(league_games), seats)
+        total += lg["games"]
+    assert 0 < total < 12, f"{total} league games of 12"
+
+
+@pytest.mark.parametrize("set_up, message", [
+    (False, "without --league"),
+    (True, "with another league pool"),
+], ids=["set-up-without", "another-pool"])
+def test_cli_fast_loop_keeps_the_league_it_was_set_up_with(tmp_path, set_up, message):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    pool = league_nets(tmp_path)
+    root = tmp_path / "loop"
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--first", "1", "--trades", "--seed-dirs", str(seed),
+            "--start-net", str(tmp_path / "start.bin"), *(["--league", *map(str, pool)] if set_up else []))
+    assert r.returncode == 0, r.stderr
+    want = json.loads((root / STATE).read_text())["league"]
+    assert (want is not None) == set_up
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).league == want
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--league", *map(str, pool[:1] if set_up else pool))
+    assert r.returncode == 2 and message in r.stderr, r.stderr
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0")
+    assert r.returncode == 0, r.stderr
+    assert json.loads((root / STATE).read_text())["league"] == want, "a resume without the flag keeps it"
+    if set_up:
+        r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--league", *map(str, pool))
+        assert r.returncode == 0, "the same files repeat the setting"
+
+
+def test_a_loop_set_up_before_the_league_existed_reads_as_set_up_without_it(tmp_path):
+    root, _ = setup(tmp_path)
+    state = json.loads((root / STATE).read_text())
+    del state["league"]
+    (root / STATE).write_text(json.dumps(state))
+    loop = FastLoop(root, FastLoopSettings(generations=0, **TINY))
+    assert loop.league is None and loop.league_pool() is None
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--league", *map(str, league_nets(tmp_path)))
+    assert r.returncode == 2 and "without --league" in r.stderr
+
+
+def test_a_bad_league_net_or_a_league_with_gumbel_is_refused_before_anything_is_written(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    (good,) = league_nets(tmp_path, 1)
+    cut = tmp_path / "cut.bin"
+    cut.write_bytes(good.read_bytes()[:-4])
+    other = tmp_path / "other-encoder.bin"
+    data = bytearray(good.read_bytes())
+    data[12:20] = struct.pack("<Q", NET_ENCODING_HASH ^ 1)  # another feature layout's hash
+    other.write_bytes(bytes(data))
+    v3 = tmp_path / "v3.bin"
+    data[12:20] = struct.pack("<Q", NET_V3_ENCODING_HASH)  # an encoder v3 net: the loader names net-upgrade
+    v3.write_bytes(bytes(data))
+    for kw, message in [({"league": [good, cut]}, "league net .*cut.bin.*truncated"),
+                        ({"league": [tmp_path / "missing.bin"]}, "league net .*missing.bin.*cannot read"),
+                        ({"league": [other]}, "league net .*other-encoder.bin.*encoding hash"),
+                        ({"league": [v3]}, "league net .*v3.bin.*net-upgrade"),
+                        ({"league": []}, "at least one net file"),
+                        ({"league": [good], "gumbel": 100}, "--league and --gumbel")]:
+        with pytest.raises(ValueError, match=message):
+            FastLoop.init(tmp_path / "bad-loop", [seed], tmp_path / "start.bin", first=1, **kw)
+        assert not (tmp_path / "bad-loop").exists()
+    r = cli("fast-loop", "--dir", str(tmp_path / "cli"), "--generations", "0", "--first", "1", "--seed-dirs", str(seed),
+            "--start-net", str(tmp_path / "start.bin"), "--league", str(good), "--gumbel", "100")
+    assert r.returncode == 2 and "--league and --gumbel" in r.stderr
+    assert not (tmp_path / "cli").exists()
+
+
+def test_a_changed_league_net_in_the_nets_directory_stops_the_loop(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    FastLoop.init(root, [seed], tmp_path / "start.bin", first=1, league=league_nets(tmp_path))
+    save(Net(8, 1), root / "nets" / "league-001.bin")  # replaced in place after set-up
+    with pytest.raises(ValueError, match="league-001.bin is not the league net"):
+        FastLoop(root, FastLoopSettings(generations=1, **TINY)).run()
+    assert not list((root / "gen-001").glob("selfplay-local-*.jsonl.gz")), "nothing was played against it"
+
+
+def test_league_seats_take_the_loops_trading_and_opening_suffixes(tmp_path):
+    assert SELFPLAY_FAST_SIMULATIONS == 100
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    pool = league_nets(tmp_path, 1)
+    model = opening_model_file(tmp_path / "model.bin")
+    for trades, opening, net_suffix, style_suffix in [(True, model, "+t+o", "+t"), (False, None, "", "")]:
+        root = tmp_path / f"loop-{trades}"
+        FastLoop.init(root, [seed], tmp_path / "start.bin", first=1, trades=trades, opening=opening, league=pool)
+        assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).league_pool() == {
+            "nets": [f"net:league-000@100{net_suffix}"],
+            "styles": [f"style:{s}@100{style_suffix}" for s in LEAGUE_STYLES]}
+
+
+def test_a_league_games_result_is_the_value_target_of_its_two_recorded_seats(tmp_path):
+    """Only the learner seats' decisions are recorded, but the game's result (its winner, a pool seat
+    included, and all four final vp) is each of their value targets: training and the loop's counts
+    do not assume four recorded seats."""
+    out = tmp_path / "league.jsonl.gz"
+    league = {"nets": ["ismcts@5"], "styles": [f"style:{s}@6" for s in LEAGUE_STYLES]}
+    write_explore(out, 0, 20, config={"max_offers_per_turn": 0}, full_simulations=6, fast_simulations=3,
+                  full_probability=0.25, threads=2, league=league)
+    games = [g for g in records.read(out) if "league" in g]
+    assert len(games) >= 3
+    ts = TrainingSet(games)
+    assert ts.games == len(games) and ts.decisions == sum(len(g["decisions"]) for g in games)
+    pool_won = learner_won = 0
+    for gi, g in enumerate(games):
+        learners = {i for i, n in enumerate(g["league"]) if n is None}
+        assert len(learners) == 2 and {d["actor"] for d in g["decisions"]} == learners
+        pool_won += g["winner"] not in learners
+        learner_won += g["winner"] in learners
+        for di, d in enumerate(g["decisions"]):
+            b = ts.position(gi, di)
+            actor = d["actor"]
+            want = [float((g["winner"] - actor) % 4 == r) for r in range(4)]  # seat-relative, actor first
+            assert struct.unpack("<4f", b["outcome"]) == tuple(want), f"game {g['seed']} decision {di}"
+            vp = struct.unpack("<4f", b["vp"])
+            assert vp == pytest.approx([g["vp"][(r + actor) % 4] / 10 for r in range(4)])
+    assert pool_won and learner_won, f"{pool_won} games won by a pool seat, {learner_won} by a learner seat"

@@ -20,8 +20,8 @@ from pathlib import Path
 from alphasettler import arena, files, records
 from alphasettler._engine import (
     DEFAULT_NETS_DIR, LEAGUE_PROBABILITY, MAX_SIMULATIONS, NET_BATCH, NOISE_ALPHA, NOISE_WEIGHT, OPENING_EPSILON,
-    OPENING_FILE, OPENING_TOP, SAMPLE_TURNS, SEARCH_BATCH, SELFPLAY_MIN_SIMULATIONS, opening_forward, resolve_net,
-    selfplay_explore,
+    OPENING_FILE, OPENING_TOP, SAMPLE_TURNS, SEARCH_BATCH, SELFPLAY_MIN_SIMULATIONS, Game, encode, net_forward,
+    opening_forward, resolve_net, selfplay_explore,
 )
 
 # Games per native call. Python sees Ctrl-C only between calls, and every finished batch is on disk.
@@ -63,6 +63,25 @@ def check_league(league: dict, nets_dir: str | Path, gumbel: int | None = None) 
         arena.check(name, name, 1, nets_dir=nets_dir)
 
 
+def check_league_nets(paths: list[str | Path], gumbel: int | None = None) -> list[str]:
+    """The sha256 of each of a league's set-up net files, once the Rust loader every `net:` bot uses has
+    read it (a ValueError starting `league net PATH:` otherwise: missing, cut short, another encoder).
+    No file, or `gumbel`, is a ValueError."""
+    if gumbel is not None:
+        raise ValueError(LEAGUE_WITH_GUMBEL)
+    if not paths:
+        raise ValueError("--league needs at least one net file")
+    public, hidden = encode(Game(0, {"max_offers_per_turn": 0}))
+    out = []
+    for path in paths:
+        try:
+            net_forward(str(path), public, hidden)
+        except ValueError as e:
+            raise ValueError(f"league net {path}: {e}") from None
+        out.append(files.sha256_file(path))
+    return out
+
+
 def mode_mismatch(root: str | Path, stored: int | None, asked: int | None) -> str | None:
     """The error for asking `--gumbel` of a loop in `root` that was set up with `stored` (None:
     without it, as every loop from before P2 was), or None if the ask is allowed: no flag keeps the
@@ -99,6 +118,21 @@ def place_opening(root: str | Path, nets: str | Path, stored: str | None, asked:
     if not path.is_file() or files.sha256_file(path) != stored:
         raise ValueError(f"{path} is not the opening model {root} was set up with (sha256 {stored}): "
                          f"restore it, or resume with --opening and that file")
+
+
+def league_mismatch(root: str | Path, stored: dict | None, asked: list[str | Path] | None) -> str | None:
+    """The error for asking `--league NET ...` of a loop in `root` set up with the league `stored` (its
+    state.json entry; None: without one, as every loop from before 3d-3 was), or None if the ask is
+    allowed: no flag keeps the loop's pool, the same files (by sha256, in order) repeat it."""
+    if asked is None:
+        return None
+    if stored is not None and [files.sha256_file(p) for p in asked] == [n["sha256"] for n in stored["nets"]]:
+        return None
+    if stored is None:
+        was = "without --league"
+    else:
+        was = f"with another league pool ({', '.join(n['source'] for n in stored['nets'])})"
+    return f"{root} was set up {was}, and a loop keeps the league it was set up with"
 
 
 def settings(net: str | None, nets_dir: str | Path, full_simulations: int, fast_simulations: int,
