@@ -16,7 +16,8 @@ from pathlib import Path
 
 from alphasettler import files, records
 from alphasettler._engine import (
-    DEFAULT_NETS_DIR, MAX_SIMULATIONS, NET_BATCH, NOISE_ALPHA, NOISE_WEIGHT, OPENING_EPSILON, OPENING_TOP, SAMPLE_TURNS,
+    DEFAULT_NETS_DIR, MAX_SIMULATIONS, NET_BATCH, NOISE_ALPHA, NOISE_WEIGHT, OPENING_EPSILON, OPENING_FILE, OPENING_TOP,
+    SAMPLE_TURNS,
     SEARCH_BATCH, SELFPLAY_MIN_SIMULATIONS, opening_forward, resolve_net, selfplay_explore,
 )
 
@@ -63,6 +64,22 @@ def opening_mismatch(root: str | Path, stored: str | None, asked: str | Path | N
         return None
     was = "without --opening" if stored is None else f"with another opening model (sha256 {stored})"
     return f"{root} was set up {was}, and a loop keeps the opening model it was set up with"
+
+
+def place_opening(root: str | Path, nets: str | Path, stored: str | None, asked: str | Path | None) -> None:
+    """For a loop in `root` set up with the opening model whose sha256 is `stored` (None: without
+    one, nothing to do): restore `<nets>/opening.bin` from `--opening FILE` (`asked`) when it is
+    missing and FILE has that sha256, then check the file there is that model (ValueError if it is
+    missing or changed). A changed file is never replaced."""
+    if stored is None:
+        return
+    path = Path(nets) / OPENING_FILE
+    if not path.exists() and asked is not None and files.sha256_file(asked) == stored:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        files.atomic_copy(asked, path)
+    if not path.is_file() or files.sha256_file(path) != stored:
+        raise ValueError(f"{path} is not the opening model {root} was set up with (sha256 {stored}): "
+                         f"restore it, or resume with --opening and that file")
 
 
 def settings(net: str | None, nets_dir: str | Path, full_simulations: int, fast_simulations: int,

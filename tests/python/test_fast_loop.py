@@ -284,3 +284,26 @@ def test_a_changed_opening_model_in_the_nets_directory_stops_the_loop(tmp_path):
     with pytest.raises(ValueError, match="not the opening model"):
         FastLoop(root, FastLoopSettings(generations=1, **TINY)).run()
     assert not list((root / "gen-001").glob("selfplay-local-*.jsonl.gz")), "nothing was played with it"
+
+
+def test_cli_fast_loop_restores_a_missing_opening_model_from_the_same_file_only(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    model = opening_model_file(tmp_path / "model.bin")
+    other = opening_model_file(tmp_path / "other.bin", scale=0.0)
+    root = tmp_path / "loop"
+    FastLoop.init(root, [seed], tmp_path / "start.bin", first=1, opening=model)
+    placed = root / "nets" / OPENING_FILE
+    placed.unlink()
+    r = cli("fast-loop", "--dir", str(root), "--generations", "1")
+    assert r.returncode == 2 and "restore" in r.stderr and not placed.exists(), r.stderr
+    r = cli("fast-loop", "--dir", str(root), "--generations", "1", "--opening", str(other))
+    assert r.returncode == 2 and "another opening model" in r.stderr and not placed.exists(), r.stderr
+    r = cli("fast-loop", "--dir", str(root), "--generations", "1", "--opening", str(model), "--games", "2",
+            "--window-games", "3", "--minutes", "0.01", "--gate-seeds", "1", "--gate-simulations", "6",
+            "--device", "cpu", "--threads", "2")
+    assert r.returncode == 0, r.stderr
+    assert placed.read_bytes() == model.read_bytes()
+    state = json.loads((root / STATE).read_text())
+    assert [g["gen"] for g in state["generations"]] == [1]
+    assert state["generations"][0]["selfplay"]["opening"] == hashlib.sha256(model.read_bytes()).hexdigest()

@@ -26,7 +26,8 @@ policy is the decision's policy target; the gate is unchanged. A resumed loop ke
 With `opening` (set when the loop is set up: `init(..., opening=FILE)`, `fast-loop --opening FILE`;
 spec 3d-1b), the opening model FILE is copied to `nets/opening.bin`, picks every self-play setup
 settlement, and both gate sides are `+o`. A resumed loop keeps it (state.json holds its sha256, and
-the copy is checked before every self-play and gate); it cannot be combined with `gumbel`.
+the copy is checked before every self-play and gate, and a missing one is restored from a
+resume's `--opening FILE` with that sha256, as train-loop does); it cannot be combined with `gumbel`.
 """
 
 from __future__ import annotations
@@ -64,6 +65,7 @@ class FastLoopSettings:
     max_turns: int = 1000
     device: str = "auto"
     threads: int | None = None
+    opening: str | None = None  # an opening model file: restores a missing nets/opening.bin (not a new model)
 
 
 def promoted(z: float) -> bool:
@@ -120,15 +122,13 @@ class FastLoop:
         files.atomic_write_text(self.root / STATE, json.dumps(self.state, indent=1) + "\n")
 
     def _opening_file(self) -> Path | None:
-        """`nets/opening.bin` if the loop was set up with an opening model, checked against the
-        sha256 it was set up with (ValueError if missing or changed); None without one."""
+        """`nets/opening.bin` if the loop was set up with an opening model, restored from
+        `--opening FILE` when missing and checked against the sha256 it was set up with (ValueError
+        if missing or changed); None without one."""
         if self.opening is None:
             return None
-        path = self.nets / OPENING_FILE
-        if not path.is_file() or files.sha256_file(path) != self.opening:
-            raise ValueError(f"{path} is not the opening model {self.root} was set up with (sha256 {self.opening}): "
-                             f"restore that file")
-        return path
+        selfplay_mod.place_opening(self.root, self.nets, self.opening, self.s.opening)
+        return self.nets / OPENING_FILE
 
     def _record_dirs(self) -> list[tuple[Path, int]]:
         """Every record directory with its game count, oldest first."""

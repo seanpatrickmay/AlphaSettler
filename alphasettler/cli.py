@@ -177,7 +177,8 @@ def _parser() -> argparse.ArgumentParser:
                     help="first run only: every self-play move a Gumbel root search of SIMS simulations")
     fl.add_argument("--opening", default=None, metavar="FILE",
                     help="first run only: an opening model (ASOPEN) picks self-play's setup settlements, "
-                         "and both gate sides are +o")
+                         "and both gate sides are +o; a resume with the same file restores a missing "
+                         "nets/opening.bin")
 
     nu = sub.add_parser("net-upgrade", help="rewrite an encoder v2 or v3 net for encoder v4, same moves")
     nu.add_argument("old", help="the encoder v2 or v3 weights file")
@@ -520,7 +521,7 @@ def _fast_loop(args) -> int:
                       gumbel=args.gumbel, opening=args.opening)
     s = FastLoopSettings(generations=args.generations, games=args.games, window_games=args.window_games,
                          minutes=args.minutes, lr=args.lr, gate_seeds=args.gate_seeds,
-                         gate_simulations=args.gate_simulations, device=args.device, threads=args.threads)
+                         gate_simulations=args.gate_simulations, device=args.device, threads=args.threads, opening=args.opening)
     loop = FastLoop(root, s)
     if args.trades and not loop.trades:
         print(f"error: {root} was set up without --trades, and a loop keeps the setting it was set up with",

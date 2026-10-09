@@ -196,15 +196,7 @@ class Loop:
     def _place_opening(self) -> None:
         """Put the run's opening model at `nets/opening.bin` (copied from `--opening FILE` when it
         is not there) and check it is the model the run was set up with."""
-        if self.opening is None:
-            return
-        path = self.nets / OPENING_FILE
-        if not path.exists() and self.s.opening is not None:
-            self.nets.mkdir(parents=True, exist_ok=True)
-            files.atomic_copy(self.s.opening, path)
-        if not path.is_file() or files.sha256_file(path) != self.opening:
-            raise ValueError(f"{path} is not the opening model {self.root} was set up with (sha256 {self.opening}): "
-                             f"restore it, or resume with --opening and that file")
+        selfplay_mod.place_opening(self.root, self.nets, self.opening, self.s.opening)
 
     def _save(self) -> None:
         files.atomic_write_text(self.root / MANIFEST, _dumps(self.manifest, indent=1))
