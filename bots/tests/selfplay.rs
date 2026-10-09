@@ -8,12 +8,15 @@ use settler_bots::heuristic::{
 use settler_bots::opening::OPENING_FEATURES;
 use settler_bots::opening_model::{settlement_scores, OpeningLayer, OpeningModel};
 use settler_bots::selfplay::{
-    play, play_with, play_with_opening, run, run_with, run_with_opening, Exploration, SelfPlayGame,
-    FAST_SIMULATIONS, FULL_PROBABILITY, FULL_SIMULATIONS, MIN_SIMULATIONS, NOISE, OPENING_EPSILON,
+    play, play_with, play_with_league, play_with_opening, run, run_with, run_with_league,
+    run_with_opening, Exploration, League, SelfPlayGame, FAST_SIMULATIONS, FULL_PROBABILITY,
+    FULL_SIMULATIONS, LEAGUE_PROBABILITY, LEAGUE_SEATS, MIN_SIMULATIONS, NOISE, OPENING_EPSILON,
     OPENING_TOP, SAMPLE_TURNS,
 };
 use settler_engine::rng::Rng;
 use settler_engine::*;
+use settler_net::weights::{Arch, Weights};
+use std::path::{Path, PathBuf};
 
 fn no_trades() -> GameConfig {
     GameConfig {
@@ -657,6 +660,227 @@ fn self_play_without_an_opening_model_plays_the_games_it_played_before_3d1b() {
             &Exploration::fixed(10),
             8,
             &heuristic,
+            None
+        )),
+        0x517b49ad6e41ec1e
+    );
+}
+
+/// A fresh nets directory holding `tiny.bin` (random weights at this build's layout, width 8, 1
+/// round), as bots/tests/netbot.rs makes them.
+fn nets_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "settler-selfplay-nets-{}-{tag}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    Weights::random(
+        Arch {
+            width: 8,
+            rounds: 1,
+        },
+        1,
+    )
+    .save(&dir.join("tiny.bin"))
+    .unwrap();
+    dir
+}
+
+/// These tests' pool: a net and an `ismcts` bot as the past half, the three styles.
+const PAST: [&str; 2] = ["net:tiny@6+t", "ismcts@5+t"];
+const STYLE_BOTS: [&str; 3] = ["style:roads@6+t", "style:army@6+t", "style:production@6+t"];
+const NONE: [&str; 0] = [];
+
+fn league(dir: &Path) -> League {
+    League::new(&PAST, &STYLE_BOTS, dir).unwrap()
+}
+
+/// 3d-3 (spec Section 2): about half the games are league games. A league game seats two learner
+/// bots and two pool bots, one past net and one style, at drawn seats; only the learner seats'
+/// decisions are recorded; a plain game is exactly the game self-play without a league plays.
+#[test]
+fn a_league_game_seats_two_learners_a_past_net_and_a_style_and_records_only_the_learners() {
+    assert_eq!((LEAGUE_PROBABILITY, LEAGUE_SEATS), (0.5, 2));
+    let dir = nets_dir("seats");
+    let pool = league(&dir);
+    assert_eq!((pool.nets().len(), pool.styles().len()), (2, 3));
+    let ex = small_explore();
+    let games =
+        run_with_league(0..40, trading(), &ex, 8, &heuristic, 4, None, Some(&pool)).unwrap();
+    let (mut league_games, mut pool_seats) = (0, [0u32; NUM_PLAYERS]);
+    for g in &games {
+        assert_eq!(g.belief_resets, 0, "seed {}", g.seed);
+        let Some(seats) = &g.league else {
+            assert_eq!(
+                *g,
+                play_with(g.seed, trading(), &ex, 8, &heuristic),
+                "seed {}",
+                g.seed
+            );
+            continue;
+        };
+        league_games += 1;
+        let names: Vec<&str> = seats.iter().flatten().map(String::as_str).collect();
+        assert_eq!(names.len(), LEAGUE_SEATS, "seed {}: {seats:?}", g.seed);
+        assert_eq!(
+            names.iter().filter(|n| PAST.contains(*n)).count(),
+            1,
+            "seed {}: {seats:?}",
+            g.seed
+        );
+        assert_eq!(
+            names.iter().filter(|n| STYLE_BOTS.contains(*n)).count(),
+            1,
+            "seed {}: {seats:?}",
+            g.seed
+        );
+        for (p, seat) in seats.iter().enumerate() {
+            let recorded = g.decisions.iter().any(|d| d.actor as usize == p);
+            assert_eq!(
+                recorded,
+                seat.is_none(),
+                "seed {} seat {p}: {seats:?}",
+                g.seed
+            );
+            pool_seats[p] += seat.is_some() as u32;
+        }
+        let mut s = State::new(g.seed, trading());
+        for &a in &g.actions {
+            assert!(s.legal_actions().contains(&a), "seed {}: {a:?}", g.seed);
+            s.apply(a);
+        }
+        assert_eq!((s.winner(), s.turn), (g.winner, g.turns), "seed {}", g.seed);
+    }
+    // 40 games at p = 0.5: 20 expected, standard deviation 3.2.
+    assert!(
+        (10..=30).contains(&league_games),
+        "{league_games} league games of 40"
+    );
+    assert!(
+        pool_seats.iter().all(|&n| n > 0),
+        "pool seats {pool_seats:?}"
+    );
+}
+
+#[test]
+fn league_self_play_is_deterministic_and_thread_independent() {
+    let dir = nets_dir("threads");
+    let pool = league(&dir);
+    let ex = small_explore();
+    let first = (0..).find(|&s| pool.draw(s).is_some()).unwrap();
+    let seeds = first..first + 4;
+    let a = run_with_league(
+        seeds.clone(),
+        trading(),
+        &ex,
+        8,
+        &heuristic,
+        1,
+        None,
+        Some(&pool),
+    )
+    .unwrap();
+    assert_eq!(
+        a,
+        run_with_league(
+            seeds.clone(),
+            trading(),
+            &ex,
+            8,
+            &heuristic,
+            3,
+            None,
+            Some(&pool)
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        a[0],
+        play_with_league(first, trading(), &ex, 8, &heuristic, None, Some(&pool))
+    );
+    assert!(a[0].league.is_some());
+    // The seats depend on the seed alone: the same with an opening model, and in another league
+    // built from the same names.
+    let model = opening_model(7);
+    let b = run_with_league(
+        seeds.clone(),
+        trading(),
+        &ex,
+        8,
+        &heuristic,
+        2,
+        Some(&model),
+        Some(&pool),
+    )
+    .unwrap();
+    assert_eq!(
+        b,
+        run_with_league(
+            seeds,
+            trading(),
+            &ex,
+            8,
+            &heuristic,
+            1,
+            Some(&model),
+            Some(&pool)
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        a.iter().map(|g| &g.league).collect::<Vec<_>>(),
+        b.iter().map(|g| &g.league).collect::<Vec<_>>()
+    );
+    assert_eq!(pool.draw(first), league(&dir).draw(first));
+}
+
+#[test]
+fn a_league_needs_both_halves_and_known_bots_and_refuses_gumbel_self_play() {
+    let dir = nets_dir("bad");
+    for (nets, styles, message) in [
+        (&NONE[..], &STYLE_BOTS[..], "at least one past net"),
+        (&PAST[..], &NONE[..], "at least one style"),
+        (&["net:missing@6"][..], &STYLE_BOTS[..], "missing"),
+        (&PAST[..], &["style:tempo@6"][..], "unknown bot"),
+        (&PAST[..], &["style:roads@6+o"][..], "unknown bot"),
+    ] {
+        match League::new(nets, styles, &dir) {
+            Ok(_) => panic!("accepted {nets:?} {styles:?}"),
+            Err(e) => assert!(e.contains(message), "{e}"),
+        }
+    }
+    let pool = league(&dir);
+    let gumbel = Exploration::gumbel(8);
+    let e = run_with_league(
+        0..1,
+        no_trades(),
+        &gumbel,
+        8,
+        &heuristic,
+        1,
+        None,
+        Some(&pool),
+    )
+    .unwrap_err();
+    assert!(e.contains("Gumbel"), "{e}");
+    assert!(run_with_league(0..1, no_trades(), &gumbel, 8, &heuristic, 1, None, None).is_ok());
+}
+
+/// Without a league `play_with_league` is `play_with_opening`: the 3a and P2 digests hold
+/// through it.
+#[test]
+fn self_play_without_a_league_plays_the_games_it_played_before_3d3() {
+    let g = play_with_league(2, trading(), &small_explore(), 8, &heuristic, None, None);
+    assert_eq!(digest(&g), 0x94f447a9c3baf5b2);
+    assert_eq!(g.league, None);
+    assert_eq!(
+        digest(&play_with_league(
+            3,
+            no_trades(),
+            &Exploration::fixed(10),
+            8,
+            &heuristic,
+            None,
             None
         )),
         0x517b49ad6e41ec1e

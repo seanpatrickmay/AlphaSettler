@@ -376,6 +376,10 @@ fn game_dict<'py>(
         decisions.append(e)?;
     }
     d.set_item("decisions", decisions)?;
+    // 3d-3: only a league game has seats to name, so every other record is unchanged.
+    if let Some(seats) = &g.league {
+        d.set_item("league", seats.to_vec())?;
+    }
     Ok(d)
 }
 
@@ -437,11 +441,14 @@ fn selfplay<'py>(
 /// search of that many simulations, recorded with its improved policy as `target` (spec P2
 /// Section 5); the three PUCT arguments are then not used. With `opening` (an `ASOPEN` file),
 /// the opening model picks every setup settlement, epsilon-greedy over its best spots, with no
-/// search and no recorded decision (spec 3d-1b Section 2); refused with `gumbel`. With `net`,
-/// every seat is the network `<nets_dir>/<net>.bin` (loaded once); otherwise the heuristic.
-/// Decisions carry no observations. Releases the GIL while games run.
+/// search and no recorded decision (spec 3d-1b Section 2); refused with `gumbel`. With
+/// `league_nets` and `league_styles` (bot names, both or neither, loaded from `nets_dir`), about
+/// half the games seat two of them, a past net and a style, whose moves are not recorded; a
+/// league game's dict names them under `league` (spec 3d-3 Section 2); refused with `gumbel`.
+/// With `net`, every learner seat is the network `<nets_dir>/<net>.bin` (loaded once);
+/// otherwise the heuristic. Decisions carry no observations. Releases the GIL while games run.
 #[pyfunction]
-#[pyo3(signature = (seed_start, games, threads, full_simulations, fast_simulations, full_probability, config=None, net=None, nets_dir=None, gumbel=None, opening=None))]
+#[pyo3(signature = (seed_start, games, threads, full_simulations, fast_simulations, full_probability, config=None, net=None, nets_dir=None, gumbel=None, opening=None, league_nets=None, league_styles=None))]
 #[allow(clippy::too_many_arguments)]
 fn selfplay_explore<'py>(
     py: Python<'py>,
@@ -456,11 +463,13 @@ fn selfplay_explore<'py>(
     nets_dir: Option<PathBuf>,
     gumbel: Option<&Bound<'py, PyAny>>,
     opening: Option<PathBuf>,
+    league_nets: Option<Vec<String>>,
+    league_styles: Option<Vec<String>>,
 ) -> PyResult<Bound<'py, PyList>> {
     use settler_bots::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
     use settler_bots::netbot::{load_net, DEFAULT_NETS_DIR, NET_BATCH};
     use settler_bots::opening_model::OpeningModel;
-    use settler_bots::selfplay::{run_with_opening, Exploration};
+    use settler_bots::selfplay::{run_with_league, Exploration, League};
     use settler_net::evaluator::NetEvaluator;
     let seed_start: u64 = int_arg(seed_start, "seed_start")?;
     let games: u64 = int_arg(games, "games")?;
@@ -491,9 +500,22 @@ fn selfplay_explore<'py>(
         Some(path) => Some(OpeningModel::load(path).map_err(value_error)?),
         None => None,
     };
+    let league = match (&league_nets, &league_styles) {
+        (None, None) => None,
+        (Some(nets), Some(styles)) => {
+            let nets: Vec<&str> = nets.iter().map(String::as_str).collect();
+            let styles: Vec<&str> = styles.iter().map(String::as_str).collect();
+            Some(League::new(&nets, &styles, &dir).map_err(value_error)?)
+        }
+        _ => {
+            return Err(value_error(
+                "league_nets and league_styles are given together",
+            ))
+        }
+    };
     let played = py
         .detach(|| match &weights {
-            None => run_with_opening(
+            None => run_with_league(
                 seed_start..end,
                 config,
                 &ex,
@@ -501,8 +523,9 @@ fn selfplay_explore<'py>(
                 &|| HeuristicEvaluator::new(DEFAULT_WEIGHTS, 0),
                 threads,
                 model.as_ref(),
+                league.as_ref(),
             ),
-            Some(w) => run_with_opening(
+            Some(w) => run_with_league(
                 seed_start..end,
                 config,
                 &ex,
@@ -510,6 +533,7 @@ fn selfplay_explore<'py>(
                 &|| NetEvaluator::new(w.clone()),
                 threads,
                 model.as_ref(),
+                league.as_ref(),
             ),
         })
         .map_err(value_error)?;
@@ -636,6 +660,18 @@ fn _engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SAMPLE_TURNS", settler_bots::selfplay::SAMPLE_TURNS)?;
     m.add("OPENING_EPSILON", settler_bots::selfplay::OPENING_EPSILON)?;
     m.add("OPENING_TOP", settler_bots::selfplay::OPENING_TOP)?;
+    m.add(
+        "LEAGUE_PROBABILITY",
+        settler_bots::selfplay::LEAGUE_PROBABILITY,
+    )?;
+    m.add("LEAGUE_SEATS", settler_bots::selfplay::LEAGUE_SEATS)?;
+    m.add(
+        "LEAGUE_STYLES",
+        settler_bots::heuristic::STYLES
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>(),
+    )?;
     m.add_function(wrap_pyfunction!(fit_heuristic, m)?)?;
     m.add("MAX_SEEDS", settler_bots::arena::MAX_SEEDS)?;
     m.add(

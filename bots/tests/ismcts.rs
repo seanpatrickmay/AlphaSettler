@@ -920,3 +920,74 @@ fn confirms_a_trade_that_wins_the_game_on_the_spot() {
         assert_eq!(resets(&bot), 0);
     }
 }
+
+/// 3d-3 (spec Section 3): `style:STYLE` names are the heuristic ISMCTS bot with the style's
+/// weights, taking the `ismcts` suffixes but `+o`.
+#[test]
+fn style_names_build_the_heuristic_bot_with_the_style_weights() {
+    use settler_bots::heuristic::{style_weights, HeuristicEvaluator};
+    use settler_search::SearchConfig;
+    for name in [
+        "style:roads",
+        "style:army@20",
+        "style:production@20+t",
+        "style:roads@20+r3+s2",
+        "style:army@20+g+t",
+    ] {
+        assert!(make_bot(name, 0).is_some(), "{name}");
+    }
+    assert_eq!(make_bot("style:roads@20", 0).unwrap().name(), "style");
+    for bad in [
+        "style:",
+        "style:@20",
+        "style:Roads@20",
+        "style:tempo@20",
+        "styles:roads@20",
+        "style:roads@0",
+        "style:roads@20x",
+        "style:roads+r3",
+        "style:roads@20+o",
+        "style:roads@20+t+t",
+    ] {
+        assert!(make_bot(bad, 0).is_none(), "{bad}");
+    }
+    // The games play at the league's budget (100, `selfplay::FAST_SIMULATIONS`). The heuristic
+    // prior does not use the weights, so at 20 simulations the most-visited move follows it and
+    // these three games are the default weights' games: a by-hand match would then pin nothing.
+    let by_hand = |style: &str, seed: u64| -> Box<dyn Bot> {
+        Box::new(
+            IsmctsBot::with_evaluator(
+                "style",
+                seed,
+                SearchConfig {
+                    simulations: 100,
+                    ..SearchConfig::default()
+                },
+                HeuristicEvaluator::new(style_weights(style).unwrap(), 0),
+            )
+            .with_offers(true),
+        )
+    };
+    let mut differs = false;
+    for (seed, style) in [(1u64, "roads"), (2, "army"), (3, "production")] {
+        let mut named: Vec<Box<dyn Bot>> = (0..4u64)
+            .map(|p| make_bot(&format!("style:{style}@100+t"), p).unwrap())
+            .collect();
+        let mut built: Vec<Box<dyn Bot>> = (0..4u64).map(|p| by_hand(style, p)).collect();
+        let game = play_game(seed, trading(), &mut named);
+        assert_eq!(game, play_game(seed, trading(), &mut built), "{style}");
+        assert_eq!(
+            belief_resets(named.iter().map(|b| b.as_ref())),
+            0,
+            "{style}"
+        );
+        let mut plain: Vec<Box<dyn Bot>> = (0..4u64)
+            .map(|p| make_bot("ismcts@100+t", p).unwrap())
+            .collect();
+        differs |= play_game(seed, trading(), &mut plain) != game;
+    }
+    assert!(
+        differs,
+        "a style plays other games than the default weights"
+    );
+}

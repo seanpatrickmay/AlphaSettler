@@ -1,6 +1,7 @@
 use settler_bots::greedy::GreedyBot;
 use settler_bots::heuristic::{
-    features, prior, value, HeuristicEvaluator, DEFAULT_WEIGHTS, NUM_FEATURES,
+    features, prior, style_weights, value, HeuristicEvaluator, DEFAULT_WEIGHTS, FEATURE_NAMES,
+    NUM_FEATURES, STYLES, STYLE_FACTOR,
 };
 use settler_bots::Bot;
 use settler_engine::legal::legal_actions;
@@ -103,4 +104,63 @@ fn the_prior_depends_only_on_what_the_actor_sees() {
         checked += 1;
     }
     assert!(checked > 100);
+}
+
+/// 3d-3 (spec Section 3): each league style is the default weights with exactly its plan's
+/// features tripled.
+#[test]
+fn a_style_is_the_default_weights_with_exactly_its_features_tripled() {
+    assert_eq!(STYLE_FACTOR, 3.0);
+    assert_eq!(
+        STYLES.map(|(name, _)| name),
+        ["roads", "army", "production"]
+    );
+    assert_eq!(
+        (
+            FEATURE_NAMES[1],
+            FEATURE_NAMES[4],
+            FEATURE_NAMES[5],
+            FEATURE_NAMES[6],
+            FEATURE_NAMES[7]
+        ),
+        (
+            "production",
+            "dev_cards",
+            "road_length",
+            "knights",
+            "settlement_spots"
+        )
+    );
+    for (style, tripled) in [
+        ("roads", vec![5, 7]),
+        ("army", vec![4, 6]),
+        ("production", vec![1]),
+    ] {
+        let w = style_weights(style).unwrap();
+        for (i, (&got, &default)) in w.iter().zip(&DEFAULT_WEIGHTS).enumerate() {
+            let want = if tripled.contains(&i) {
+                default * 3.0
+            } else {
+                default
+            };
+            assert_eq!(got, want, "{style}: {}", FEATURE_NAMES[i]);
+        }
+    }
+    for (style, i, want) in [
+        ("roads", 5, 0.15f32),
+        ("roads", 7, 0.6),
+        ("army", 4, 0.9),
+        ("army", 6, 0.3),
+        ("production", 1, 0.24),
+    ] {
+        let got = style_weights(style).unwrap()[i];
+        assert!(
+            (got - want).abs() < 1e-6,
+            "{style}: {} {got}",
+            FEATURE_NAMES[i]
+        );
+    }
+    for bad in ["", "Roads", "tempo", "roads "] {
+        assert_eq!(style_weights(bad), None, "{bad:?}");
+    }
 }

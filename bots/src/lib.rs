@@ -36,11 +36,17 @@ pub trait Bot: Send {
 
 pub const BOT_NAMES: &[&str] = &["random", "greedy", "ismcts"];
 
+/// The prefix of a league style's name (spec 3d-3 Section 3): `style:STYLE` with an `ismcts`
+/// name's budget and suffixes, STYLE one of `heuristic::STYLES`.
+pub const STYLE_PREFIX: &str = "style:";
+
 /// A fresh bot by name, with its own random stream seeded from `seed`. Besides `BOT_NAMES`,
 /// `ismcts@N` (N simulations) and `ismcts@N+rD` (plus D greedy rollout moves per leaf), either
 /// with `+sK` to search setup settlements with K times the simulations, `+t` to make domestic
 /// offers and `+g` to search the root by Gumbel sequential halving, the suffixes in any order.
-/// `net:` names (and `+o`, which only they take) need files loaded first: use a `Roster`.
+/// `style:STYLE` takes everything an `ismcts` name takes after `ismcts` (3d-3: the same bot with
+/// the style's heuristic weights). `net:` names (and `+o`, which only they take) need files
+/// loaded first: use a `Roster`.
 pub fn make_bot(name: &str, seed: u64) -> Option<Box<dyn Bot>> {
     match name {
         "random" => Some(Box::new(random::RandomBot::new(seed))),
@@ -49,10 +55,15 @@ pub fn make_bot(name: &str, seed: u64) -> Option<Box<dyn Bot>> {
             let (name, gumbel) = ismcts::split_gumbel(name)?;
             let (name, offers) = ismcts::split_trades(&name)?;
             let (base, factor) = ismcts::split_setup(&name)?;
-            let (sims, rollout) = ismcts::parse_name(base)?;
+            let bot = match base.strip_prefix(STYLE_PREFIX) {
+                Some(rest) => style_bot(rest, seed)?,
+                None => {
+                    let (sims, rollout) = ismcts::parse_name(base)?;
+                    ismcts::IsmctsBot::new(seed, sims, rollout)
+                }
+            };
             Some(Box::new(
-                ismcts::IsmctsBot::new(seed, sims, rollout)
-                    .with_setup_factor(factor)
+                bot.with_setup_factor(factor)
                     .with_offers(offers)
                     .with_gumbel(gumbel),
             ))
@@ -60,13 +71,32 @@ pub fn make_bot(name: &str, seed: u64) -> Option<Box<dyn Bot>> {
     }
 }
 
+/// `STYLE[@N[+rD]]` (a `style:` name without its prefix and flag suffixes): the bot
+/// `IsmctsBot::new` builds for `ismcts[@N[+rD]]`, reporting the name `style`, with the style's
+/// weights (`heuristic::style_weights`).
+fn style_bot(rest: &str, seed: u64) -> Option<ismcts::IsmctsBot> {
+    let end = rest.find(['@', '+']).unwrap_or(rest.len());
+    let weights = heuristic::style_weights(&rest[..end])?;
+    let (simulations, rollout) = ismcts::parse_name(&format!("ismcts{}", &rest[end..]))?;
+    Some(ismcts::IsmctsBot::with_evaluator(
+        "style",
+        seed,
+        settler_search::SearchConfig {
+            simulations,
+            ..settler_search::SearchConfig::default()
+        },
+        heuristic::HeuristicEvaluator::new(weights, rollout),
+    ))
+}
+
 /// The error for a name no bot answers to.
 pub fn unknown_bot(name: &str) -> String {
     format!(
         "unknown bot {name:?}; known bots: {BOT_NAMES:?} (ismcts@N for N simulations, ismcts@N+rD \
-         to add D greedy rollout moves, net:NAME[@N[+rD]] for <nets-dir>/NAME.bin; +sK on either \
-         searches setup settlements with K times the simulations, +t lets either make domestic \
-         offers, +g makes either search the root by Gumbel sequential halving, +o lets a net: bot \
+         to add D greedy rollout moves, net:NAME[@N[+rD]] for <nets-dir>/NAME.bin, style:STYLE[@N[+rD]] for a \
+         league style (roads, army or production); +sK on any \
+         searches setup settlements with K times the simulations, +t lets any make domestic \
+         offers, +g makes any search the root by Gumbel sequential halving, +o lets a net: bot \
          pick its setup settlements with <nets-dir>/{OPENING_FILE})"
     )
 }

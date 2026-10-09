@@ -6,7 +6,10 @@ exploration settings. Decisions carry no observations; the seed and actions repr
 `target`; the block then holds `gumbel_simulations` instead of the exploration settings. With `opening`
 (3d-1b), an opening model file picks every setup settlement, epsilon-greedy over its best spots, with
 no search and no decision; the block then also holds `opening_sha256`, `opening_epsilon` and
-`opening_top`."""
+`opening_top`. With `league` (3d-3: `{"nets": [...], "styles": [...]}`, bot names), about half the games seat
+two of them, a past net and a style, whose moves are not recorded; the block then also holds
+`league_probability`, `league_nets` and `league_styles`, and a league game's record names its seats under
+`league` (null at a learner seat)."""
 
 from __future__ import annotations
 
@@ -14,17 +17,19 @@ import math
 import os
 from pathlib import Path
 
-from alphasettler import files, records
+from alphasettler import arena, files, records
 from alphasettler._engine import (
-    DEFAULT_NETS_DIR, MAX_SIMULATIONS, NET_BATCH, NOISE_ALPHA, NOISE_WEIGHT, OPENING_EPSILON, OPENING_FILE, OPENING_TOP,
-    SAMPLE_TURNS,
-    SEARCH_BATCH, SELFPLAY_MIN_SIMULATIONS, opening_forward, resolve_net, selfplay_explore,
+    DEFAULT_NETS_DIR, LEAGUE_PROBABILITY, MAX_SIMULATIONS, NET_BATCH, NOISE_ALPHA, NOISE_WEIGHT, OPENING_EPSILON,
+    OPENING_FILE, OPENING_TOP, SAMPLE_TURNS, SEARCH_BATCH, SELFPLAY_MIN_SIMULATIONS, opening_forward, resolve_net,
+    selfplay_explore,
 )
 
 # Games per native call. Python sees Ctrl-C only between calls, and every finished batch is on disk.
 BATCH_GAMES = 100
 OPENING_WITH_GUMBEL = ("--opening and --gumbel cannot be used together: Gumbel self-play stays the P2 measurement "
                        "it was (spec 3d-1b Section 3)")
+LEAGUE_WITH_GUMBEL = ("--league and --gumbel cannot be used together: Gumbel self-play stays the P2 measurement "
+                      "it was (spec 3d-3 Section 4)")
 
 
 def check_gumbel(simulations: int) -> None:
@@ -42,6 +47,20 @@ def check_opening(path: str | Path, gumbel: int | None = None) -> str:
         raise ValueError(OPENING_WITH_GUMBEL)
     opening_forward(str(path), [])
     return files.sha256_file(path)
+
+
+def check_league(league: dict, nets_dir: str | Path, gumbel: int | None = None) -> None:
+    """ValueError unless `league` ({"nets": [...], "styles": [...]}, bot names) is a pool self-play can
+    seat: no Gumbel self-play, a name in each half, and every name a bot whose files load from
+    `nets_dir` (checked by the arena's zero-seed call, as every match checks its bots)."""
+    if gumbel is not None:
+        raise ValueError(LEAGUE_WITH_GUMBEL)
+    if not league.get("nets"):
+        raise ValueError("a league needs at least one past net")
+    if not league.get("styles"):
+        raise ValueError("a league needs at least one style")
+    for name in [*league["nets"], *league["styles"]]:
+        arena.check(name, name, 1, nets_dir=nets_dir)
 
 
 def mode_mismatch(root: str | Path, stored: int | None, asked: int | None) -> str | None:
@@ -83,11 +102,14 @@ def place_opening(root: str | Path, nets: str | Path, stored: str | None, asked:
 
 
 def settings(net: str | None, nets_dir: str | Path, full_simulations: int, fast_simulations: int,
-             full_probability: float, gumbel: int | None = None, opening: str | Path | None = None) -> dict:
-    """The `selfplay` block. Checks every argument, loads the net and reads the opening model,
-    without playing a game. With `gumbel`, the PUCT arguments are not used; `opening` with `gumbel`
-    is a ValueError."""
+             full_probability: float, gumbel: int | None = None, opening: str | Path | None = None,
+             league: dict | None = None) -> dict:
+    """The `selfplay` block. Checks every argument, loads the net, reads the opening model and checks
+    the league's bots, without playing a game. With `gumbel`, the PUCT arguments are not used;
+    `opening` or `league` with `gumbel` is a ValueError."""
     opening_sha256 = None if opening is None else check_opening(opening, gumbel)
+    if league is not None:
+        check_league(league, nets_dir, gumbel)
     if gumbel is not None:
         check_gumbel(gumbel)
     else:
@@ -118,18 +140,22 @@ def settings(net: str | None, nets_dir: str | Path, full_simulations: int, fast_
     }
     if opening_sha256 is not None:  # only then: records without a model are unchanged
         block.update(opening_sha256=opening_sha256, opening_epsilon=OPENING_EPSILON, opening_top=OPENING_TOP)
+    if league is not None:  # only then: records without a league are unchanged
+        block.update(league_probability=LEAGUE_PROBABILITY, league_nets=list(league["nets"]),
+                     league_styles=list(league["styles"]))
     return block
 
 
 def write_explore(out: str | Path, seed_start: int, games: int, *, config: dict, full_simulations: int,
                   fast_simulations: int, full_probability: float, net: str | None = None,
                   nets_dir: str | Path | None = None, threads: int | None = None,
-                  counts: dict | None = None, gumbel: int | None = None, opening: str | Path | None = None) -> dict:
+                  counts: dict | None = None, gumbel: int | None = None, opening: str | Path | None = None,
+                  league: dict | None = None) -> dict:
     """Play `games` games from `seed_start` and write them to the new file `out`. Arguments are
     checked before the file is created. `counts` (if given) is updated as batches finish, so a
     caller that catches KeyboardInterrupt still knows what was kept."""
     nets_dir = DEFAULT_NETS_DIR if nets_dir is None else nets_dir
-    meta = settings(net, nets_dir, full_simulations, fast_simulations, full_probability, gumbel, opening)
+    meta = settings(net, nets_dir, full_simulations, fast_simulations, full_probability, gumbel, opening, league)
     counts = {} if counts is None else counts
     counts.update(games=0, decisions=0, full_decisions=0, belief_resets=0)
     threads = threads or os.cpu_count() or 1
@@ -138,7 +164,9 @@ def write_explore(out: str | Path, seed_start: int, games: int, *, config: dict,
         for lo in range(seed_start, end, BATCH_GAMES):
             batch = selfplay_explore(lo, min(BATCH_GAMES, end - lo), threads, full_simulations, fast_simulations,
                                      full_probability, config, net, str(nets_dir), gumbel,
-                                     None if opening is None else str(opening))
+                                     None if opening is None else str(opening),
+                                     None if league is None else list(league["nets"]),
+                                     None if league is None else list(league["styles"]))
             for g in batch:
                 w.write_game({**g, "selfplay": meta}, config)
                 counts["games"] += 1

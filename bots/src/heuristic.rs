@@ -22,6 +22,27 @@ pub const FEATURE_NAMES: [&str; NUM_FEATURES] = [
 /// them (docs/bot/results-3a.md records each fit).
 pub const DEFAULT_WEIGHTS: [f32; NUM_FEATURES] = [1.0, 0.08, 0.05, -0.1, 0.3, 0.05, 0.1, 0.2];
 
+/// 3d-3 (spec Section 3): the league's scripted styles, each the default weights with the
+/// features of one plan multiplied by `STYLE_FACTOR`.
+pub const STYLE_FACTOR: f32 = 3.0;
+pub const STYLES: [(&str, &[&str]); 3] = [
+    ("roads", &["road_length", "settlement_spots"]),
+    ("army", &["dev_cards", "knights"]),
+    ("production", &["production"]),
+];
+
+/// The weights of the style `name` (one of `STYLES`), or `None` for a name that is not a style.
+pub fn style_weights(name: &str) -> Option<[f32; NUM_FEATURES]> {
+    let (_, tilted) = STYLES.iter().find(|(style, _)| *style == name)?;
+    Some(std::array::from_fn(|i| {
+        if tilted.contains(&FEATURE_NAMES[i]) {
+            DEFAULT_WEIGHTS[i] * STYLE_FACTOR
+        } else {
+            DEFAULT_WEIGHTS[i]
+        }
+    }))
+}
+
 /// Per resource: the board's mean pips per resource over this resource's pips (scarce resources
 /// weigh more). 0 for a resource with no tiles.
 fn scarcity(s: &State) -> [f32; NUM_RESOURCES] {

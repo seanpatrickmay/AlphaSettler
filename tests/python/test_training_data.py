@@ -9,9 +9,9 @@ import pytest
 
 from alphasettler import Game, files, records
 from alphasettler._engine import (
-    NET_BATCH, NET_HIDDEN_LEN, NET_PUBLIC_LEN, NOISE_ALPHA, NOISE_WEIGHT, OPENING_EPSILON, OPENING_TOP, SAMPLE_TURNS,
-    SEARCH_BATCH, TrainingSet, action_space_size, encode, net_forward, resolve_net, selfplay_explore,
-    write_random_net,
+    LEAGUE_PROBABILITY, LEAGUE_SEATS, LEAGUE_STYLES, NET_BATCH, NET_HIDDEN_LEN, NET_PUBLIC_LEN, NOISE_ALPHA,
+    NOISE_WEIGHT, OPENING_EPSILON, OPENING_TOP, SAMPLE_TURNS, SEARCH_BATCH, TrainingSet, action_space_size, encode,
+    net_forward, resolve_net, selfplay_explore, write_random_net,
 )
 from alphasettler.selfplay import write_explore
 from opening_games import opening_model_file
@@ -132,6 +132,64 @@ def test_opening_self_play_refuses_gumbel_and_bad_model_files(tmp_path):
         assert not (tmp_path / "no.jsonl.gz").exists()
     with pytest.raises(ValueError, match="Gumbel self-play"):  # the native check, below the Python one
         selfplay_explore(0, 1, 1, 6, 3, 0.25, CONFIG, None, None, 6, str(model))
+
+
+LEAGUE_NETS = ["net:tiny@6+t", "ismcts@5+t"]
+LEAGUE_STYLE_BOTS = [f"style:{s}@6+t" for s in LEAGUE_STYLES]
+
+
+def league_nets_dir(tmp_path):
+    nets = tmp_path / "nets"
+    nets.mkdir(exist_ok=True)
+    write_random_net(str(nets / "tiny.bin"), 1, 8, 1)
+    return nets
+
+
+def test_league_self_play_records_its_pool_and_the_seats_of_each_league_game(tmp_path):
+    assert (LEAGUE_PROBABILITY, LEAGUE_SEATS, LEAGUE_STYLES) == (0.5, 2, ["roads", "army", "production"])
+    nets = league_nets_dir(tmp_path)
+    league = {"nets": LEAGUE_NETS, "styles": LEAGUE_STYLE_BOTS}
+    games = explore_games(tmp_path, 12, config=TRADING, nets_dir=nets, league=league)
+    plain = explore_games(tmp_path, 12, config=TRADING, name="plain.jsonl.gz", nets_dir=nets)
+    kinds = set()
+    for g, p in zip(games, plain):
+        assert g["selfplay"] == {**p["selfplay"], "league_probability": LEAGUE_PROBABILITY,
+                                 "league_nets": LEAGUE_NETS, "league_styles": LEAGUE_STYLE_BOTS}
+        assert "league" not in p and g["belief_resets"] == 0 and records.replay_mismatches(g) == []
+        if "league" not in g:
+            kinds.add("plain")
+            assert ({k: v for k, v in g.items() if k != "selfplay"} == {k: v for k, v in p.items() if k != "selfplay"}), \
+                f"game {g['seed']}: a plain game in a league run is the plain game"
+            continue
+        kinds.add("league")
+        seats = g["league"]
+        assert len(seats) == 4
+        pool = [n for n in seats if n is not None]
+        assert len(pool) == LEAGUE_SEATS and sum(n in LEAGUE_NETS for n in pool) == 1, seats
+        assert sum(n in LEAGUE_STYLE_BOTS for n in pool) == 1, seats
+        assert {d["actor"] for d in g["decisions"]} == {i for i, n in enumerate(seats) if n is None}, \
+            f"game {g['seed']}: only the learner seats are recorded, both of them"
+    assert kinds == {"plain", "league"}
+
+
+def test_league_self_play_refuses_gumbel_unknown_bots_and_an_empty_half(tmp_path):
+    nets = league_nets_dir(tmp_path)
+    ok = {"nets": LEAGUE_NETS, "styles": LEAGUE_STYLE_BOTS}
+    for kw, message in [({"league": ok, "gumbel": 6}, "--league and --gumbel"),
+                        ({"league": {**ok, "nets": []}}, "at least one past net"),
+                        ({"league": {**ok, "styles": []}}, "at least one style"),
+                        ({"league": {**ok, "nets": ["net:missing@6"]}}, "missing"),
+                        ({"league": {**ok, "styles": ["style:tempo@6"]}}, "unknown bot"),
+                        ({"league": {**ok, "styles": ["style:roads@6+o"]}}, "unknown bot")]:
+        with pytest.raises(ValueError, match=message):
+            write_explore(tmp_path / "no.jsonl.gz", 0, 1, config=TRADING, full_simulations=6, fast_simulations=3,
+                          full_probability=0.25, nets_dir=nets, **kw)
+        assert not (tmp_path / "no.jsonl.gz").exists()
+    # The native checks, below the Python ones.
+    with pytest.raises(ValueError, match="Gumbel self-play"):
+        selfplay_explore(0, 1, 1, 6, 3, 0.25, TRADING, None, str(nets), 6, None, LEAGUE_NETS, LEAGUE_STYLE_BOTS)
+    with pytest.raises(ValueError, match="league_nets and league_styles"):
+        selfplay_explore(0, 1, 1, 6, 3, 0.25, TRADING, None, str(nets), None, None, LEAGUE_NETS, None)
 
 
 def policy_id(action: int, actor: int) -> int:

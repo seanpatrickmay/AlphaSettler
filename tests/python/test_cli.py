@@ -30,6 +30,23 @@ def test_cli_native_arena_reports_zero_belief_resets(tmp_path):
     assert all(rec["belief_resets"] == 0 for rec in recs)
 
 
+@pytest.mark.parametrize("style", ["roads", "army", "production"])
+def test_cli_arena_plays_each_league_style(tmp_path, style):
+    out = tmp_path / f"{style}.jsonl"
+    r = cli("arena", "--candidate", f"style:{style}@6+t", "--baseline", "ismcts@6+t", "--trades", "--seeds", "1",
+            "--out", str(out))
+    assert r.returncode == 0, r.stderr
+    assert f"style:{style}@6+t vs ismcts@6+t: win rate" in r.stdout and "belief resets: 0" in r.stdout
+    assert len(out.read_text().splitlines()) == 4
+
+
+def test_cli_arena_refuses_an_unknown_style_and_names_the_styles(tmp_path):
+    r = cli("arena", "--candidate", "style:tempo@6", "--baseline", "random", "--seeds", "1",
+            "--out", str(tmp_path / "no.jsonl"))
+    assert r.returncode == 2 and "unknown bot" in r.stderr and "style:STYLE" in r.stderr, r.stderr
+    assert not (tmp_path / "no.jsonl").exists()
+
+
 def test_cli_arena_default_output_goes_to_runs(tmp_path):
     r = cli("arena", "--candidate", "random", "--baseline", "random", "--seeds", "2", "--no-trades", cwd=tmp_path)
     assert r.returncode == 0, r.stderr
