@@ -6,7 +6,7 @@ use crate::events::Event;
 use crate::rules::awards;
 use crate::state::{Phase, State, SETUP_ORDER};
 use crate::topology::{topo, NUM_NODES};
-use crate::types::{hand_add, hand_sub, hand_total};
+use crate::types::{hand_add, hand_total};
 
 pub fn legal_settlement(s: &State, out: &mut Vec<Action>) {
     let t = topo();
@@ -42,7 +42,7 @@ pub fn apply_settlement<S: EventSink>(s: &mut State, n: u8, sink: &mut S) {
             }
         }
         hand_add(&mut s.players[p].hand, &got);
-        hand_sub(&mut s.bank, &got);
+        s.bank_pay(&got);
         if hand_total(&got) > 0 {
             sink.emit(Event::Produced {
                 player: s.current,

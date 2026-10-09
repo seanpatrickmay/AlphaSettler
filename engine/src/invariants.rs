@@ -10,16 +10,19 @@ use crate::types::*;
 impl State {
     /// Every structural invariant normal play maintains. Award ownership is not checked: an
     /// imported position may follow another engine's award rules.
+    /// Without the bank limit the bank is derived from the hands, so its conservation is not checked.
     pub fn check_invariants(&self) -> Result<(), String> {
         self.config.validate()?;
         self.board.validate()?;
-        for r in 0..NUM_RESOURCES {
-            let held: u32 = self.players.iter().map(|p| p.hand[r] as u32).sum();
-            let total = held + self.bank[r] as u32;
-            if total != BANK_PER_RESOURCE as u32 {
-                return Err(format!(
-                    "resource {r}: hands and bank hold {total} cards, expected {BANK_PER_RESOURCE}"
-                ));
+        if self.config.bank_limit {
+            for r in 0..NUM_RESOURCES {
+                let held: u32 = self.players.iter().map(|p| p.hand[r] as u32).sum();
+                let total = held + self.bank[r] as u32;
+                if total != BANK_PER_RESOURCE as u32 {
+                    return Err(format!(
+                        "resource {r}: hands and bank hold {total} cards, expected {BANK_PER_RESOURCE}"
+                    ));
+                }
             }
         }
         let t = topo();
@@ -176,7 +179,7 @@ impl State {
                     "setup_step {step} needs {step} roads on the board, found {roads}"
                 ));
             }
-            if step >= 4 {
+            if step >= 4 && self.config.bank_limit {
                 if let Some(r) = (0..NUM_RESOURCES).find(|&r| self.bank[r] < 3) {
                     return Err(format!(
                         "setup_step {step} pays out a second settlement, but the bank holds only {} of resource {r}",

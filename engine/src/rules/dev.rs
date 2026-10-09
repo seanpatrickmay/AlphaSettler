@@ -33,9 +33,9 @@ pub fn legal_dev_plays(s: &State, out: &mut Vec<Action>) {
     if playable(s, DevCard::YearOfPlenty) {
         for &(a, b) in &PAIRS {
             let ok = if a == b {
-                s.bank[a as usize] >= 2
+                s.bank_has(a as usize, 2)
             } else {
-                s.bank[a as usize] >= 1 && s.bank[b as usize] >= 1
+                s.bank_has(a as usize, 1) && s.bank_has(b as usize, 1)
             };
             if ok {
                 out.push(Action::PlayYearOfPlenty(
@@ -141,7 +141,7 @@ pub fn apply_year_of_plenty<S: EventSink>(s: &mut State, a: Resource, b: Resourc
     got[a.index()] += 1;
     got[b.index()] += 1;
     hand_add(&mut s.players[s.current as usize].hand, &got);
-    hand_sub(&mut s.bank, &got);
+    s.bank_pay(&got);
     sink.emit(Event::YearOfPlentyTaken {
         player: s.current,
         resources: got,

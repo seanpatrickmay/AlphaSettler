@@ -167,6 +167,9 @@ impl State {
             (Phase::TradeConfirm, Action::CancelTrade) => trade::apply_cancel(self, sink),
             (phase, a) => panic!("illegal action {a:?} in phase {phase:?} (chance {chance:?})"),
         }
+        if !self.config.bank_limit {
+            self.refresh_bank();
+        }
         awards::check_win(self, sink);
     }
 }

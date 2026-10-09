@@ -15,7 +15,7 @@ pub fn legal(s: &State, out: &mut Vec<Action>) {
             continue;
         }
         for get in Resource::ALL {
-            if get != give && s.bank[get.index()] >= 1 {
+            if get != give && s.bank_has(get.index(), 1) {
                 out.push(Action::MaritimeTrade { give, get });
             }
         }
@@ -31,7 +31,7 @@ pub fn apply<S: EventSink>(s: &mut State, give: Resource, get: Resource, sink: &
     got[get.index()] = 1;
     hand_sub(&mut s.players[p].hand, &gave);
     hand_add(&mut s.bank, &gave);
-    hand_sub(&mut s.bank, &got);
+    s.bank_pay(&got);
     hand_add(&mut s.players[p].hand, &got);
     sink.emit(Event::MaritimeTraded {
         player: s.current,
