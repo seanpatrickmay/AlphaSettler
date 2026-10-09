@@ -43,7 +43,7 @@ pub const STYLE_PREFIX: &str = "style:";
 /// A fresh bot by name, with its own random stream seeded from `seed`. Besides `BOT_NAMES`,
 /// `ismcts@N` (N simulations) and `ismcts@N+rD` (plus D greedy rollout moves per leaf), either
 /// with `+sK` to search setup settlements with K times the simulations, `+t` to make domestic
-/// offers and `+g` to search the root by Gumbel sequential halving and `+c` to search compound
+/// offers, `+g` to search the root by Gumbel sequential halving and `+c` to search compound
 /// build moves (not with `+g`), the suffixes in any order.
 /// `style:STYLE` takes everything an `ismcts` name takes after `ismcts` (3d-3: the same bot with
 /// the style's heuristic weights). `net:` names (and `+o`, which only they take) need files

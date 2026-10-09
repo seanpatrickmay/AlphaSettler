@@ -450,7 +450,8 @@ fn selfplay<'py>(
 /// league game's dict names them under `league` (spec 3d-3 Section 2); refused with `gumbel`.
 /// With `compound`, every learner seat searches compound build moves (spec 3d-4; league seats play
 /// their pool names as given); refused with `gumbel`. With `net`, every learner seat is the
-/// network `<nets_dir>/<net>.bin` (loaded once); otherwise the heuristic. Decisions carry no observations. Releases the GIL while games run.
+/// network `<nets_dir>/<net>.bin` (loaded once); otherwise the heuristic.
+/// Decisions carry no observations. Releases the GIL while games run.
 #[pyfunction]
 #[pyo3(signature = (seed_start, games, threads, full_simulations, fast_simulations, full_probability, config=None, net=None, nets_dir=None, gumbel=None, opening=None, league_nets=None, league_styles=None, compound=false))]
 #[allow(clippy::too_many_arguments)]

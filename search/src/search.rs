@@ -241,6 +241,11 @@ fn expand_compound(
     prior: &[f32],
     compounds: &[Compound],
 ) {
+    assert_eq!(
+        prior.len(),
+        legal.len(),
+        "the evaluator's prior must align with the legal actions"
+    );
     let mut keys = Vec::new();
     compound::move_keys(legal, compounds, true, &mut keys);
     let priors = compound::move_priors(legal, prior, compounds);

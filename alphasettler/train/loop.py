@@ -207,7 +207,7 @@ class Loop:
     def _compound(self, asked: bool) -> bool:
         """Whether self-play and gates search compound build moves (`--compound`). Set when the run
         starts and kept on every resume, as the fast loop keeps `--trades`; a manifest from before
-        3d-4 has none (without). Asking for it of a run set up without is a ValueError."""
+        3d-4 has none (without). Asking for it on a run set up without it is a ValueError."""
         if not (self.root / MANIFEST).exists():
             self.manifest["compound"] = asked
             return asked

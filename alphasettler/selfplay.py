@@ -150,6 +150,8 @@ def settings(net: str | None, nets_dir: str | Path, full_simulations: int, fast_
     """The `selfplay` block. Checks every argument, loads the net, reads the opening model and checks
     the league's bots, without playing a game. With `gumbel`, the PUCT arguments are not used;
     `opening`, `league` or `compound` with `gumbel` is a ValueError."""
+    if not isinstance(compound, bool):
+        raise ValueError(f"compound must be a bool, not {compound!r}")
     check_compound(compound, gumbel)
     opening_sha256 = None if opening is None else check_opening(opening, gumbel)
     if league is not None:

@@ -293,7 +293,8 @@ class FastLoop:
     def _gate(self, k: int, gdir: Path, best: str) -> dict:
         sims = self.s.gate_simulations
         self._opening_file()  # a +o gate reads nets/opening.bin: check it first
-        suffix = ("+t" if self.trades else "") + ("+c" if self.compound else "") + ("" if self.opening is None else "+o")
+        suffix = (("+t" if self.trades else "") + ("+c" if self.compound else "")
+                  + ("" if self.opening is None else "+o"))
         candidate, baseline = f"net:{gen_name(k)}@{sims}{suffix}", f"net:{best}@{sims}{suffix}"
         tmp = files.temp_path(gdir / "gate.jsonl")
         recs, summary = arena_run(candidate, baseline, self.s.gate_seeds, GATE_SEED_START, self.s.threads,

@@ -144,8 +144,8 @@ pub fn split_compound(name: &str) -> Option<(String, bool)> {
     split_flag(name, "c")
 }
 
-/// `split_compound`, then `split_gumbel`: the name for `split_trades` / `parse_net_name`, whether it
-/// had `+g` and whether it had `+c`. `None` for a repeat, and for both: compound moves are not
+/// `split_compound`, then `split_gumbel`: the name for `split_trades` / `parse_net_name`, whether
+/// it had `+g` and whether it had `+c`. `None` for a repeat, and for both: compound moves are not
 /// searched with a Gumbel root (spec 3d-4 Section 4).
 pub fn split_search_flags(name: &str) -> Option<(String, bool, bool)> {
     let (rest, compound) = split_compound(name)?;
@@ -187,12 +187,17 @@ pub fn sample_move(
     let mut x = ((Rng::new(seed).next_u64() as u128 * total as u128) >> 64) as u64;
     for (a, &v) in legal.iter().zip(visits) {
         if x < v as u64 {
-            for (steps, cv) in compounds.iter().filter(|(m, _)| m[0] == *a) {
+            for (steps, cv) in compounds.iter().filter(|(m, _)| m.first() == Some(a)) {
                 if x < *cv as u64 {
-                    return Some((steps[0], steps[1..].to_vec()));
+                    let (first, rest) = steps.split_first().expect("a compound has steps");
+                    return Some((*first, rest.to_vec()));
                 }
                 x -= *cv as u64;
             }
+            debug_assert!(
+                compounds.iter().all(|(m, _)| m.first() != Some(a)),
+                "a trade's visits come from its compounds"
+            );
             return Some((*a, Vec::new()));
         }
         x -= v as u64;

@@ -1,9 +1,10 @@
-//! Compound build moves (sub-project 3d-4, docs/superpowers/specs/2026-10-08-compound-moves-design.md
-//! Section 2). At the searching player's own Main decisions, with `SearchConfig::compound`, the
-//! search's move set keeps every legal action but the bare maritime trades, and adds one compound
-//! move for each build target that is not affordable now but is after at most `MAX_TRADES`
-//! maritime trades: those trades, then the build. The engine's action space is unchanged: a
-//! compound is a search edge keyed `COMPOUND_BIT | build id`, applied step by step.
+//! Compound build moves (sub-project 3d-4,
+//! docs/superpowers/specs/2026-10-08-compound-moves-design.md Section 2). At the searching
+//! player's own Main decisions, with `SearchConfig::compound`, the search's move set keeps every
+//! legal action but the bare maritime trades, and adds one compound move for each build target
+//! that is not affordable now but is after at most `MAX_TRADES` maritime trades: those trades,
+//! then the build. The engine's action space is unchanged: a compound is a search edge keyed
+//! `COMPOUND_BIT | build id`, applied step by step.
 
 use settler_engine::rules::{build, dev};
 use settler_engine::{

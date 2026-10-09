@@ -222,6 +222,76 @@ fn a_port_rate_makes_a_trade_and_a_needed_card_is_never_given() {
     }
 }
 
+/// The lowest node of a 3:1 port.
+fn generic_port(s: &State) -> u8 {
+    let m = s.board.generic_port_nodes;
+    assert_ne!(m, 0, "the board has a 3:1 port");
+    m.trailing_zeros() as u8
+}
+
+/// On a 3:1 port, three spare wood buy the dev card's missing ore; off every port (rate 4) they
+/// buy nothing, and on the port two wood are short of the rate. The road is short a brick, and
+/// the wood left beyond its cost (2, or 1) cannot pay the rate either.
+#[test]
+fn a_three_to_one_port_makes_a_trade_at_rate_three() {
+    for seed in 0..3 {
+        let port = lone_settlement(seed, generic_port, [3, 0, 1, 1, 0], [0; 5]);
+        assert_eq!(
+            compounds_of(&port),
+            vec![dev_card(&[mt(Wood, Ore)])],
+            "seed {seed}"
+        );
+        let off = lone_settlement(seed, off_port, [3, 0, 1, 1, 0], [0; 5]);
+        assert_eq!(compounds_of(&off), vec![], "seed {seed}");
+        let two = lone_settlement(seed, generic_port, [2, 0, 1, 1, 0], [0; 5]);
+        assert_eq!(compounds_of(&two), vec![], "seed {seed}");
+    }
+}
+
+/// The lone settlement with two roads in a line off it: its lowest edge, then the lowest other
+/// edge at that edge's far node. Returns the position and the second road's far node, two steps
+/// from the settlement: the one settlement spot (the middle node is next to the settlement).
+fn two_roads_out(seed: u64, hand: Hand) -> (State, u8) {
+    let s = lone_settlement(seed, off_port, hand, [0; 5]);
+    let n = node_of(&s);
+    let far = |e: u8, from: u8| {
+        let (a, b) = topo().edge_nodes[e as usize];
+        if a == from {
+            b
+        } else {
+            a
+        }
+    };
+    let e1 = edges_at(&s)[0];
+    let m = far(e1, n);
+    let e2 = (0..NUM_EDGES as u8)
+        .find(|&e| e != e1 && (topo().node_edge_mask[m as usize] >> e) & 1 == 1)
+        .expect("a second edge at the road's end");
+    let q = far(e2, m);
+    let s = edit(&s, no_trades(), |snap| {
+        snap.players[0].roads = (1u128 << e1) | (1u128 << e2);
+    });
+    (s, q)
+}
+
+/// Wood 5, brick 1, sheep 1 off every port, two roads out: the settlement at the roads' end is
+/// short a wheat, bought with four of the four spare wood. The roads are affordable now (no
+/// compound), the city is five cards short, and the dev card's ore finds one wood left (none).
+#[test]
+fn a_settlement_spot_one_trade_away_gets_a_compound() {
+    for seed in 0..3 {
+        let (s, q) = two_roads_out(seed, [5, 1, 1, 0, 0]);
+        assert_eq!(
+            compounds_of(&s),
+            vec![Compound {
+                trades: vec![mt(Wood, Wheat)],
+                build: Action::BuildSettlement(q),
+            }],
+            "seed {seed}"
+        );
+    }
+}
+
 /// EndTurn 0.4, two road compounds sharing Sheep -> Wood (0.3 / 2 each), a dev card on Sheep ->
 /// Brick (0.2); Sheep -> Ore starts nothing and is gone. Over the 0.9 left: 4/9, 1/6, 1/6, 2/9.
 #[test]

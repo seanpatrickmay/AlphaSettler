@@ -1161,6 +1161,101 @@ fn a_compound_bot_drops_its_plan_when_the_game_goes_otherwise() {
     }
 }
 
+/// The plan goes on only on exactly the bot's own trade: shown its trade and another event after
+/// it (a second bank trade, which leaves the city legal), or the trade under another seat's name,
+/// the bot searches again.
+#[test]
+fn a_compound_bot_drops_its_plan_on_more_events_or_another_seats_trade() {
+    let wood_for_brick = Action::MaritimeTrade {
+        give: Resource::Wood,
+        get: Resource::Brick,
+    };
+    for seed in 0..3 {
+        let mut s = city_one_trade_away(seed);
+        let mut bot = IsmctsBot::new(seed, 600, 0).with_compound(true);
+        assert_eq!(decide(&mut bot, &s), WOOD_FOR_ORE, "seed {seed}");
+        let next = bot.take_last_search().unwrap().plan[0];
+        let resets = diag(&bot)["belief_resets"];
+        let mut events = Vec::new();
+        s.apply_with(WOOD_FOR_ORE, None, &mut events);
+        assert!(s.legal_actions().contains(&wood_for_brick));
+        s.apply_with(wood_for_brick, None, &mut events);
+        assert_eq!(events.len(), 2);
+        bot.observe(0, &events);
+        assert!(s.legal_actions().contains(&next), "seed {seed}");
+        decide(&mut bot, &s);
+        assert!(
+            bot.take_last_search().is_some(),
+            "seed {seed}: searched after its trade and another event"
+        );
+        assert_eq!(diag(&bot)["plan_steps"], 0);
+        assert_eq!(diag(&bot)["belief_resets"], resets, "seed {seed}");
+
+        let mut s = city_one_trade_away(seed);
+        let mut bot = IsmctsBot::new(seed, 600, 0).with_compound(true);
+        assert_eq!(decide(&mut bot, &s), WOOD_FOR_ORE, "seed {seed}");
+        let next = bot.take_last_search().unwrap().plan[0];
+        let mut events = Vec::new();
+        s.apply_with(WOOD_FOR_ORE, None, &mut events);
+        let other: Vec<Event> = events
+            .iter()
+            .map(|e| match *e {
+                Event::MaritimeTraded { gave, got, .. } => Event::MaritimeTraded {
+                    player: 1,
+                    gave,
+                    got,
+                },
+                e => e,
+            })
+            .collect();
+        assert_ne!(other, events);
+        bot.observe(0, &other);
+        assert!(s.legal_actions().contains(&next), "seed {seed}");
+        decide(&mut bot, &s);
+        assert!(
+            bot.take_last_search().is_some(),
+            "seed {seed}: searched after another seat's trade"
+        );
+        assert_eq!(diag(&bot)["plan_steps"], 0);
+    }
+}
+
+/// A league style takes `+c` as an `ismcts` name does.
+#[test]
+fn a_style_name_takes_the_compound_suffix() {
+    for (name, compound) in [("style:roads@20+t+c", 1), ("style:roads@20+t", 0)] {
+        let bot = make_bot(name, 0).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(diag(bot.as_ref())["compound"], compound, "{name}");
+    }
+}
+
+/// A trading match of `+t+c` against `+t` (1 seed, each seat the candidate once): no belief
+/// reset, and compound decisions at the candidate seat only.
+#[test]
+fn a_trading_match_of_compound_and_plain_offering_bots_plays_through() {
+    use settler_bots::arena::run_match_by;
+    let make = |candidate: bool, seed: u64| {
+        let name = if candidate {
+            "ismcts@20+t+c"
+        } else {
+            "ismcts@20+t"
+        };
+        make_bot(name, seed).unwrap()
+    };
+    let records = run_match_by(0..1, trading(), 2, &make).unwrap();
+    assert_eq!(records.len(), 4);
+    let mut candidate = 0;
+    for r in &records {
+        assert_eq!(r.belief_resets, 0, "{r:?}");
+        let c = r.candidate_seat as usize;
+        for p in (0..4).filter(|&p| p != c) {
+            assert_eq!(r.compound_decisions[p], 0, "seat {p}: {r:?}");
+        }
+        candidate += r.compound_decisions[c];
+    }
+    assert!(candidate > 0, "the +c seat searched compound moves");
+}
+
 /// Self-play's visit sampling (spec 3d-4 Section 3): a sampled compound comes with its plan and a
 /// bare trade is never sampled alone; without compounds the draw is `sample_by_visits`'s.
 #[test]

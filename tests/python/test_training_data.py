@@ -167,6 +167,14 @@ def test_compound_self_play_refuses_gumbel(tmp_path):
         selfplay_explore(0, 1, 1, 6, 3, 0.25, CONFIG, None, None, 6, None, compound=True)
 
 
+@pytest.mark.parametrize("compound", [1, "yes", None], ids=["int", "str", "none"])
+def test_compound_self_play_refuses_a_non_bool_before_writing(tmp_path, compound):
+    with pytest.raises(ValueError, match="compound must be a bool"):
+        write_explore(tmp_path / "no.jsonl.gz", 0, 1, config=CONFIG, full_simulations=6, fast_simulations=3,
+                      full_probability=0.25, compound=compound)
+    assert list(tmp_path.iterdir()) == []
+
+
 LEAGUE_NETS = ["net:tiny@6+t", "ismcts@5+t"]
 LEAGUE_STYLE_BOTS = [f"style:{s}@6+t" for s in LEAGUE_STYLES]
 
