@@ -22,6 +22,7 @@ use settler_net::graph::{graph, GLOBAL_WIDTH};
 use settler_net::policy::SETTLEMENT_BASE;
 use settler_net::weights::{
     Arch, Weights, FORMAT_VERSION, MAX_ROUNDS, MAX_WIDTH, V2_ENCODING_HASH, V2_GLOBAL_WIDTH,
+    V3_EDGE_WIDTH, V3_ENCODING_HASH, V3_GLOBAL_WIDTH, V3_NODE_WIDTH,
 };
 use std::path::PathBuf;
 
@@ -398,6 +399,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("NET_GLOBAL_WIDTH", GLOBAL_WIDTH)?;
     m.add("NET_V2_ENCODING_HASH", V2_ENCODING_HASH)?;
     m.add("NET_V2_GLOBAL_WIDTH", V2_GLOBAL_WIDTH)?;
+    m.add("NET_V3_ENCODING_HASH", V3_ENCODING_HASH)?;
+    m.add("NET_V3_NODE_WIDTH", V3_NODE_WIDTH)?;
+    m.add("NET_V3_EDGE_WIDTH", V3_EDGE_WIDTH)?;
+    m.add("NET_V3_GLOBAL_WIDTH", V3_GLOBAL_WIDTH)?;
     m.add("NET_SETTLEMENT_BASE", SETTLEMENT_BASE)?;
     Ok(())
 }

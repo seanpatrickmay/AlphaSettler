@@ -17,13 +17,14 @@ import torch
 
 from alphasettler import Bot, Game, files, records
 from alphasettler._engine import (
-    NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, NET_ENCODING_HASH, NET_HIDDEN_LEN, NET_MAX_ROUNDS, NET_MAX_WIDTH,
-    NET_PUBLIC_LEN, encode, net_forward,
+    NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, NET_EDGE_WIDTH, NET_ENCODING_HASH, NET_GLOBAL_WIDTH, NET_HIDDEN_LEN,
+    NET_MAX_ROUNDS, NET_MAX_WIDTH, NET_NODE_WIDTH, NET_PUBLIC_LEN, NET_V3_EDGE_WIDTH, NET_V3_GLOBAL_WIDTH,
+    NET_V3_NODE_WIDTH, encode, net_forward,
 )
 from alphasettler.selfplay import write_explore
 from alphasettler.train import model
 from alphasettler.train.data import load_window, record_files, to_tensors
-from alphasettler.train.model import ACTIONS, FIXED_HEADER_LEN, Net, from_bytes, shapes, to_bytes
+from alphasettler.train.model import ACTIONS, EDGE_END, EDGES, FIXED_HEADER_LEN, NODE_END, NODES, Net, from_bytes, shapes, to_bytes
 from alphasettler.train import train as train_mod
 from alphasettler.train.train import (
     NEWEST_SHARE, VALUE_FRACTION, TrainConfig, auto_steps, batch_split, held_out_batches, held_out_losses, losses,
@@ -101,6 +102,22 @@ def test_rust_and_pytorch_forward_passes_agree_on_random_weights(tmp_path, width
     assert value <= 1e-5
 
 
+def test_the_parity_positions_fill_every_v4_input_block():
+    """The parity test above compares the two forward passes on these positions: they must reach
+    every block encoder v4 added, or a twin that misread one would still pass."""
+    public, _, _ = random_positions(100)
+    pt = torch.frombuffer(bytearray(public), dtype=torch.float32).view(100, NET_PUBLIC_LEN)
+    nodes = pt[:, :NODE_END].reshape(100, NODES, NET_NODE_WIDTH)
+    edges = pt[:, NODE_END:EDGE_END].reshape(100, EDGES, NET_EDGE_WIDTH)
+    distance = nodes[:, :, NET_V3_NODE_WIDTH:NET_V3_NODE_WIDTH + 4]
+    assert ((distance > 0) & (distance < 1)).any(), "a node one or two roads from some seat"
+    open_spot = nodes[:, :, NET_NODE_WIDTH - 1]
+    assert (open_spot == 1).any() and (open_spot == 0).any()
+    assert (edges[:, :, NET_V3_EDGE_WIDTH:] == 1).any(), "a road on a longest trail"
+    threats = pt[:, NET_PUBLIC_LEN - (NET_GLOBAL_WIDTH - NET_V3_GLOBAL_WIDTH):]
+    assert (threats != threats[:1]).any(), "the threat block changes over the games"
+
+
 def test_a_nan_anywhere_is_an_infinite_parity_error():
     """`max` and `>` both let a NaN through; the parity rule must not."""
     n = 3
@@ -120,8 +137,8 @@ def test_the_default_net_is_width_48_with_2_rounds():
     net = Net()
     assert (net.width, net.rounds) == (NET_DEFAULT_WIDTH, NET_DEFAULT_ROUNDS) == (48, 2)
     assert [(layer.out_features, layer.in_features) for layer in net.layers()] == shapes(48, 2)
-    assert sum(p.numel() for p in net.parameters()) == 248_446, "the same count as Rust's Arch::DEFAULT"
-    assert len(to_bytes(net)) == FIXED_HEADER_LEN + 8 * 20 + 4 * 248_446
+    assert sum(p.numel() for p in net.parameters()) == 250_030, "the same count as Rust's Arch::DEFAULT"
+    assert len(to_bytes(net)) == FIXED_HEADER_LEN + 8 * 20 + 4 * 250_030
     assert not any("tile_nodes" in k or "edge_nodes" in k for k in net.state_dict()), "the adjacency is not a weight"
 
 

@@ -1,6 +1,5 @@
-"""`alphasettler net-upgrade` (spec 3c Section 4): an encoder v2 net rewritten for encoder v3,
-with the same outputs on every no-trade position. Needs the `train` extra for the PyTorch twin,
-like test_train.py."""
+"""`alphasettler net-upgrade` (specs 3c Section 4 and 3d-2 Section 3): an older net rewritten for
+this build's encoder, v4. Needs the `train` extra for the PyTorch twin, like test_train.py."""
 
 import random
 import struct
@@ -10,32 +9,48 @@ import sys
 import pytest
 import torch
 
-from alphasettler import Bot, Game, describe_action
+from alphasettler import Bot, Game, describe_action, netformat
 from alphasettler._engine import (
-    NET_GLOBAL_WIDTH, NET_HIDDEN_LEN, NET_PUBLIC_LEN, NET_V2_ENCODING_HASH, NET_V2_GLOBAL_WIDTH, encode,
-    net_forward,
+    NET_GLOBAL_WIDTH, NET_HIDDEN_LEN, NET_PUBLIC_LEN, NET_V2_ENCODING_HASH, NET_V2_GLOBAL_WIDTH, NET_V3_EDGE_WIDTH,
+    NET_V3_GLOBAL_WIDTH, NET_V3_NODE_WIDTH, encode, net_forward,
 )
 from alphasettler import netupgrade
 from alphasettler.netupgrade import ANSWER_IDS, OFFER_BIAS, OFFER_IDS, TRADE_SLOTS, pooled_row, upgrade
-from alphasettler.train.model import ACTIONS, MAGIC, Net, _floats, from_bytes, shapes, to_bytes
+from alphasettler.train.model import ACTIONS, MAGIC, TILE_END, Net, _floats, from_bytes, shapes, to_bytes
 
 NO_TRADES = {"max_offers_per_turn": 0}
+# (encoding hash, node, edge and global input widths) of encoder v2; its node and edge inputs are v3's.
+V2 = (NET_V2_ENCODING_HASH, NET_V3_NODE_WIDTH, NET_V3_EDGE_WIDTH, NET_V2_GLOBAL_WIDTH)
+# Encoder v3's trade block in a v4 feature vector: globals 91 .. 115.
+TRADE_BLOCK = slice(TILE_END + NET_V2_GLOBAL_WIDTH, TILE_END + NET_V3_GLOBAL_WIDTH)
 
 
 def cli(*args):
     return subprocess.run([sys.executable, "-m", "alphasettler", *args], capture_output=True, text=True)
 
 
-def v2_bytes(net: Net) -> bytes:
-    """`net` written as an encoder v2 file: v2's hash, and only the global encoder's first 91 input
-    columns."""
+def old_net(widths, width=8, rounds=1, seed=0) -> Net:
+    """A random twin with zero encoder weights for every input past an older encoder's `widths`
+    (hash, node, edge, global): that older net, as this build reads it."""
+    _, node, edge, glob = widths
+    torch.manual_seed(seed)
+    net = Net(width, rounds).eval()
+    with torch.no_grad():
+        for layer, keep in ((net.node_encoder, node), (net.edge_encoder, edge), (net.global_encoder, glob)):
+            layer.weight[:, keep:] = 0.0
+    return net
+
+
+def old_bytes(net: Net, widths) -> bytes:
+    """`net` written as an older encoder's file: its hash, and each encoder's first input columns only."""
+    encoding, node, edge, glob = widths
+    keep = {0: node, 1: edge, 3: glob}
     layers = net.layers()
-    v2_shapes = [(r, NET_V2_GLOBAL_WIDTH if i == 3 else c) for i, (r, c) in enumerate(shapes(net.width, net.rounds))]
-    out = [MAGIC, struct.pack("<IQIII", 2, NET_V2_ENCODING_HASH, net.width, net.rounds, len(layers))]
-    out += [struct.pack("<II", r, c) for r, c in v2_shapes]
+    out = [MAGIC, struct.pack("<IQIII", 2, encoding, net.width, net.rounds, len(layers))]
+    out += [struct.pack("<II", r, c) for r, c in netformat.shapes(net.width, net.rounds, glob, node, edge)]
     for i, layer in enumerate(layers):
         w = layer.weight.detach()
-        out += [_floats(w[:, :NET_V2_GLOBAL_WIDTH] if i == 3 else w), _floats(layer.bias)]
+        out += [_floats(w[:, :keep[i]] if i in keep else w), _floats(layer.bias)]
     return b"".join(out)
 
 
@@ -64,24 +79,24 @@ def _close(got, ref) -> float:
 
 
 @pytest.mark.parametrize("width,rounds", [(48, 2), (5, 3)])
-def test_an_upgraded_net_keeps_every_no_trade_output(tmp_path, width, rounds):
-    """In a no-trade game the trade block is all zero, so the original v2 net's outputs are `src`'s
-    on the v3 features (its 24 extra global inputs meet only zeros). The upgraded net must give
-    the same value and aux, the same logits on every slot but the trade rows, exactly the fixed
-    biases on those, and the same prior over legal moves in the Rust forward pass."""
-    torch.manual_seed(3)
-    src = Net(width, rounds).eval()
-    data = upgrade(v2_bytes(src))
+def test_an_upgraded_v2_net_keeps_every_no_trade_output(tmp_path, width, rounds):
+    """`src` reads only a v2 net's inputs, so its outputs are that v2 net's. The upgrade must be
+    `src` exactly but for the trade rows (zero weights, the fixed biases), so in a no-trade game,
+    where the trade block is all zero, it gives `src`'s value, aux and logits on every slot but the
+    trade rows, and the Rust forward pass the same prior over legal moves."""
+    src = old_net(V2, width, rounds, seed=3)
+    data = upgrade(old_bytes(src, V2))
     up = from_bytes(data).eval()
-    assert (up.global_encoder.weight[:, NET_V2_GLOBAL_WIDTH:] == 0).all()
+    for i, (a, b) in enumerate(zip(up.layers(), src.layers())):
+        if a is not up.other_policy:
+            assert torch.equal(a.weight, b.weight) and torch.equal(a.bias, b.bias), i
     path = tmp_path / "up.bin"
     path.write_bytes(data)
     n = 100
     public, hidden, mask = no_trade_positions(n)
     pt = torch.frombuffer(bytearray(public), dtype=torch.float32).view(n, NET_PUBLIC_LEN)
     ht = torch.frombuffer(bytearray(hidden), dtype=torch.float32).view(n, NET_HIDDEN_LEN)
-    block = NET_GLOBAL_WIDTH - NET_V2_GLOBAL_WIDTH
-    assert (pt[:, NET_PUBLIC_LEN - block:] == 0).all(), "no-trade games leave the trade block zero"
+    assert (pt[:, TRADE_BLOCK] == 0).all(), "no-trade games leave the trade block zero"
     with torch.no_grad():
         ref, got = src(pt, ht), up(pt, ht)
     trade = torch.zeros(ACTIONS, dtype=torch.bool)
@@ -103,9 +118,8 @@ def test_an_upgraded_net_keeps_every_no_trade_output(tmp_path, width, rounds):
 
 
 def test_only_encoder_v2_nets_are_upgraded():
-    torch.manual_seed(0)
-    old = v2_bytes(Net(8, 1))
-    with pytest.raises(ValueError, match="already an encoder v3 net"):
+    old = old_bytes(old_net(V2), V2)
+    with pytest.raises(ValueError, match="already an encoder v4 net"):
         upgrade(to_bytes(Net(8, 1)))
     other = bytearray(old)
     other[12] ^= 1
@@ -135,10 +149,9 @@ def test_only_encoder_v2_nets_are_upgraded():
 
 
 def test_loaders_send_an_encoder_v2_net_to_net_upgrade(tmp_path):
-    torch.manual_seed(0)
     nets = tmp_path / "nets"
     nets.mkdir()
-    (nets / "old.bin").write_bytes(v2_bytes(Net(8, 1)))
+    (nets / "old.bin").write_bytes(old_bytes(old_net(V2), V2))
     p, h = encode(Game(0, NO_TRADES))
     loads = [lambda: net_forward(str(nets / "old.bin"), p, h),
              lambda: from_bytes((nets / "old.bin").read_bytes()),
@@ -160,17 +173,18 @@ def test_the_trade_rows_are_the_engines_offer_answer_and_confirmation_ids():
 
 
 def test_cli_net_upgrade(tmp_path):
-    torch.manual_seed(0)
     old, new = tmp_path / "old.bin", tmp_path / "new.bin"
-    old.write_bytes(v2_bytes(Net(8, 1)))
+    old.write_bytes(old_bytes(old_net(V2), V2))
     r = cli("net-upgrade", str(old), str(new))
     assert r.returncode == 0, r.stderr
-    assert f"wrote {new}" in r.stdout and "width 8, 1 rounds" in r.stdout
+    # 24 - 19 node, 8 - 4 edge, 139 - 91 global inputs; offers 258 .. 664: 407 rows.
+    assert f"(encoder v2) to encoder v4: width 8, 1 rounds; 5 node, 4 edge and 48 global inputs zeroed; " \
+           f"407 trade policy rows reset (offer bias -3); wrote {new}" in r.stdout
     assert from_bytes(new.read_bytes()).width == 8
     r = cli("net-upgrade", str(old), str(new))
     assert r.returncode == 2 and "exists" in r.stderr
     r = cli("net-upgrade", str(new), str(tmp_path / "again.bin"))
-    assert r.returncode == 2 and "already an encoder v3 net" in r.stderr
+    assert r.returncode == 2 and "already an encoder v4 net" in r.stderr
     assert not (tmp_path / "again.bin").exists()
 
 
@@ -179,9 +193,8 @@ def test_net_upgrade_leaves_nothing_behind_when_the_rust_loader_refuses(tmp_path
     leaves neither NEW nor a temp, and a rerun is not stopped by "exists"."""
     from alphasettler import cli as cli_mod
 
-    torch.manual_seed(0)
     old, new = tmp_path / "old.bin", tmp_path / "new.bin"
-    old.write_bytes(v2_bytes(Net(8, 1)))
+    old.write_bytes(old_bytes(old_net(V2), V2))
 
     def refuse(path, public, hidden):
         assert path != str(new) and (tmp_path / path).exists(), "the check reads the temp file, not NEW"

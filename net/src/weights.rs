@@ -18,10 +18,10 @@
 //!
 //! | index | layer | rows × cols | input, in column order |
 //! |---|---|---|---|
-//! | 0 | node encoder | d × 19 | a node's 19 features |
-//! | 1 | edge encoder | d × 4 | an edge's 4 features |
+//! | 0 | node encoder | d × 24 | a node's 24 features |
+//! | 1 | edge encoder | d × 8 | an edge's 8 features |
 //! | 2 | tile encoder | d × 8 | a tile's 8 features |
-//! | 3 | global encoder | d × 115 | the 115 global scalars (`graph::GLOBAL_BASE..PUBLIC_LEN`) |
+//! | 3 | global encoder | d × 139 | the 139 global scalars (`graph::GLOBAL_BASE..PUBLIC_LEN`) |
 //! | 4 + 4r | round r, tile | d × 3d | [tile, mean of its 6 nodes, global] |
 //! | 5 + 4r | round r, node | d × 5d | [node, mean of its tiles, mean of its edges, mean of its neighbouring nodes, global] |
 //! | 6 + 4r | round r, edge | d × 3d | [edge, sum of its 2 nodes, global] |
@@ -58,6 +58,13 @@ pub const MAX_ROUNDS: usize = 16;
 /// loader refuses such a file; `alphasettler net-upgrade` rewrites it for this encoder.
 pub const V2_ENCODING_HASH: u64 = 0x28dd_1f78_0ff2_a1b3;
 pub const V2_GLOBAL_WIDTH: usize = 91;
+/// Encoder v3's `ENCODING_HASH` (3c's and P2's nets, before the road and threat inputs) and its
+/// input widths. Encoder v2's node and edge inputs are v3's. `alphasettler net-upgrade` rewrites
+/// such files for this encoder.
+pub const V3_ENCODING_HASH: u64 = 0x6d02_356c_b617_53c2;
+pub const V3_NODE_WIDTH: usize = 19;
+pub const V3_EDGE_WIDTH: usize = 4;
+pub const V3_GLOBAL_WIDTH: usize = 115;
 
 pub const NODE_ENCODER: usize = 0;
 pub const EDGE_ENCODER: usize = 1;
@@ -132,13 +139,14 @@ impl Arch {
 
     /// (rows, cols) of each layer in file order; rows are outputs.
     pub fn shapes(&self) -> Vec<(usize, usize)> {
+        self.shapes_for(NODE_WIDTH, EDGE_WIDTH, GLOBAL_WIDTH)
+    }
+
+    /// `shapes` for encoders of `node`, `edge` and `global` inputs (an older encoder's); the tile
+    /// encoder and every later layer are fixed.
+    pub fn shapes_for(&self, node: usize, edge: usize, global: usize) -> Vec<(usize, usize)> {
         let d = self.width;
-        let mut s = vec![
-            (d, NODE_WIDTH),
-            (d, EDGE_WIDTH),
-            (d, TILE_WIDTH),
-            (d, GLOBAL_WIDTH),
-        ];
+        let mut s = vec![(d, node), (d, edge), (d, TILE_WIDTH), (d, global)];
         for _ in 0..self.rounds {
             s.extend([(d, 3 * d), (d, 5 * d), (d, 3 * d), (d, 4 * d)]);
         }
@@ -165,6 +173,29 @@ pub struct Layer {
     pub b: Vec<f32>,
 }
 
+impl Layer {
+    /// This layer with `cols` inputs: its own first, then zero weights for the inputs appended
+    /// after them (how `net-upgrade` widens an encoder). Panics below its own width.
+    pub fn widened(&self, cols: usize) -> Layer {
+        assert!(
+            cols >= self.cols,
+            "cannot narrow a layer from {} to {cols} inputs",
+            self.cols
+        );
+        let mut w = Vec::with_capacity(self.rows * cols);
+        for row in self.w.chunks_exact(self.cols) {
+            w.extend_from_slice(row);
+            w.resize(w.len() + cols - self.cols, 0.0);
+        }
+        Layer {
+            rows: self.rows,
+            cols,
+            w,
+            b: self.b.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Weights {
     pub arch: Arch,
@@ -179,12 +210,32 @@ impl Weights {
     /// He-uniform weights and small biases from `seed`, for tests and measurements. Panics if
     /// `arch` is out of range.
     pub fn random(arch: Arch, seed: u64) -> Weights {
+        Weights::random_shaped(arch, seed, arch.shapes())
+    }
+
+    /// Encoder v3's `Weights::random(arch, seed)` upgraded to this encoder as `net-upgrade`
+    /// upgrades a v3 file: the same draws over v3's layer shapes, then zero weights for every
+    /// input v4 added. It ignores those inputs, so it plays as the v3 net did (within the forward
+    /// pass's 1e-5: the wider sums round differently). For tests whose pinned games predate v4.
+    pub fn random_v3(arch: Arch, seed: u64) -> Weights {
+        let v3 = arch.shapes_for(V3_NODE_WIDTH, V3_EDGE_WIDTH, V3_GLOBAL_WIDTH);
+        let mut w = Weights::random_shaped(arch, seed, v3);
+        for (i, cols) in [
+            (NODE_ENCODER, NODE_WIDTH),
+            (EDGE_ENCODER, EDGE_WIDTH),
+            (GLOBAL_ENCODER, GLOBAL_WIDTH),
+        ] {
+            w.layers[i] = w.layers[i].widened(cols);
+        }
+        w
+    }
+
+    fn random_shaped(arch: Arch, seed: u64, shapes: Vec<(usize, usize)>) -> Weights {
         if let Err(e) = arch.check() {
             panic!("{e}");
         }
         let mut rng = Rng::new(seed);
-        let layers = arch
-            .shapes()
+        let layers = shapes
             .into_iter()
             .map(|(rows, cols)| {
                 let bound = (6.0 / cols as f32).sqrt();

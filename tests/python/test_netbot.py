@@ -94,8 +94,10 @@ def test_offer_suffixes_build_net_bots_in_any_order(nets):
     # Bots driven from Python see no events: every decision rebuilds the belief from the
     # observation, trade roots included. Offers have priors, so the +t bot offers, and answers
     # and confirmations with a choice (more than one legal move) are searched.
+    # Seed 2: the seed-1 v4 net never accepts an offer, so no confirmation root is reached.
+    write_random_net(str(nets / "trader.bin"), 2, 8, 1)
     g = Game(4, {"max_offers_per_turn": 2, "max_trade_cards": 1})
-    bot = Bot("net:tiny@10+t", 1, nets_dir=str(nets))
+    bot = Bot("net:trader@10+t", 1, nets_dir=str(nets))
     trade_roots = {"trade_response": 0, "trade_confirm": 0}
     for _ in range(200):
         if g.is_over:

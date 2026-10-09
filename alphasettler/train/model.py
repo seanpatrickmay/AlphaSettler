@@ -1,5 +1,5 @@
 """The PyTorch twin of net/src/forward.rs, network v2 (spec Section 2): an entity-structured graph
-net over the encoder's 54 nodes, 72 edges, 19 tiles and 115 global scalars (encoder v3), read from
+net over the encoder's 54 nodes, 72 edges, 19 tiles and 139 global scalars (encoder v4), read from
 and written to the weights file format of net/src/weights.rs, version 2 (`alphasettler.netformat`,
 which holds the format's constants and its one reader). The layer order, byte for byte, is the
 table in net/src/weights.rs; `Net.layers()` returns the modules in that order.

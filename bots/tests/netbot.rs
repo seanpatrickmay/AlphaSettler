@@ -37,6 +37,24 @@ fn nets_dir(tag: &str) -> PathBuf {
     dir
 }
 
+/// A fresh nets directory holding `tiny.bin`: encoder v3's random net of width 8, 1 round, seed
+/// 1 (the net the P2 pin was computed with), upgraded to encoder v4 with zero weights for the
+/// new inputs (`Weights::random_v3`), so it plays as it did under v3.
+fn v3_nets_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("settler-bots-nets-{}-{tag}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    Weights::random_v3(
+        Arch {
+            width: 8,
+            rounds: 1,
+        },
+        1,
+    )
+    .save(&dir.join("tiny.bin"))
+    .unwrap();
+    dir
+}
+
 #[test]
 fn net_names_parse_and_bad_ones_are_rejected_without_touching_the_disk() {
     let name =
@@ -172,10 +190,13 @@ fn record_digest(records: &[GameRecord]) -> u64 {
 }
 
 /// The digest of a trading-game match of `net:tiny@16+t` (random weights, seed 1), computed at
-/// eb1f739 before the Gumbel root (P2): net bots without `+g` must play the same games.
+/// eb1f739 before the Gumbel root (P2): net bots without `+g` must play the same games. Encoder
+/// v4 (3d-2) added inputs; the pin's net is the same v3 net upgraded (`v3_nets_dir`), which
+/// ignores them. Its wider sums round differently (by a few ulps), which moves no move of this
+/// match: checked while planning 3d-2 by running encoder v3 with the padded encoder layers.
 #[test]
 fn net_bots_without_the_gumbel_suffix_play_the_games_they_played_before_p2() {
-    let dir = nets_dir("p2-pin");
+    let dir = v3_nets_dir("p2-pin");
     let records = run_match_in("net:tiny@16+t", "greedy", 0..1, trading(), 1, &dir).unwrap();
     assert_eq!(record_digest(&records), 0xf4d5c47b40f849a3);
 }

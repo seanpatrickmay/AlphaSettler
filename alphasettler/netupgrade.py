@@ -1,13 +1,16 @@
-"""`alphasettler net-upgrade OLD NEW` (spec 3c Section 4): an encoder v2 net (3b's: 91 global
-inputs) rewritten for encoder v3 (115: the trade block appended), with the same moves in every
-no-trade game.
+"""`alphasettler net-upgrade OLD NEW` (specs 3c Section 4 and 3d-2 Section 3): an older net
+rewritten for this build's encoder, v4. Encoder v4 appended 5 inputs to each node, 4 to each edge
+and the 24-input threat block to the globals; encoder v3 had appended the 24-input trade block to
+encoder v2's 91 globals.
 
-- The global encoder gets zero weights for the 24 new inputs, so the net ignores them.
-- The pooled head's rows for every domestic offer (OFFER_IDS), the answers and the confirmations
-  (ANSWER_IDS, CancelTrade included) get zero weights, and biases of OFFER_BIAS for offers and 0
-  for the rest. 3b never trained them: offers were masked out, and every answer was a hard-coded
-  reject or cancel. All 400 offer rows are reset, not only the 20 one-for-one offers the trading
-  game allows, because the same reason holds for all of them.
+- Each encoder's first layer gets zero weights for the inputs the old net never saw, so the net
+  ignores them.
+- From encoder v2 (3b's nets), the pooled head's rows for every domestic offer (OFFER_IDS), the
+  answers and the confirmations (ANSWER_IDS, CancelTrade included) get zero weights, and biases of
+  OFFER_BIAS for offers and 0 for the rest. 3b never trained them: offers were masked out, and
+  every answer was a hard-coded reject or cancel. All 400 offer rows are reset, not only the 20
+  one-for-one offers the trading game allows, because the same reason holds for all of them. An
+  upgraded v2 net makes the v2 net's moves in every no-trade game.
 - Every other byte is copied.
 
 No torch, so it runs without the train extra: the file is read by `alphasettler.netformat`, the
@@ -17,16 +20,17 @@ shares."""
 from __future__ import annotations
 
 import os
-import struct
 from array import array
 from pathlib import Path
 
 from alphasettler import files
 from alphasettler._engine import (
-    NET_ENCODING_HASH, NET_GLOBAL_WIDTH, NET_SETTLEMENT_BASE, NET_V2_ENCODING_HASH, NET_V2_GLOBAL_WIDTH, Game, encode,
-    net_forward,
+    NET_EDGE_WIDTH, NET_ENCODING_HASH, NET_GLOBAL_WIDTH, NET_NODE_WIDTH, NET_SETTLEMENT_BASE, NET_V2_ENCODING_HASH,
+    NET_V2_GLOBAL_WIDTH, NET_V3_EDGE_WIDTH, NET_V3_NODE_WIDTH, Game, encode, net_forward,
 )
-from alphasettler.netformat import ENTITY_SLOTS, GLOBAL_ENCODER, OTHER_POLICY, head_layer, header, read
+from alphasettler.netformat import (
+    EDGE_ENCODER, ENTITY_SLOTS, GLOBAL_ENCODER, NODE_ENCODER, OTHER_POLICY, head_layer, header, read,
+)
 from alphasettler.netformat import shapes  # noqa: F401  (part of this module's interface)
 
 OFFER_BIAS = -3.0
@@ -34,6 +38,15 @@ OFFER_BIAS = -3.0
 OFFER_IDS = range(258, 658)
 ANSWER_IDS = range(658, 665)
 TRADE_SLOTS = range(258, 665)
+
+# The encoders a net is upgraded from: encoding hash -> (encoder version, node, edge and global input
+# widths). Encoder v2's node and edge inputs are v3's.
+SOURCES = {
+    NET_V2_ENCODING_HASH: (2, NET_V3_NODE_WIDTH, NET_V3_EDGE_WIDTH, NET_V2_GLOBAL_WIDTH),
+}
+# Each encoder layer and its input count in this build.
+TARGET = {"node": (NODE_ENCODER, NET_NODE_WIDTH), "edge": (EDGE_ENCODER, NET_EDGE_WIDTH),
+          "global": (GLOBAL_ENCODER, NET_GLOBAL_WIDTH)}
 
 
 def pooled_row(slot: int) -> int:
@@ -43,18 +56,24 @@ def pooled_row(slot: int) -> int:
     return slot if slot < NET_SETTLEMENT_BASE else slot - ENTITY_SLOTS
 
 
-def _check_v2(encoding: int) -> None:
+def _check_source(encoding: int) -> None:
     if encoding == NET_ENCODING_HASH:
-        raise ValueError("already an encoder v3 net (this build's encoding hash): nothing to upgrade")
-    if encoding != NET_V2_ENCODING_HASH:
+        raise ValueError("already an encoder v4 net (this build's encoding hash): nothing to upgrade")
+    if encoding not in SOURCES:
         raise ValueError(f"encoding hash {encoding:#018x} is not encoder v2's {NET_V2_ENCODING_HASH:#018x}: "
                          "only encoder v2 nets can be upgraded")
 
 
-def read_v2(data: bytes) -> tuple[int, int, list[tuple[int, int, array, array]]]:
-    """(width, rounds, layers) of an encoder v2 weights file, each layer (rows, cols, weights,
-    biases); ValueError for any other file. Everything is checked before anything is sized from it."""
-    width, rounds, declared, floats = read(data, NET_V2_GLOBAL_WIDTH, _check_v2, "an encoder v2 net")
+def read_old(data: bytes) -> tuple[int, int, int, list[tuple[int, int, array, array]]]:
+    """(encoder version, width, rounds, layers) of a weights file this tool upgrades, each layer
+    (rows, cols, weights, biases); ValueError for any other file. Everything is checked before
+    anything is sized from it."""
+    # The input widths follow from the encoding hash, which `read` checks only after the magic and the
+    # version: peek at it, and let `read` report whatever is wrong in its own order.
+    peek = int.from_bytes(data[12:20], "little") if len(data) >= 20 else None
+    version, node, edge, glob = SOURCES.get(peek, (0, NET_NODE_WIDTH, NET_EDGE_WIDTH, NET_GLOBAL_WIDTH))
+    width, rounds, declared, floats = read(data, glob, _check_source, f"an encoder v{version} net",
+                                           node_width=node, edge_width=edge)
     layers, at = [], 0
     for rows, cols in declared:
         w = floats[at:at + rows * cols]
@@ -62,39 +81,56 @@ def read_v2(data: bytes) -> tuple[int, int, list[tuple[int, int, array, array]]]
         b = floats[at:at + rows]
         at += rows
         layers.append((rows, cols, w, b))
-    return width, rounds, layers
+    return version, width, rounds, layers
 
 
-def upgrade(data: bytes) -> bytes:
-    """The encoder v3 weights file for the encoder v2 file `data` (see the module docstring)."""
-    width, rounds, layers = read_v2(data)
-    extra = NET_GLOBAL_WIDTH - NET_V2_GLOBAL_WIDTH
-    rows, cols, w, b = layers[GLOBAL_ENCODER]
+def widened(layer: tuple[int, int, array, array], cols: int) -> tuple[int, int, array, array]:
+    """`layer` with `cols` inputs: its own first, then zero weights for the inputs appended after them."""
+    rows, old, w, b = layer
     wide = array("f")
     for r in range(rows):
-        wide.extend(w[r * cols:(r + 1) * cols])
-        wide.extend(array("f", [0.0]) * extra)
-    layers[GLOBAL_ENCODER] = (rows, NET_GLOBAL_WIDTH, wide, b)
-    rows, cols, w, b = layers[head_layer(rounds, OTHER_POLICY)]
-    for slot in TRADE_SLOTS:
-        r = pooled_row(slot)
-        w[r * cols:(r + 1) * cols] = array("f", [0.0]) * cols
-        b[r] = OFFER_BIAS if slot in OFFER_IDS else 0.0
+        wide.extend(w[r * old:(r + 1) * old])
+        wide.extend(array("f", [0.0]) * (cols - old))
+    return rows, cols, wide, b
+
+
+def _upgrade(data: bytes) -> tuple[bytes, dict]:
+    version, width, rounds, layers = read_old(data)
+    zero = {}
+    for name, (index, cols) in TARGET.items():
+        zero[name] = cols - layers[index][1]
+        layers[index] = widened(layers[index], cols)
+    trade_rows = 0
+    if version == 2:
+        rows, cols, w, b = layers[head_layer(rounds, OTHER_POLICY)]
+        for slot in TRADE_SLOTS:
+            r = pooled_row(slot)
+            w[r * cols:(r + 1) * cols] = array("f", [0.0]) * cols
+            b[r] = OFFER_BIAS if slot in OFFER_IDS else 0.0
+        trade_rows = len(TRADE_SLOTS)
     out = [header(width, rounds, [(r, c) for r, c, _, _ in layers])]
     for _, _, w, b in layers:
         out += [w.tobytes(), b.tobytes()]
-    return b"".join(out)
+    summary = {"from": version, "width": width, "rounds": rounds, "zero_inputs": zero, "trade_rows": trade_rows}
+    return b"".join(out), summary
+
+
+def upgrade(data: bytes) -> bytes:
+    """The encoder v4 weights file for the older file `data` (see the module docstring)."""
+    return _upgrade(data)[0]
 
 
 def upgrade_file(old: str | Path, new: str | Path) -> dict:
-    """Write the upgrade of `old` to `new` (which must not exist, so nothing is overwritten). The
-    upgrade goes to a temp file beside `new` and is published by a rename only after the Rust loader
-    has read it as every bot will, so a failure at any step leaves no `new` (and no temp) behind."""
+    """Write the upgrade of `old` to `new` (which must not exist, so nothing is overwritten) and
+    return what was done: the source encoder (`from`), width, rounds, the zero inputs per encoder
+    and the trade rows reset. The upgrade goes to a temp file beside `new` and is published by a
+    rename only after the Rust loader has read it as every bot will, so a failure at any step leaves
+    no `new` (and no temp) behind."""
     old, new = Path(old), Path(new)
     if new.exists():
         raise ValueError(f"{new} exists: choose a new path")
     try:
-        data = upgrade(old.read_bytes())
+        data, summary = _upgrade(old.read_bytes())
     except ValueError as e:
         raise ValueError(f"{old}: {e}") from None
     tmp = files.temp_path(new)
@@ -111,6 +147,4 @@ def upgrade_file(old: str | Path, new: str | Path) -> dict:
         os.replace(tmp, new)
     finally:
         tmp.unlink(missing_ok=True)
-    width, rounds = struct.unpack_from("<II", data, 20)
-    return {"width": width, "rounds": rounds, "zero_inputs": NET_GLOBAL_WIDTH - NET_V2_GLOBAL_WIDTH,
-            "trade_rows": len(TRADE_SLOTS)}
+    return summary

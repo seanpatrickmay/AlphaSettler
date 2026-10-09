@@ -1,6 +1,6 @@
 """Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic`, `train`,
 `sprt`, `fast-train`, `fast-score`, `fast-loop`, `train-loop`, `net-upgrade`, `opening-train` and `opening-diagnose`;
-`net-upgrade` rewrites a 3b (encoder v2) net for encoder v3. `selfplay --simulations S` writes 3a records;
+`net-upgrade` rewrites an older net (encoder v2, 3b's) for this build's encoder v4. `selfplay --simulations S` writes 3a records;
 `selfplay --pcr` and `selfplay --net NAME` write 3b exploration records; `train` (the train extra)
 trains a network on them; `train-loop` (the train extra) runs the resumable self-play, train and
 gate generations; `fast-train` and `fast-score` (the train extra) train and score candidate nets on
@@ -179,7 +179,7 @@ def _parser() -> argparse.ArgumentParser:
                     help="first run only: an opening model (ASOPEN) picks self-play's setup settlements, "
                          "and both gate sides are +o")
 
-    nu = sub.add_parser("net-upgrade", help="rewrite an encoder v2 net (3b's) for encoder v3, same no-trade moves")
+    nu = sub.add_parser("net-upgrade", help="rewrite an encoder v2 net (3b's) for encoder v4, same no-trade moves")
     nu.add_argument("old", help="the encoder v2 weights file")
     nu.add_argument("new", help="the weights file to write (must not exist)")
 
@@ -579,9 +579,11 @@ def _net_upgrade(args) -> int:
     # Written to a temp file, read back by the Rust loader as every bot will read it, then renamed
     # to NEW: a file that fails any step is never left at NEW.
     s = netupgrade.upgrade_file(args.old, args.new)
-    print(f"upgraded {args.old} (encoder v2) to encoder v3: width {s['width']}, {s['rounds']} rounds; "
-          f"{s['zero_inputs']} new global inputs and {s['trade_rows']} trade policy rows zeroed "
-          f"(offer bias {netupgrade.OFFER_BIAS:g}); wrote {args.new}")
+    z = s["zero_inputs"]
+    reset = (f"; {s['trade_rows']} trade policy rows reset (offer bias {netupgrade.OFFER_BIAS:g})"
+             if s["trade_rows"] else "")
+    print(f"upgraded {args.old} (encoder v{s['from']}) to encoder v4: width {s['width']}, {s['rounds']} rounds; "
+          f"{z['node']} node, {z['edge']} edge and {z['global']} global inputs zeroed{reset}; wrote {args.new}")
     return 0
 
 

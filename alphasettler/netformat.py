@@ -7,7 +7,7 @@ layer count), each layer's rows and columns, then each layer's f32 weights (row-
 outputs) and biases, in the layer order of net/src/weights.rs's table. `read` checks a file exactly
 as the Rust loader does, and checks all of it (header, length, every weight finite) before anything
 is sized from it. Only the encoding hash check is the caller's: the twin wants this encoder's, the
-upgrade encoder v2's."""
+upgrade an older encoder's (whose input widths it passes)."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ from array import array
 from typing import Callable
 
 from alphasettler._engine import (
-    NET_EDGE_WIDTH, NET_ENCODING_HASH, NET_FORMAT_VERSION, NET_HIDDEN_LEN, NET_MAX_ROUNDS, NET_MAX_WIDTH,
-    NET_NODE_WIDTH, NET_TILE_WIDTH, action_space_size, net_adjacency,
+    NET_EDGE_WIDTH, NET_ENCODING_HASH, NET_FORMAT_VERSION, NET_GLOBAL_WIDTH, NET_HIDDEN_LEN, NET_MAX_ROUNDS,
+    NET_MAX_WIDTH, NET_NODE_WIDTH, NET_TILE_WIDTH, action_space_size, net_adjacency,
 )
 
 MAGIC = b"ASNET\0\0\0"
@@ -34,6 +34,8 @@ ENTITY_SLOTS = 2 * NODES + EDGES + TILES
 OTHER = ACTIONS - ENTITY_SLOTS
 
 # Layer indices in file order (net/src/weights.rs): four encoders, four layers per round, eight heads.
+NODE_ENCODER = 0
+EDGE_ENCODER = 1
 GLOBAL_ENCODER = 3
 ROUND_BASE = 4
 LAYERS_PER_ROUND = 4
@@ -58,11 +60,13 @@ def head_layer(rounds: int, head: int) -> int:
     return ROUND_BASE + LAYERS_PER_ROUND * rounds + head
 
 
-def shapes(width: int, rounds: int, global_width: int) -> list[tuple[int, int]]:
-    """(rows, cols) of each layer in file order, for a global encoder of `global_width` inputs; rows
-    are outputs (as Rust's `Arch::shapes`)."""
+def shapes(width: int, rounds: int, global_width: int = NET_GLOBAL_WIDTH, node_width: int = NET_NODE_WIDTH,
+           edge_width: int = NET_EDGE_WIDTH) -> list[tuple[int, int]]:
+    """(rows, cols) of each layer in file order, for encoders of `node_width`, `edge_width` and
+    `global_width` inputs (this build's by default, an older encoder's for the upgrade); rows are
+    outputs (as Rust's `Arch::shapes_for`)."""
     d = width
-    out = [(d, NET_NODE_WIDTH), (d, NET_EDGE_WIDTH), (d, NET_TILE_WIDTH), (d, global_width)]
+    out = [(d, node_width), (d, edge_width), (d, NET_TILE_WIDTH), (d, global_width)]
     out += [(d, 3 * d), (d, 5 * d), (d, 3 * d), (d, 4 * d)] * rounds
     return out + [(2, 2 * d), (1, 2 * d), (1, 2 * d), (4 * d, 4 * d), (OTHER, 4 * d),
                   (4 * d, 4 * d + NET_HIDDEN_LEN), (SEATS, 4 * d), (SEATS, 4 * d)]
@@ -76,12 +80,13 @@ def header(width: int, rounds: int, layer_shapes: list[tuple[int, int]]) -> byte
     return b"".join(out)
 
 
-def read(data: bytes, global_width: int, check_encoding: Callable[[int], None],
-         layout: str) -> tuple[int, int, list[tuple[int, int]], array]:
+def read(data: bytes, global_width: int, check_encoding: Callable[[int], None], layout: str,
+         node_width: int = NET_NODE_WIDTH, edge_width: int = NET_EDGE_WIDTH,
+         ) -> tuple[int, int, list[tuple[int, int]], array]:
     """(width, rounds, layer shapes, every float in file order) of the weights file `data`, whose
-    global encoder takes `global_width` inputs; ValueError (with the Rust loader's wording) for a file
-    it rejects. `check_encoding(hash)` raises for a hash the caller does not read; `layout` names
-    the expected net in the shape error."""
+    encoders take `node_width`, `edge_width` and `global_width` inputs; ValueError (with the Rust
+    loader's wording) for a file it rejects. `check_encoding(hash)` raises for a hash the caller
+    does not read; `layout` names the expected net in the shape error."""
     assert sys.byteorder == "little", "the weights file is little-endian"
     if len(data) < FIXED_HEADER_LEN:
         raise ValueError(f"truncated: {len(data)} bytes is shorter than the {FIXED_HEADER_LEN}-byte header")
@@ -99,7 +104,7 @@ def read(data: bytes, global_width: int, check_encoding: Callable[[int], None],
     if len(data) < header_len:
         raise ValueError(f"truncated: {len(data)} bytes is shorter than the {header_len}-byte header")
     declared = [struct.unpack_from("<II", data, FIXED_HEADER_LEN + 8 * i) for i in range(count)]
-    if declared != shapes(width, rounds, global_width):
+    if declared != shapes(width, rounds, global_width, node_width, edge_width):
         raise ValueError(f"layer shapes {declared} do not fit {layout} with width {width} and {rounds} rounds")
     want = header_len + 4 * sum(r * c + r for r, c in declared)
     if len(data) < want:

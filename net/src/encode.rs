@@ -4,14 +4,20 @@
 //! `LAYOUT_DESCRIPTION`; the golden test in `net/tests/encode.rs` fails until the test is updated
 //! with it.
 
+use settler_engine::rules::awards::longest_trail;
 use settler_engine::topology::{topo, NUM_EDGES, NUM_NODES, NUM_TILES};
 use settler_engine::types::*;
 use settler_engine::{Observation, Phase, Response, State, ACTION_SPACE_SIZE};
 
-pub const ENCODER_VERSION: u32 = 3;
+pub const ENCODER_VERSION: u32 = 4;
 
-pub const NODE_WIDTH: usize = 19;
-pub const EDGE_WIDTH: usize = 4;
+pub const NODE_WIDTH: usize = 24;
+pub const EDGE_WIDTH: usize = 8;
+/// v4 (spec 3d-2): each node's road distance for r0 .. r3 at these 4 slots, then the open spot.
+pub const NODE_DISTANCE: usize = 19;
+pub const NODE_OPEN: usize = NODE_DISTANCE + NUM_PLAYERS;
+/// v4: each edge's "on r's longest trail" for r0 .. r3 at these 4 slots, after the road owners.
+pub const EDGE_TRAIL: usize = 4;
 pub const TILE_WIDTH: usize = 8;
 pub const SEAT_WIDTH: usize = 10;
 pub const NUM_PHASES: usize = 11;
@@ -48,7 +54,12 @@ pub const RESPONSE_WIDTH: usize = 3;
 pub const OFFERS_MADE: usize = TRADE_RESPONSES + NUM_PLAYERS * RESPONSE_WIDTH;
 /// 1 when the game allows domestic offers (`max_offers_per_turn > 0`).
 pub const OFFERS_ALLOWED: usize = OFFERS_MADE + 1;
-pub const PUBLIC_LEN: usize = OFFERS_ALLOWED + 1;
+/// v4: per seat (seat-relative), longest road length / 15, roads to the longest-road award / 5,
+/// knights to the largest-army award / 3, points to win / vp_to_win, settlements left / 5, cities
+/// left / 4.
+pub const THREATS: usize = OFFERS_ALLOWED + 1;
+pub const THREAT_WIDTH: usize = 6;
+pub const PUBLIC_LEN: usize = THREATS + NUM_PLAYERS * THREAT_WIDTH;
 
 /// Per opponent (relative seats 1..=3): hand by resource, then dev cards held by kind.
 pub const HIDDEN_WIDTH: usize = 10;
@@ -85,9 +96,20 @@ pub const PIP_DEN: u32 = 5;
 pub const NODE_PIP_DEN: u32 = 15;
 /// Free roads left in Road Building (1 or 2 during it).
 pub const FREE_ROAD_DEN: u32 = 2;
+/// v4: road distances are capped here (3 or more roads, or never, read 1).
+pub const DISTANCE_DEN: u32 = 3;
+/// v4: a seat's longest road: at most its 15 roads.
+pub const ROAD_LENGTH_DEN: u32 = MAX_ROADS;
+/// v4: the longest road is won at 5 roads, the largest army at 3 knights; "to the award" is over
+/// these.
+pub const ROAD_AWARD_MIN: u32 = 5;
+pub const ARMY_AWARD_MIN: u32 = 3;
+/// v4: pieces in supply.
+pub const SETTLEMENT_DEN: u32 = MAX_SETTLEMENTS;
+pub const CITY_DEN: u32 = MAX_CITIES;
 
 /// Everything the layout depends on, hashed into `ENCODING_HASH`.
-pub const LAYOUT: [u32; 27] = [
+pub const LAYOUT: [u32; 33] = [
     ENCODER_VERSION,
     NUM_NODES as u32,
     NODE_WIDTH as u32,
@@ -115,6 +137,12 @@ pub const LAYOUT: [u32; 27] = [
     PIP_DEN,
     NODE_PIP_DEN,
     FREE_ROAD_DEN,
+    DISTANCE_DEN,
+    ROAD_LENGTH_DEN,
+    ROAD_AWARD_MIN,
+    ARMY_AWARD_MIN,
+    SETTLEMENT_DEN,
+    CITY_DEN,
 ];
 
 /// The whole layout as canonical text: every block in vector order with its item count and one
@@ -124,16 +152,20 @@ pub const LAYOUT: [u32; 27] = [
 /// `encode_public` and `encode_hidden_from`: `net/tests/encode.rs` checks its offsets, widths,
 /// scales and version against the constants.
 pub const LAYOUT_DESCRIPTION: &str = "\
-settler-net features v3
+settler-net features v4
 seats relative to the viewer: r0 is the viewer, then r1 r2 r3 in turn order
 resources: wood brick sheep wheat ore
 dev kinds: knight victory_point road_building year_of_plenty monopoly
 scales: card=19 hand=20 dev_total=25 dev_knight=14 dev_victory_point=5 dev_road_building=2 \
-dev_year_of_plenty=2 dev_monopoly=2 vp=10 discard=10 bank=19 deck=25 pip=5 node_pip=15 free_roads=2
+dev_year_of_plenty=2 dev_monopoly=2 vp=10 discard=10 bank=19 deck=25 pip=5 node_pip=15 free_roads=2 \
+distance=3 road_length=15 road_award=5 army_award=3 settlements=5 cities=4
 public node x54: settlement_r0 settlement_r1 settlement_r2 settlement_r3 city_r0 city_r1 city_r2 \
 city_r3 port_generic port_wood port_brick port_sheep port_wheat port_ore pips_wood/node_pip \
-pips_brick/node_pip pips_sheep/node_pip pips_wheat/node_pip pips_ore/node_pip
-public edge x72: road_r0 road_r1 road_r2 road_r3
+pips_brick/node_pip pips_sheep/node_pip pips_wheat/node_pip pips_ore/node_pip \
+road_distance_r0/distance road_distance_r1/distance road_distance_r2/distance \
+road_distance_r3/distance open_spot
+public edge x72: road_r0 road_r1 road_r2 road_r3 longest_trail_r0 longest_trail_r1 longest_trail_r2 \
+longest_trail_r3
 public tile x19: wood brick sheep wheat ore desert pips/pip robber
 public own_hand x1: wood/card brick/card sheep/card wheat/card ore/card
 public own_dev_old x1: knight/dev_knight victory_point/dev_victory_point \
@@ -162,6 +194,8 @@ wheat/max_trade_cards ore/max_trade_cards
 public trade_response x4: pending accepted rejected
 public offers_made x1: offers/max_offers_per_turn
 public offers_allowed x1: allowed
+public threat x4: road_length/road_length roads_to_award/road_award knights_to_award/army_award \
+points_to_win/vp_to_win settlements_left/settlements cities_left/cities
 hidden opponent x3: wood/card brick/card sheep/card wheat/card ore/card \
 knight/dev_knight victory_point/dev_victory_point road_building/dev_road_building \
 year_of_plenty/dev_year_of_plenty monopoly/dev_monopoly
@@ -244,6 +278,54 @@ fn return_phase_index(p: Phase) -> usize {
 #[inline]
 fn scaled(x: u32, den: u32) -> f32 {
     x as f32 / den as f32
+}
+
+/// Every node seat `p`'s roads or buildings touch: its network (v4).
+fn network(obs: &Observation, p: usize) -> u64 {
+    let t = topo();
+    bits128(obs.roads[p]).fold(obs.settlements[p] | obs.cities[p], |m, e| {
+        m | t.edge_node_mask[e as usize]
+    })
+}
+
+/// v4's road distances: the fewest roads that make `network` touch each node, capped at
+/// `DISTANCE_DEN`. A network node is 0, a node another seat built on included; a path may not
+/// leave a `blocked` node (another seat's building) or use a `closed` edge (another seat's road).
+fn road_distances(network: u64, blocked: u64, closed: u128) -> [u8; NUM_NODES] {
+    let t = topo();
+    let cap = DISTANCE_DEN as u8;
+    let mut dist = [cap; NUM_NODES];
+    for n in bits64(network) {
+        dist[n as usize] = 0;
+    }
+    let (mut seen, mut frontier) = (network, network);
+    // Rings 1 .. cap - 1; every node further out keeps the cap.
+    for d in 1..cap {
+        let mut next = 0u64;
+        for n in bits64(frontier & !blocked) {
+            for e in bits128(t.node_edge_mask[n as usize] & !closed) {
+                next |= t.edge_node_mask[e as usize];
+            }
+        }
+        next &= !seen;
+        for n in bits64(next) {
+            dist[n as usize] = d;
+        }
+        seen |= next;
+        frontier = next;
+    }
+    dist
+}
+
+/// v4: pieces seat `p` still lacks to take an award won at `min` (5 roads, 3 knights), holding
+/// `own`: 0 for the holder, else `min(min, max(min, held + 1) - own)` with `held` the holder's
+/// count, and `max(0, min - own)` with no holder (spec 3d-2 Section 2).
+fn to_award(own: u32, p: usize, holder: Option<(usize, u32)>, min: u32) -> u32 {
+    match holder {
+        Some((h, _)) if h == p => 0,
+        Some((_, held)) => min.max(held + 1).saturating_sub(own).min(min),
+        None => min.saturating_sub(own),
+    }
 }
 
 /// The public features of `obs`, seat-relative to `obs.viewer`, written over all of `out`.
@@ -359,6 +441,67 @@ pub fn encode_public(obs: &Observation, out: &mut [f32]) {
     if max_offers > 0 {
         out[OFFERS_MADE] = scaled(obs.offers_this_turn as u32, max_offers);
         out[OFFERS_ALLOWED] = 1.0;
+    }
+    // v4 (spec 3d-2 Section 2): road distances, open spots, longest trails, the threat block.
+    let buildings: [u64; NUM_PLAYERS] = std::array::from_fn(|p| obs.settlements[p] | obs.cities[p]);
+    let occupied = buildings.iter().fold(0u64, |m, b| m | b);
+    let roads = obs.roads.iter().fold(0u128, |m, r| m | r);
+    // The trail `awards::longest_road` measures: another seat's building ends it.
+    let trails: [(u8, u128); NUM_PLAYERS] =
+        std::array::from_fn(|p| longest_trail(obs.roads[p], occupied & !buildings[p]));
+    for p in 0..NUM_PLAYERS {
+        let r = rel(p as PlayerId, v);
+        let dist = road_distances(
+            network(obs, p),
+            occupied & !buildings[p],
+            roads & !obs.roads[p],
+        );
+        for (n, &d) in dist.iter().enumerate() {
+            out[NODE_BASE + n * NODE_WIDTH + NODE_DISTANCE + r] = scaled(d as u32, DISTANCE_DEN);
+        }
+        for e in bits128(trails[p].1) {
+            out[EDGE_BASE + e as usize * EDGE_WIDTH + EDGE_TRAIL + r] = 1.0;
+        }
+    }
+    for n in 0..NUM_NODES {
+        if occupied & ((1u64 << n) | t.node_neighbor_mask[n]) == 0 {
+            out[NODE_BASE + n * NODE_WIDTH + NODE_OPEN] = 1.0;
+        }
+    }
+    let road_holder = obs
+        .longest_road_owner
+        .map(|h| (h as usize, trails[h as usize].0 as u32));
+    let army_holder = obs
+        .largest_army_owner
+        .map(|h| (h as usize, obs.knights_played[h as usize] as u32));
+    let vp_to_win = obs.config.vp_to_win as u32;
+    for p in 0..NUM_PLAYERS {
+        let at = THREATS + rel(p as PlayerId, v) * THREAT_WIDTH;
+        let length = trails[p].0 as u32;
+        // The viewer knows its VP cards; an opponent's are not in the observation.
+        let mut points = obs.public_vp[p] as u32;
+        if p == v as usize {
+            points += obs.my_dev_cards[DevCard::VictoryPoint.index()] as u32;
+        }
+        let knights = obs.knights_played[p] as u32;
+        out[at] = scaled(length, ROAD_LENGTH_DEN);
+        out[at + 1] = scaled(
+            to_award(length, p, road_holder, ROAD_AWARD_MIN),
+            ROAD_AWARD_MIN,
+        );
+        out[at + 2] = scaled(
+            to_award(knights, p, army_holder, ARMY_AWARD_MIN),
+            ARMY_AWARD_MIN,
+        );
+        out[at + 3] = scaled(vp_to_win.saturating_sub(points), vp_to_win);
+        out[at + 4] = scaled(
+            MAX_SETTLEMENTS.saturating_sub(obs.settlements[p].count_ones()),
+            SETTLEMENT_DEN,
+        );
+        out[at + 5] = scaled(
+            MAX_CITIES.saturating_sub(obs.cities[p].count_ones()),
+            CITY_DEN,
+        );
     }
 }
 
