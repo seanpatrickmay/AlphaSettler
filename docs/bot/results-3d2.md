@@ -1,7 +1,7 @@
 # Sub-project 3d-2 (encoder v4: road-network and endgame-threat inputs): results
 
 Date: 2026-10-09. Machine: Apple M1 Pro, macOS (25.5.0).
-Commit: e7d9390 (Plan 10, Task 3), plus the commit adding this file. Encoder v3 build: 57e416a plan 12: 3d-4, compound build moves in search.
+Commit: e7d9390 (Plan 10, Task 3; built and run at 3bce48e, which adds only run scripts), plus the commit adding this file. Encoder v3 build: 57e416a plan 12: 3d-4, compound build moves in search.
 
 Spec: [`docs/superpowers/specs/2026-10-08-encoder-v4-roads-threats-design.md`](../superpowers/specs/2026-10-08-encoder-v4-roads-threats-design.md).
 Plan: [`docs/superpowers/plans/2026-10-08-plan-10-encoder-v4.md`](../superpowers/plans/2026-10-08-plan-10-encoder-v4.md).
@@ -54,7 +54,7 @@ v4 / v3: 0.99 in simulations/s (27,613 against 27,997; the six runs alternated b
 Arm D is a `fast-loop` from gen-034 upgraded to v4, with exactly arm A's settings, run through
 the same script (`bash runs/p2/arm.sh D --start-net runs/3d2/gen-034-v4.bin`):
 a fresh root, the trading game, seed directories `runs/3b-v2/gen-002` to `gen-005` and
-`runs/3c/gen-030` to `gen-034` (v3-era records, re-encoded under v4 from their actions), 2,000
+`runs/3c/gen-030` to `gen-034` (records written by encoder v2 and v3 nets, re-encoded under v4 from their actions), 2,000
 games a generation, a window of 40,000 games, 10 minutes of training, a gate of 100 seeds at 100
 simulations; set up untimed, then 10,800 s of generations (D cut after 10,803 s).
 Arm A is the control (3d-1b was H0), not rerun. Both arms played the same
@@ -127,11 +127,14 @@ Belief resets: 192 games, belief resets 0.
 
 The v4 inputs did not train a stronger net in three hours: D's best (gen-040) scored 0.224
 against A's best upgraded (95% CI [0.167, 0.281]), so the SPRT rules out a gain of 0.05 at
-alpha = beta = 0.05; the point estimate is below 0.25 and the interval includes it. The arms did the
-same work: six generations each, and D played more self-play games per hour (7,084 against 6,829)
-at 0.99 of v3's search speed. Held-out scores are close (D's value loss ends at 0.9468,
-A's at 0.9620), but each arm's held-out set is its own window, so they are not a strength measure.
-Zero-initialised inputs start the net exactly where v3 left it, and six generations of training
+alpha = beta = 0.05; the point estimate is below 0.25 and the interval includes it. Both arms finished six generations. D's training made about 2% fewer steps in each 10-minute
+window (12,844 to 13,018 against A's 13,175 to 13,280), the second cost of v4 at equal wall time
+beside its 1% slower search. D's higher self-play rate (7,084 games an hour against 6,829) cannot
+come from v4, which searches more slowly; arm A was not rerun (it ran on 2026-10-08 from 05:55, at
+90097ed), so the gap is the machine on the two days. Held-out scores are close (D's value loss ends
+at 0.9468, A's at 0.9620), but each arm's held-out set is its own window, so they are not a strength
+measure.
+Zero-initialised inputs start the net where v3 left it (within 1e-5; bit-equal in a batch), and six generations of training
 continued from that point may simply be too little to learn what the new inputs say; whether they
 pay off over longer training is open. New loops start from the control's best upgraded to v4 (the
 code stays at v4, which costs only the speed above); 3d-3's league arm runs with A's settings on
