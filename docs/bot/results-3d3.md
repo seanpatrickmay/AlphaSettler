@@ -1,7 +1,7 @@
 # Sub-project 3d-3 (a league of past nets and scripted styles in self-play): results
 
 Date: 2026-10-09. Machine: Apple M1 Pro, macOS (25.5.0).
-Commit: eda034c (Plan 11, Task 2; run at cb5d074, which adds only run scripts), plus the commit adding this file.
+Commit: eda034c (Plan 11, Task 2; arm E ran at 60df02c and was measured at cb5d074, both of which add only run scripts), plus the commit adding this file.
 
 Spec: [`docs/superpowers/specs/2026-10-08-league-design.md`](../superpowers/specs/2026-10-08-league-design.md).
 Plan: [`docs/superpowers/plans/2026-10-08-plan-11-league.md`](../superpowers/plans/2026-10-08-plan-11-league.md).
@@ -57,7 +57,8 @@ training, a gate of 100 seeds at 100 simulations; set up untimed, then 10,800 s 
 cut after 10,808 s), from gen-034 upgraded to v4 (`runs/3d2/gen-034-v4.bin`). The control ran at
 encoder v3 from gen-034 (its set-up line is `arm.sh`'s defaults alone); E differs from it by the
 league and by the v4 inputs, which 3d-2 measured as no gain (H0); the control's best plays the SPRT
-upgraded, as its v3 self within 1e-5. Arm A was not rerun.
+upgraded, as its v3 self within 1e-5. Arm A was not rerun. E starts where the control started, so the
+test stays at equal wall time.
 
 ### A: best net gen-040, 6 generations finished in the budget
 
@@ -88,9 +89,11 @@ self-play: 12,000 games in 1.48 h of self-play, 8,108 games per hour
 Held-out scores are not comparable across the arms: E's held-out games include its league games.
 E records about 25% fewer decisions a generation (481,881 to 500,512 against A's 651,593 to
 674,797) because a league game records two of its four seats, so its 40,000-game window holds fewer
-training positions. Its higher self-play rate (8,108 games an hour against 6,829) comes from the
-same place in part, since league seats search at the fast budget always, and in part from the
-machine on two days (3d-2 saw D at 7,084 with no league); this run does not separate the two.
+training positions. Its higher self-play rate (8,108 games an hour against 6,829) fits the league:
+league seats search 100 simulations (learner moves average about 225: a quarter of them full
+searches of 600) and style seats run no net, which predicts roughly 1.2x on 49% league games; the
+identical gate matches ran no faster on E's day than on D's (92.5 s a gate against 87.3 s; A's 90.3 s),
+so the machine does not explain it.
 
 Final nets: E: gen-040 (`runs/3d3/nets/E.bin`, sha256 09db7e11122bec76...); A: its best at
 the cut, gen-040, at encoder v4 (`runs/3d2/nets/A.bin`, sha256 31909c7f9595d88b...); D: 3d-2's
@@ -104,7 +107,10 @@ arm D best (`runs/3d2/nets/D.bin`, sha256 86dbad0524820da7...), for the second S
 Belief resets: E vs A 384 games, belief resets 0; E vs D 336 games, belief resets 0.
 
 The control's best is one of the control's promoted generations, so it was in E's pool: the SPRT
-opponent is a net E met in training. The robustness lines below share no such link. The second
+opponent is a net E met in training. The robustness opponents are linked more closely still: the
+three styles are E's own league styles (1,966, 1,919 and 2,018 of its self-play seats), which A never
+met, so the robustness lines measure E against opponents it trained against, not styles it would not
+meet. The second
 SPRT (a ledger ruling, not in the spec) isolates the league: D and E both started from gen-034
 upgraded and ran v4 for three hours; only E had the league.
 
@@ -118,27 +124,31 @@ each), the same seeds for every line; z vs 0.25:
 | `net:E@100+t` | `style:roads@100+t` | 0.586 | [0.549, 0.624] | 800 | 17.65 |
 | `net:E@100+t` | `style:army@100+t` | 0.610 | [0.574, 0.646] | 800 | 19.86 |
 | `net:E@100+t` | `style:production@100+t` | 0.559 | [0.522, 0.596] | 800 | 16.46 |
-| `net:E@100+t` | the three styles (pooled, seed x style units) | 0.585 | [0.564, 0.606] | 2,400 | 31.07 |
+| `net:E@100+t` | the three styles (per seed, the three averaged) | 0.585 | [0.553, 0.617] | 2,400 | 20.23 |
 | `net:A@100+t` | `style:roads@100+t` | 0.565 | [0.528, 0.602] | 800 | 16.78 |
 | `net:A@100+t` | `style:army@100+t` | 0.595 | [0.559, 0.631] | 800 | 18.86 |
 | `net:A@100+t` | `style:production@100+t` | 0.527 | [0.489, 0.566] | 800 | 14.25 |
-| `net:A@100+t` | the three styles (pooled, seed x style units) | 0.562 | [0.541, 0.584] | 2,400 | 28.60 |
+| `net:A@100+t` | the three styles (per seed, the three averaged) | 0.562 | [0.530, 0.595] | 2,400 | 19.08 |
 
-Belief resets: 0 for each net (both `belief resets: 0` lines of `runs/3d3/robust.log`).
+Belief resets: 0 for each net (both `belief resets: 0` lines of `runs/3d3/robust.log`). The two
+three-style rows are per seed (200 units, from `runs/3d3/robust-paired.log`); `runs/3d3/robust.log`'s
+pooled lines count each seed-and-style pair as a unit (E [0.564, 0.606], z 31.07; A [0.541, 0.584],
+z 28.60), about two-thirds the width a seed-level interval has, because a seed's three lines share
+its board.
 
-Both nets win more than twice their share against every style, so the styles are far weaker than
-either net, as the spec expected. Since E and A played the same seeds and styles, the two can be
+Both nets' win rates are about twice their share or more against every style (A against
+production: 0.527, CI [0.489, 0.566]), so the styles are far weaker than either net, as the spec
+expected. Since E and A played the same seeds and styles, the two can be
 compared seed by seed (`runs/3d3/robust-paired.log`):
 
     paired by seed: E's win rate minus A's on the same seed and style (4 games each, one per seat)
     vs style:roads: difference +0.0213, standard error 0.0181, z +1.17 over 200 seeds
     vs style:army: difference +0.0150, standard error 0.0166, z +0.90 over 200 seeds
     vs style:production: difference +0.0312, standard error 0.0189, z +1.65 over 200 seeds
-    pooled (seed x style units): difference +0.0225, standard error 0.0103, z +2.18 over 600 units
+    pooled (per seed, the three styles averaged): difference +0.0225, standard error 0.0138, z +1.63 over 200 seeds
 
-This comparison was not set in advance; it is one of four lines, and its seed-by-style units share
-a board three at a time, so its standard error is somewhat too small. It is a hint that the league
-made E a little harder for the styles to beat (about 2 points), not a decision.
+This comparison was not set in advance, and none of its four lines reaches z 1.96. At most it hints
+that the league made E a little harder for its own training opponents to beat (about 2 points).
 
 The styles in these games (style seats only, both nets' arenas pooled):
 
@@ -148,9 +158,20 @@ The styles in these games (style seats only, both nets' arenas pooled):
 | `style:army@100+t` | 4,800 | 636 | 0.133 | 5.86 | 95.5 |
 | `style:production@100+t` | 4,800 | 731 | 0.152 | 6.06 | 93.8 |
 
-The three styles finish within 0.2 VP and 2 points of win share of each other: tripling a feature of
-the heuristic leaf value changes their play little at 100 simulations, because the heuristic
-search's prior ignores the weights and only the leaf values see them.
+The styles are distinguishable by result: on the same seeds both nets win 5 to 7 points more often
+against army than against production (paired by seed, `runs/3d3/robust-paired.log`):
+
+    net:E army - production: difference +0.0512, standard error 0.0163, z +3.15 over 200 seeds
+    net:E army - roads: difference +0.0238, standard error 0.0116, z +2.05 over 200 seeds
+    net:A army - production: difference +0.0675, standard error 0.0173, z +3.89 over 200 seeds
+    net:A army - roads: difference +0.0300, standard error 0.0131, z +2.29 over 200 seeds
+
+Whether they differ in how they play (roads, cities, development cards) is not measured: the arena
+records keep only an action count, so the per-style behaviour counts the ledger asked for could not
+be read from these games. The heuristic search's prior (`heuristic::prior`) does not read the
+weights, so a style's tilt reaches the search only through leaf values; whether that, or the tilts'
+size beside vp's weight (road_length 0.05 to 0.15, production 0.08 to 0.24, vp 1.0), limits how
+differently the styles play is open.
 
 ## Rulings the build made
 
@@ -169,13 +190,18 @@ search's prior ignores the weights and only the leaf values see them.
   grows by each promoted generation from the next generation on; a resume without the flag keeps
   the pool, other files are refused, a changed copy stops the loop. The gate is unchanged.
 - Robustness plays each style in turn (three arenas per net on the same seeds) and a pooled line.
-  The pooled line treats each seed-and-style pair as its own unit (600 per net); the three lines on
-  a seed share its board, so its interval is a little narrower than a seed-level one.
-- Arm E ran through `runs/p2/arm.sh` unchanged at encoder v4 from gen-034 upgraded (3d-2's ruling:
-  new loops start from the control's best upgraded, and A's chain starts at gen-034); pool nets were
+  `robust.log`'s pooled line treats each seed-and-style pair as its own unit (600 per net); the
+  three lines on a seed share its board, so this file reports the per-seed figures beside it.
+- Arm E ran through `runs/p2/arm.sh` unchanged at encoder v4 from gen-034 upgraded, where the
+  control started (preflight C12: results-3d2's "new loops start from the control's best, upgraded"
+  is for loops after these experiments, and starting from A's best would give E A's three hours as
+  well as its own); pool nets were
   upgraded by `net-upgrade`. The SPRTs' nets directory is `runs/3d3/nets`.
 - A second SPRT, E against D, from 6,002,000,000, and the paired and per-style lines above, were
   added by the controller; the spec's SPRT is E against A.
+- The per-style behaviour counts (roads, cities, development cards beside `ismcts@100+t`) the ledger
+  ruled for this file were not produced: the arena records hold no action list, and a new run was
+  not made. How differently the styles play stays open.
 - Fresh seeds: 6,000,000,000 (SPRT), 6,001,000,000 (robustness), 6,002,000,000 (E against D).
 
 ## Next
@@ -183,10 +209,10 @@ search's prior ignores the weights and only the leaf values see them.
 The league did not train a stronger net in three hours: E's best scored 0.250 against A's best
 and 0.244 against D's, and both SPRTs rule out a gain of 0.05 at alpha = beta = 0.05. Two costs
 sit beside the league's benefit at equal wall time: E trained on about 25% fewer positions a
-generation (half its games record two seats), and the styles it met are weak and alike, so a
-quarter of its league seats taught it little. The paired robustness line (+0.022, z 2.18, a
-post-hoc look) says the league may still have made E harder to exploit by styles; a test of that
-needs opponents it did not train against. The loop without a league stays the default; prioritised
-opponent sampling, exploiter agents, and recording the league seats too are the follow-ups, and
-styles that differ in their prior, not just their leaf value, would make the style half of the
-pool worth its seats.
+generation (half its games record two seats), and the styles, half its league seats, are far
+weaker than the net. The paired robustness line (+0.022, z 1.63, a post-hoc look) does not show
+that the league made E harder to exploit even by the styles it trained against; a test of
+robustness needs opponents it did not train against. The loop without a league stays the default; prioritised
+opponent sampling, exploiter agents, and recording the league seats too are the follow-ups;
+stronger styles (one candidate: styles whose prior, not just their leaf value, reads the tilt) would
+make the style half of the pool worth more.
