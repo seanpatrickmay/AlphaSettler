@@ -182,6 +182,8 @@ def _parser() -> argparse.ArgumentParser:
     fl.add_argument("--league", nargs="+", default=None, metavar="NET",
                     help="first run only: about half the self-play games seat two league bots, a past net (these "
                          "net files and every net the loop promotes) and a style (roads, army, production)")
+    fl.add_argument("--compound", action="store_true",
+                    help="first run only: self-play and both gate sides search compound build moves (+c)")
 
     nu = sub.add_parser("net-upgrade", help="rewrite an encoder v2 or v3 net for encoder v4, same moves")
     nu.add_argument("old", help="the encoder v2 or v3 weights file")
@@ -243,6 +245,8 @@ def _parser() -> argparse.ArgumentParser:
     lp.add_argument("--opening", default=None, metavar="FILE",
                     help="first run only: an opening model (ASOPEN) picks self-play's setup settlements, "
                          "and both gate sides are +o")
+    lp.add_argument("--compound", action="store_true",
+                    help="first run only: self-play and both gate sides search compound build moves (+c)")
     return p
 
 
@@ -521,13 +525,17 @@ def _fast_loop(args) -> int:
             print("error: a new fast loop needs --seed-dirs, --start-net and --first", file=sys.stderr)
             return 2
         FastLoop.init(root, args.seed_dirs, args.start_net, args.first, trades=args.trades,
-                      gumbel=args.gumbel, opening=args.opening, league=args.league)
+                      gumbel=args.gumbel, opening=args.opening, league=args.league, compound=args.compound)
     s = FastLoopSettings(generations=args.generations, games=args.games, window_games=args.window_games,
                          minutes=args.minutes, lr=args.lr, gate_seeds=args.gate_seeds,
                          gate_simulations=args.gate_simulations, device=args.device, threads=args.threads, opening=args.opening)
     loop = FastLoop(root, s)
     if args.trades and not loop.trades:
         print(f"error: {root} was set up without --trades, and a loop keeps the setting it was set up with",
+              file=sys.stderr)
+        return 2
+    if args.compound and not loop.compound:
+        print(f"error: {root} was set up without --compound, and a loop keeps the setting it was set up with",
               file=sys.stderr)
         return 2
     error = mode_mismatch(root, loop.gumbel, args.gumbel)
@@ -563,7 +571,7 @@ def _train_loop(args) -> int:
         steps_factor=args.steps_factor, batch=args.batch, width=args.width, rounds=args.rounds,
         gate_seeds=args.gate_seeds, gate_simulations=args.gate_simulations, max_turns=args.max_turns,
         device=args.device, threads=args.threads,
-        gumbel=args.gumbel, opening=args.opening,
+        gumbel=args.gumbel, opening=args.opening, compound=args.compound,
     )
     loop = Loop(Path(args.dir), s)
     try:

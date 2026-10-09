@@ -36,6 +36,10 @@ a generation this loop promoted before this one) and a scripted style (`style:ro
 `production`), at the fast budget; only the learner seats' decisions are recorded. The gate is
 unchanged. A resumed loop keeps its pool (state.json holds each set-up net's sha256, and the copies
 are checked before every self-play); it cannot be combined with `gumbel`.
+
+With `compound` (set when the loop is set up: `init(..., compound=True)`, `fast-loop --compound`;
+spec 3d-4), self-play searches compound build moves and both gate sides are `+c`. A resumed loop
+keeps it; it cannot be combined with `gumbel`. League seats keep their pool names (no `+c`).
 """
 
 from __future__ import annotations
@@ -101,24 +105,27 @@ class FastLoop:
         self.gumbel = self.state.get("gumbel")  # state files from before P2 have none: PUCT self-play
         self.opening = self.state.get("opening")  # the model's sha256; state files from before 3d-1b have none
         self.league = self.state.get("league")  # the set-up pool; state files from before 3d-3 have none
+        self.compound = bool(self.state.get("compound", False))  # state files from before 3d-4 have none
         rules = dict(TRADES) if self.trades else {"max_offers_per_turn": 0}
         self.config = {**rules, "max_turns": settings.max_turns}
 
     @staticmethod
     def init(root: str | Path, seed_dirs: list[str | Path], start_net: str | Path, first: int,
              trades: bool = False, gumbel: int | None = None, opening: str | Path | None = None,
-             league: list[str | Path] | None = None) -> None:
+             league: list[str | Path] | None = None, compound: bool = False) -> None:
         """Create `root` with `seed_dirs` (oldest first) as the starting records and `start_net`
         as the best net; generation numbering starts at `first`; `trades` plays the trading game;
         `gumbel` (simulations) makes every self-play move a Gumbel root search; `opening` (an
         opening model file, copied to `nets/opening.bin`) picks self-play's setup settlements;
         `league` (net files, copied to `nets/league-NNN.bin` in order) makes about half the self-play
-        games league games against them, the nets this loop promotes and the three styles."""
+        games league games against them, the nets this loop promotes and the three styles. `compound`
+        searches compound build moves in self-play and gates (league seats keep their pool names)."""
         root = Path(root)
         if (root / STATE).exists():
             raise ValueError(f"{root / STATE} exists: the loop is already set up (resume it with fast-loop)")
         if gumbel is not None:
             selfplay_mod.check_gumbel(gumbel)
+        selfplay_mod.check_compound(compound, gumbel)
         opening_sha256 = None if opening is None else selfplay_mod.check_opening(opening, gumbel)
         league_sha256 = None if league is None else selfplay_mod.check_league_nets(league, gumbel)
         nets = root / "nets"
@@ -137,7 +144,7 @@ class FastLoop:
         dirs = [str(Path(d).resolve()) for d in seed_dirs]
         state = {"seed_dirs": [{"dir": d, "games": count_games(Path(d))} for d in dirs],
                  "first": first, "trades": trades, "gumbel": gumbel, "opening": opening_sha256, "league": pool,
-                 "best": "start", "latest": "start", "generations": []}
+                 "compound": compound, "best": "start", "latest": "start", "generations": []}
         files.atomic_write_text(root / STATE, json.dumps(state, indent=1) + "\n")
 
     def _save(self) -> None:
@@ -209,6 +216,8 @@ class FastLoop:
             mode += " (setup settlements from the opening model)"
         if self.league is not None:
             mode += " (league)"
+        if self.compound:
+            mode += " (compound build moves)"
         print(f"{name}: selfplay with net:{best}{mode}", flush=True)
         sp = self._selfplay(k, gdir, best)
         print(f"{name}: train", flush=True)
@@ -236,7 +245,8 @@ class FastLoop:
                     tmp, lo, min(self.s.chunk_games, end - lo), config=self.config,
                     full_simulations=self.s.full_simulations, fast_simulations=self.s.fast_simulations,
                     full_probability=self.s.full_probability, net=best, nets_dir=self.nets, threads=self.s.threads,
-                    gumbel=self.gumbel, opening=self._opening_file(), league=pool)
+                    gumbel=self.gumbel, opening=self._opening_file(), league=pool,
+                    compound=self.compound)
                 files.fsync_file(tmp)
                 os.replace(tmp, path)
                 print(f"  {path.name}: seeds {lo}..{min(end, lo + self.s.chunk_games)}", flush=True)
@@ -256,7 +266,7 @@ class FastLoop:
         print(line, flush=True)
         league = None if pool is None else {**pool, "games": league_games, "seats": seats}
         return {"net": best, "seed_start": start, "gumbel": self.gumbel, "opening": self.opening, "league": league,
-                **totals}
+                "compound": self.compound, **totals}
 
     def _train(self, k: int, gdir: Path, games: int) -> dict:
         from alphasettler.train.fast import FastConfig, fast_train, load_pool
@@ -283,7 +293,7 @@ class FastLoop:
     def _gate(self, k: int, gdir: Path, best: str) -> dict:
         sims = self.s.gate_simulations
         self._opening_file()  # a +o gate reads nets/opening.bin: check it first
-        suffix = ("+t" if self.trades else "") + ("" if self.opening is None else "+o")
+        suffix = ("+t" if self.trades else "") + ("+c" if self.compound else "") + ("" if self.opening is None else "+o")
         candidate, baseline = f"net:{gen_name(k)}@{sims}{suffix}", f"net:{best}@{sims}{suffix}"
         tmp = files.temp_path(gdir / "gate.jsonl")
         recs, summary = arena_run(candidate, baseline, self.s.gate_seeds, GATE_SEED_START, self.s.threads,

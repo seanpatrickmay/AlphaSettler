@@ -20,7 +20,10 @@ the best net, trains from generation k-1's weights and is gated against the best
 
 With `opening` (`--opening FILE`, set when the run starts and kept on every resume, as `--gumbel`
 is; spec 3d-1b), the opening model FILE is copied to `nets/opening.bin`, picks every self-play setup
-settlement (generation 0's too), and both gate sides are `+o`. The manifest holds its sha256."""
+settlement (generation 0's too), and both gate sides are `+o`. The manifest holds its sha256.
+
+With `compound` (`--compound`, set when the run starts and kept on every resume; spec 3d-4), self-play
+(generation 0's too) searches compound build moves and both gate sides are `+c`."""
 
 from __future__ import annotations
 
@@ -77,6 +80,7 @@ class LoopSettings:
     threads: int | None = None
     gumbel: int | None = None  # Gumbel self-play simulations, kept from the run's first start
     opening: str | None = None  # an opening model file, copied to nets/opening.bin when the run starts
+    compound: bool = False  # compound build moves in self-play and gates, kept from the run's first start
 
 
 def gen_name(k: int) -> str:
@@ -137,6 +141,7 @@ def _check(s: LoopSettings) -> None:
         selfplay_mod.check_gumbel(s.gumbel)
     if s.opening is not None:
         selfplay_mod.check_opening(s.opening, s.gumbel)
+    selfplay_mod.check_compound(s.compound, s.gumbel)
     for lr in (s.warm_lr, s.lr):
         TrainConfig(lr=lr, steps_factor=s.steps_factor, batch=s.batch, threads=s.threads, width=s.width,
                     rounds=s.rounds).check()
@@ -153,6 +158,7 @@ class Loop:
         self.manifest = self._load()
         self.gumbel = self._mode(settings.gumbel)
         self.opening = self._opening_model(settings.opening)
+        self.compound = self._compound(settings.compound)
 
     def _load(self) -> dict:
         path = self.root / MANIFEST
@@ -197,6 +203,20 @@ class Loop:
         """Put the run's opening model at `nets/opening.bin` (copied from `--opening FILE` when it
         is not there) and check it is the model the run was set up with."""
         selfplay_mod.place_opening(self.root, self.nets, self.opening, self.s.opening)
+
+    def _compound(self, asked: bool) -> bool:
+        """Whether self-play and gates search compound build moves (`--compound`). Set when the run
+        starts and kept on every resume, as the fast loop keeps `--trades`; a manifest from before
+        3d-4 has none (without). Asking for it of a run set up without is a ValueError."""
+        if not (self.root / MANIFEST).exists():
+            self.manifest["compound"] = asked
+            return asked
+        stored = bool(self.manifest.get("compound", False))
+        if asked and not stored:
+            raise ValueError(f"{self.root} was set up without --compound, and a loop keeps the setting it was "
+                             f"set up with")
+        self.manifest["compound"] = stored
+        return stored
 
     def _save(self) -> None:
         files.atomic_write_text(self.root / MANIFEST, _dumps(self.manifest, indent=1))
@@ -285,6 +305,8 @@ class Loop:
             plan["gumbel"] = self.gumbel
         if self.opening is not None:  # only then: plans written before 3d-1b still match
             plan["opening"] = self.opening
+        if self.compound:  # only then: plans written before 3d-4 still match
+            plan["compound"] = True
         plan_path = gdir / "selfplay.json"
         if plan_path.exists():
             if json.loads(plan_path.read_text()) != plan:
@@ -305,7 +327,8 @@ class Loop:
                     tmp, lo, min(self.s.chunk_games, end - lo), config=self.config,
                     full_simulations=self.s.full_simulations, fast_simulations=self.s.fast_simulations,
                     full_probability=self.s.full_probability, net=net, nets_dir=self.nets, threads=self.s.threads,
-                    gumbel=self.gumbel, opening=None if self.opening is None else self.nets / OPENING_FILE)
+                    gumbel=self.gumbel, opening=None if self.opening is None else self.nets / OPENING_FILE,
+                    compound=self.compound)
                 files.fsync_file(tmp)
                 os.replace(tmp, path)
                 print(f"  {path.name}: seeds {lo}..{min(end, lo + self.s.chunk_games)}", flush=True)
@@ -379,7 +402,7 @@ class Loop:
         self._net(best)
         gdir = self.root / gen_name(k)
         sims = self.s.gate_simulations
-        suffix = "" if self.opening is None else "+o"
+        suffix = ("+c" if self.compound else "") + ("" if self.opening is None else "+o")
         candidate, baseline = f"net:{gen_name(k)}@{sims}{suffix}", f"net:{gen_name(best)}@{sims}{suffix}"
         tmp = files.temp_path(gdir / "gate.jsonl")
         recs, summary = arena_run(candidate, baseline, self.s.gate_seeds, GATE_SEED_START, self.s.threads,

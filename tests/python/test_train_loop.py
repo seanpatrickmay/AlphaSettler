@@ -297,7 +297,7 @@ def test_new_flags_apply_only_to_steps_not_yet_run(tmp_path, reference):
                                     {"window": 0}, {"gate_seeds": 0}, {"gate_simulations": 0}, {"device": "gpu"},
                                     {"warm_games": 10_000_001}, {"width": 0}, {"rounds": 0},
                                     {"width": NET_MAX_WIDTH + 1}, {"rounds": NET_MAX_ROUNDS + 1}, {"width": 2.5}, {"gumbel": 1},
-                                    {"opening": "missing-opening.bin"}])
+                                    {"opening": "missing-opening.bin"}, {"compound": True, "gumbel": 4}])
 def test_bad_settings_are_an_error_before_anything_is_written(tmp_path, change):
     with pytest.raises(ValueError):
         Loop(tmp_path / "run", replace(TINY, **change))
@@ -559,4 +559,42 @@ def test_a_train_loop_set_up_without_an_opening_model_refuses_one(tmp_path, refe
     with pytest.raises(ValueError, match="without --opening"):
         Loop(old, replace(TINY, opening=str(model)))
     assert Loop(old, TINY).opening is None
+    assert Loop(old, TINY).run() == 0, "resuming without the flag is accepted, nothing redone"
+
+
+def test_a_compound_train_loop_self_plays_and_gates_with_compound_moves(tmp_path):
+    d = tmp_path / "c"
+    s = replace(TINY, compound=True)
+    assert Loop(d, s).run() == 6
+    m = manifest(d)
+    assert m["compound"] is True
+    g0, g1 = m["generations"]
+    assert g0["selfplay"]["compound"] is True and g1["selfplay"]["compound"] is True
+    assert g1["gate"]["candidate"] == "net:gen-001@4+c" and g1["gate"]["baseline"].endswith("@4+c")
+    for k in (0, 1):
+        paths = sorted((d / f"gen-00{k}").glob("selfplay-local-*.jsonl.gz"))
+        assert paths
+        for path in paths:
+            for g in records.read(path):
+                assert g["selfplay"]["compound"] is True and g["belief_resets"] == 0
+    assert Loop(d, replace(s, compound=False)).compound is True, "a resume without the flag keeps it"
+    assert Loop(d, replace(s, compound=False)).run() == 0
+
+
+def test_a_train_loop_set_up_without_compound_moves_refuses_them(tmp_path, reference):
+    assert manifest(reference)["compound"] is False
+    assert all("+c" not in manifest(reference)["generations"][1]["gate"][side] for side in ("candidate", "baseline"))
+    with pytest.raises(ValueError, match="without --compound"):
+        Loop(reference, replace(TINY, compound=True))
+    r = cli("train-loop", "--dir", str(reference), "--generations", "1", "--compound")
+    assert r.returncode == 2 and "without --compound" in r.stderr
+    # A run set up before 3d-4 has no "compound" key: it reads as set up without.
+    old = tmp_path / "before-3d4"
+    shutil.copytree(reference, old)
+    m = manifest(old)
+    del m["compound"]
+    (old / "manifest.json").write_text(json.dumps(m))
+    with pytest.raises(ValueError, match="without --compound"):
+        Loop(old, replace(TINY, compound=True))
+    assert Loop(old, TINY).compound is False
     assert Loop(old, TINY).run() == 0, "resuming without the flag is accepted, nothing redone"

@@ -485,3 +485,69 @@ def test_a_league_games_result_is_the_value_target_of_its_two_recorded_seats(tmp
             vp = struct.unpack("<4f", b["vp"])
             assert vp == pytest.approx([g["vp"][(r + actor) % 4] / 10 for r in range(4)])
     assert pool_won and learner_won, f"{pool_won} games won by a pool seat, {learner_won} by a learner seat"
+
+
+def test_cli_fast_loop_with_compound_moves_self_plays_and_gates_with_them(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    r = cli("fast-loop", "--dir", str(root), "--generations", "2", "--first", "1", "--trades", "--compound",
+            "--seed-dirs", str(seed), "--start-net", str(tmp_path / "start.bin"), "--games", "2",
+            "--window-games", "3", "--minutes", "0.01", "--gate-seeds", "1", "--gate-simulations", "6",
+            "--device", "cpu", "--threads", "2")
+    assert r.returncode == 0, r.stderr
+    state = json.loads((root / STATE).read_text())
+    assert state["compound"] is True and [g["gen"] for g in state["generations"]] == [1, 2]
+    for g in state["generations"]:
+        assert g["selfplay"]["compound"] is True and g["selfplay"]["belief_resets"] == 0
+        assert g["gate"]["candidate"].endswith("@6+t+c") and g["gate"]["baseline"].endswith("@6+t+c"), g["gate"]
+        assert g["gate"]["belief_resets"] == 0
+    for k in (1, 2):
+        paths = sorted((root / gen_name(k)).glob("selfplay-local-*.jsonl.gz"))
+        assert paths
+        for path in paths:
+            for game in records.read(path):
+                assert game["selfplay"]["compound"] is True
+
+
+def test_cli_fast_loop_keeps_the_compound_setting_it_was_set_up_with(tmp_path):
+    root, seed = setup(tmp_path)  # set up without --compound
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).compound is False
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--compound")
+    assert r.returncode == 2 and "without --compound" in r.stderr, r.stderr
+    on = tmp_path / "on"
+    FastLoop.init(on, [seed], tmp_path / "start.bin", first=1, compound=True)
+    r = cli("fast-loop", "--dir", str(on), "--generations", "0")
+    assert r.returncode == 0, r.stderr
+    assert json.loads((on / STATE).read_text())["compound"] is True, "a resume without the flag keeps it"
+    r = cli("fast-loop", "--dir", str(on), "--generations", "0", "--compound")
+    assert r.returncode == 0, "the same setting repeats"
+    # A state file from before 3d-4 has no "compound" key: it reads as set up without.
+    state = json.loads((root / STATE).read_text())
+    del state["compound"]
+    (root / STATE).write_text(json.dumps(state))
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).compound is False
+
+
+def test_compound_moves_with_gumbel_are_refused_before_anything_is_written(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    with pytest.raises(ValueError, match="--compound and --gumbel"):
+        FastLoop.init(tmp_path / "bad", [seed], tmp_path / "start.bin", first=1, gumbel=100, compound=True)
+    assert not (tmp_path / "bad").exists()
+    r = cli("fast-loop", "--dir", str(tmp_path / "cli"), "--generations", "0", "--first", "1", "--seed-dirs", str(seed),
+            "--start-net", str(tmp_path / "start.bin"), "--compound", "--gumbel", "100")
+    assert r.returncode == 2 and "--compound and --gumbel" in r.stderr
+    assert not (tmp_path / "cli").exists()
+
+
+def test_a_compound_league_loop_keeps_its_pool_names_plain(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    FastLoop.init(root, [seed], tmp_path / "start.bin", first=1, trades=True, league=league_nets(tmp_path, 1),
+                  compound=True)
+    loop = FastLoop(root, FastLoopSettings(generations=0, **TINY))
+    assert loop.compound is True
+    assert loop.league_pool() == {"nets": ["net:league-000@100+t"],
+                                  "styles": [f"style:{s}@100+t" for s in LEAGUE_STYLES]}
