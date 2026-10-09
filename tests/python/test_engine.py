@@ -202,8 +202,22 @@ def test_run_match_records():
     recs = run_match("greedy", "random", 0, 3, 2)
     assert len(recs) == 12
     assert [r["candidate_seat"] for r in recs[:4]] == [0, 1, 2, 3]
-    assert set(recs[0]) == {"seed", "candidate_seat", "winner", "vp", "turns", "actions", "belief_resets"}
+    assert set(recs[0]) == {"seed", "candidate_seat", "winner", "vp", "turns", "actions", "belief_resets",
+                            "bank_trades", "searches", "compound_decisions"}
     assert isinstance(recs[0]["vp"], list) and len(recs[0]["vp"]) == 4
+
+
+def test_match_records_count_bank_trades_searches_and_compound_decisions_per_seat():
+    recs = run_match("ismcts@20+c", "ismcts@20", 0, 1, 2)
+    for r in recs:
+        c = r["candidate_seat"]
+        assert len(r["bank_trades"]) == len(r["searches"]) == len(r["compound_decisions"]) == 4
+        assert all(n > 0 for n in r["searches"])
+        assert [n for p, n in enumerate(r["compound_decisions"]) if p != c] == [0, 0, 0]
+    assert sum(r["compound_decisions"][r["candidate_seat"]] for r in recs) > 0
+    greedy = run_match("greedy", "random", 0, 2, 2)
+    assert all(r["searches"] == [0, 0, 0, 0] and r["compound_decisions"] == [0, 0, 0, 0] for r in greedy)
+    assert sum(sum(r["bank_trades"]) for r in greedy) > 0, "greedy trades with the bank"
 
 
 def test_run_match_is_deterministic_across_threads():

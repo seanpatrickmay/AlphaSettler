@@ -991,3 +991,363 @@ fn style_names_build_the_heuristic_bot_with_the_style_weights() {
         "a style plays other games than the default weights"
     );
 }
+
+/// A bot's diagnostics by name.
+fn diag(bot: &dyn Bot) -> std::collections::HashMap<&'static str, u64> {
+    bot.diagnostics().into_iter().collect()
+}
+
+#[test]
+fn the_compound_suffix_parses_in_any_order_and_only_once() {
+    use settler_bots::ismcts::{split_compound, split_search_flags};
+    assert_eq!(
+        split_compound("ismcts@100"),
+        Some(("ismcts@100".to_owned(), false))
+    );
+    assert_eq!(
+        split_compound("ismcts@100+c"),
+        Some(("ismcts@100".to_owned(), true))
+    );
+    assert_eq!(
+        split_search_flags("net:gen-034@100+c+t+o"),
+        Some(("net:gen-034@100+t+o".to_owned(), false, true))
+    );
+    assert_eq!(
+        split_search_flags("ismcts@100+g+t"),
+        Some(("ismcts@100+t".to_owned(), true, false))
+    );
+    assert_eq!(
+        split_search_flags("ismcts@100+c+g"),
+        None,
+        "not with a Gumbel root"
+    );
+    for name in [
+        "ismcts@100+c",
+        "ismcts@100+c+t+r5+s3",
+        "ismcts@100+t+c+r5+s3",
+        "ismcts@100+r5+s3+t+c",
+        "ismcts+c",
+    ] {
+        let bot = make_bot(name, 0).unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(diag(bot.as_ref())["compound"], 1, "{name}");
+    }
+    for name in ["ismcts@100", "ismcts@100+t+s3", "ismcts@100+g"] {
+        assert_eq!(
+            diag(make_bot(name, 0).unwrap().as_ref())["compound"],
+            0,
+            "{name}"
+        );
+    }
+    for bad in [
+        "ismcts@100+c+c",
+        "ismcts@100+c2",
+        "ismcts@100+C",
+        "ismcts@100+cc",
+        "ismcts@100+c+",
+        "ismcts+c@100",
+        "ismcts@100+c+g",
+        "ismcts@100+g+t+c",
+        "greedy+c",
+        "random+c",
+        "+c",
+    ] {
+        assert!(make_bot(bad, 0).is_none(), "{bad}");
+    }
+}
+
+/// Player 0 in Main right after setup holding exactly `hand` (its setup cards back in the bank).
+fn holding(seed: u64, hand: Hand, config: GameConfig) -> State {
+    let mut snap = main_with(seed, [0; 5], config).snapshot();
+    for r in 0..NUM_RESOURCES {
+        snap.bank[r] = snap.bank[r] + snap.players[0].hand[r] - hand[r];
+    }
+    snap.players[0].hand = hand;
+    State::from_snapshot(seed, config, &snap).unwrap()
+}
+
+const WOOD_FOR_ORE: Action = Action::MaritimeTrade {
+    give: Resource::Wood,
+    get: Resource::Ore,
+};
+
+/// 3 VP wins; player 0 has its 2 setup settlements and wood 8, wheat 2, ore 2. A city wins on the
+/// spot and is one ore short: its compound trades wood for ore (wood is the only resource with
+/// cards to spare beyond the city's cost), and only the city compounds start with that trade.
+fn city_one_trade_away(seed: u64) -> State {
+    holding(
+        seed,
+        [8, 0, 0, 2, 2],
+        GameConfig {
+            vp_to_win: 3,
+            ..no_trades()
+        },
+    )
+}
+
+/// spec 3d-4 Section 3: the bot plays the compound's trade and keeps the city as its plan; shown
+/// its own trade, it plays the city at its next decision without a search.
+#[test]
+fn a_compound_bot_plays_its_plan_unsearched() {
+    for seed in 0..3 {
+        let mut s = city_one_trade_away(seed);
+        let mut bot = IsmctsBot::new(seed, 600, 0).with_compound(true);
+        let first = decide(&mut bot, &s);
+        assert_eq!(first, WOOD_FOR_ORE, "seed {seed}");
+        let r = bot.take_last_search().expect("the trade was searched");
+        assert!(
+            matches!(r.plan[..], [Action::BuildCity(_)]),
+            "seed {seed}: plan {:?}",
+            r.plan
+        );
+        assert!(r
+            .compound_visits
+            .iter()
+            .any(|(m, v)| m[..] == [first, r.plan[0]] && *v > 0));
+        let before = diag(&bot);
+        let mut events = Vec::new();
+        s.apply_with(first, None, &mut events);
+        bot.observe(0, &events);
+        assert_eq!(decide(&mut bot, &s), r.plan[0], "seed {seed}");
+        assert!(
+            bot.take_last_search().is_none(),
+            "seed {seed}: a plan step is not searched"
+        );
+        let after = diag(&bot);
+        assert_eq!((before["searches"], after["searches"]), (1, 1));
+        assert_eq!((after["plan_steps"], after["compound_decisions"]), (1, 1));
+        assert_eq!(
+            after["belief_resets"], before["belief_resets"],
+            "seed {seed}: the belief followed the trade"
+        );
+    }
+}
+
+/// The plan goes on only if the game went as planned: after another trade than the plan's (a
+/// caller overriding the bot, shown to it), or the planned trade with no events shown (a caller
+/// that never feeds the bot), the bot searches again.
+#[test]
+fn a_compound_bot_drops_its_plan_when_the_game_goes_otherwise() {
+    let wood_for_brick = Action::MaritimeTrade {
+        give: Resource::Wood,
+        get: Resource::Brick,
+    };
+    for seed in 0..3 {
+        let mut s = city_one_trade_away(seed);
+        let mut bot = IsmctsBot::new(seed, 600, 0).with_compound(true);
+        assert_eq!(decide(&mut bot, &s), WOOD_FOR_ORE, "seed {seed}");
+        assert!(s.legal_actions().contains(&wood_for_brick));
+        let resets = diag(&bot)["belief_resets"];
+        let mut events = Vec::new();
+        s.apply_with(wood_for_brick, None, &mut events);
+        bot.observe(0, &events);
+        decide(&mut bot, &s);
+        assert!(
+            bot.take_last_search().is_some(),
+            "seed {seed}: searched after another trade"
+        );
+        assert_eq!(diag(&bot)["plan_steps"], 0);
+        assert_eq!(diag(&bot)["belief_resets"], resets, "seed {seed}");
+
+        let mut s = city_one_trade_away(seed);
+        let mut bot = IsmctsBot::new(seed, 600, 0).with_compound(true);
+        assert_eq!(decide(&mut bot, &s), WOOD_FOR_ORE, "seed {seed}");
+        s.apply(WOOD_FOR_ORE);
+        decide(&mut bot, &s);
+        assert!(
+            bot.take_last_search().is_some(),
+            "seed {seed}: searched with no events shown"
+        );
+        assert_eq!(diag(&bot)["plan_steps"], 0);
+    }
+}
+
+/// Self-play's visit sampling (spec 3d-4 Section 3): a sampled compound comes with its plan and a
+/// bare trade is never sampled alone; without compounds the draw is `sample_by_visits`'s.
+#[test]
+fn a_sampled_compound_carries_its_plan() {
+    use settler_bots::ismcts::{sample_by_visits, sample_move};
+    let legal = [Action::EndTurn, WOOD_FOR_ORE];
+    let visits = [2, 6];
+    let compounds = vec![
+        (vec![WOOD_FOR_ORE, Action::BuildCity(3)], 4),
+        (vec![WOOD_FOR_ORE, Action::BuyDev], 2),
+    ];
+    let mut seen = std::collections::HashSet::new();
+    for seed in 0..400 {
+        let (a, plan) = sample_move(&legal, &visits, &compounds, seed).unwrap();
+        assert_eq!(
+            Some(a),
+            sample_by_visits(&legal, &visits, seed),
+            "seed {seed}"
+        );
+        match (a, plan.as_slice()) {
+            (Action::EndTurn, []) => {}
+            (WOOD_FOR_ORE, [Action::BuildCity(3)]) | (WOOD_FOR_ORE, [Action::BuyDev]) => {}
+            other => panic!("seed {seed}: {other:?}"),
+        }
+        seen.insert(plan);
+    }
+    assert_eq!(seen.len(), 3, "every move is drawn");
+    assert_eq!(sample_move(&legal, &[0, 0], &compounds, 1), None);
+    let plain = [Action::EndTurn, Action::BuyDev, Action::Roll];
+    for seed in 0..50 {
+        assert_eq!(
+            sample_move(&plain, &[1, 2, 3], &[], seed).map(|(a, _)| a),
+            sample_by_visits(&plain, &[1, 2, 3], seed)
+        );
+    }
+    // Through the bot: the sampled move is the recorded action, and a sampled trade starts a plan.
+    for seed in 0..12 {
+        let s = city_one_trade_away(seed);
+        let mut bot = IsmctsBot::new(seed, 60, 0).with_compound(true);
+        let opts = MoveOptions {
+            simulations: 60,
+            noise: None,
+            sample: Some(seed),
+        };
+        let a = bot.act_with(&s.observation(0), &s.legal_actions(), &opts);
+        let r = bot.take_last_search().unwrap();
+        assert_eq!(r.action, a);
+        assert_eq!(
+            matches!(a, Action::MaritimeTrade { .. }),
+            !r.plan.is_empty(),
+            "seed {seed}: {a:?} then {:?}",
+            r.plan
+        );
+    }
+}
+
+/// Wood 4 off every port: the four bank trades enable no build (a road would need the wood the
+/// trade gives away), so a +c bot's move set is the end of the turn alone: played without a
+/// search, nothing to record. A plain bot searches the five moves.
+#[test]
+fn a_compound_root_whose_trades_enable_nothing_is_played_unsearched() {
+    for seed in 0..3 {
+        let mut s = common::blank(seed, Phase::Main);
+        let ports = s
+            .board
+            .specific_port_nodes
+            .iter()
+            .fold(s.board.generic_port_nodes, |m, &x| m | x);
+        let n = (0..54u8).find(|&n| (ports >> n) & 1 == 0).unwrap();
+        s.players[0].settlements = 1u64 << n;
+        common::give(&mut s, 0, [4, 0, 0, 0, 0]);
+        let (obs, legal) = (s.observation(0), s.legal_actions());
+        let mut plain = IsmctsBot::new(seed, 30, 0);
+        plain.act(&obs, &legal);
+        assert!(plain.take_last_search().is_some(), "seed {seed}");
+        let mut bot = IsmctsBot::new(seed, 30, 0).with_compound(true);
+        assert_eq!(bot.act(&obs, &legal), Action::EndTurn, "seed {seed}");
+        assert!(bot.take_last_search().is_none(), "seed {seed}");
+        assert_eq!(diag(&bot)["searches"], 0);
+    }
+}
+
+/// Whole games with two +c seats: every move legal (`play_game` panics otherwise), no belief
+/// reset, compounds searched and played by the +c seats only.
+#[test]
+fn games_of_compound_bots_play_through_with_no_belief_resets() {
+    let (mut decisions, mut steps) = (0, 0);
+    for seed in 0..3u64 {
+        let mut bots: Vec<Box<dyn Bot>> = (0..4u64)
+            .map(|p| {
+                let name = if p % 2 == 0 {
+                    "ismcts@60+c"
+                } else {
+                    "ismcts@60"
+                };
+                make_bot(name, seed * 4 + p).unwrap()
+            })
+            .collect();
+        let (_, _, turns, _) = play_game(seed, no_trades(), &mut bots);
+        assert!(turns > 0);
+        assert_eq!(belief_resets(bots.iter().map(|b| &**b)), 0, "seed {seed}");
+        for (p, b) in bots.iter().enumerate() {
+            let d = diag(b.as_ref());
+            if p % 2 == 0 {
+                decisions += d["compound_decisions"];
+                steps += d["plan_steps"];
+            } else {
+                assert_eq!(
+                    (d["compound"], d["compound_decisions"], d["plan_steps"]),
+                    (0, 0, 0)
+                );
+            }
+        }
+    }
+    assert!(
+        decisions > 0 && steps > 0,
+        "compound decisions {decisions}, plan steps {steps}"
+    );
+}
+
+/// Counts the bank trades its bot plays.
+struct BankTrades {
+    bot: Box<dyn Bot>,
+    n: Arc<AtomicU32>,
+}
+
+impl Bot for BankTrades {
+    fn name(&self) -> &'static str {
+        "bank-trades"
+    }
+
+    fn observe(&mut self, viewer: PlayerId, events: &[Event]) {
+        self.bot.observe(viewer, events);
+    }
+
+    fn act(&mut self, obs: &Observation, legal: &[Action]) -> Action {
+        let a = self.bot.act(obs, legal);
+        if matches!(a, Action::MaritimeTrade { .. }) {
+            self.n.fetch_add(1, Ordering::Relaxed);
+        }
+        a
+    }
+}
+
+#[test]
+fn a_played_game_counts_each_seats_bank_trades() {
+    use settler_bots::arena::play_counted;
+    let mut total = 0;
+    for seed in 0..2u64 {
+        let counts: Vec<Arc<AtomicU32>> = (0..4).map(|_| Arc::new(AtomicU32::new(0))).collect();
+        let mut bots: Vec<Box<dyn Bot>> = (0..4)
+            .map(|p| {
+                Box::new(BankTrades {
+                    bot: make_bot("greedy", seed * 4 + p as u64).unwrap(),
+                    n: counts[p].clone(),
+                }) as Box<dyn Bot>
+            })
+            .collect();
+        let g = play_counted(seed, no_trades(), &mut bots);
+        let want: Vec<u32> = counts.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+        assert_eq!(g.bank_trades.to_vec(), want, "seed {seed}");
+        total += want.iter().sum::<u32>();
+        let mut fresh: Vec<Box<dyn Bot>> = (0..4)
+            .map(|p| make_bot("greedy", seed * 4 + p as u64).unwrap())
+            .collect();
+        assert_eq!(
+            (g.winner, g.vp, g.turns, g.actions),
+            play_game(seed, no_trades(), &mut fresh)
+        );
+    }
+    assert!(total > 0, "greedy trades with the bank");
+}
+
+#[test]
+fn match_records_count_each_seats_searches_and_compound_decisions() {
+    let records = run_match("ismcts@30+c", "ismcts@30", 0..2, no_trades(), 2).unwrap();
+    let mut candidate = 0;
+    for r in &records {
+        let c = r.candidate_seat as usize;
+        for p in 0..4 {
+            assert!(r.searches[p] > 0, "seat {p}: {r:?}");
+            assert!(r.compound_decisions[p] <= r.searches[p], "seat {p}: {r:?}");
+            if p != c {
+                assert_eq!(r.compound_decisions[p], 0, "seat {p}: {r:?}");
+            }
+        }
+        candidate += r.compound_decisions[c];
+    }
+    assert!(candidate > 0, "the +c seat searched compound moves");
+}

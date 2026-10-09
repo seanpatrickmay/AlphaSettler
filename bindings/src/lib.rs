@@ -318,6 +318,9 @@ fn run_match<'py>(
         d.set_item("turns", r.turns)?;
         d.set_item("actions", r.actions)?;
         d.set_item("belief_resets", r.belief_resets)?;
+        d.set_item("bank_trades", r.bank_trades.to_vec())?;
+        d.set_item("searches", r.searches.to_vec())?;
+        d.set_item("compound_decisions", r.compound_decisions.to_vec())?;
         out.append(d)?;
     }
     Ok(out)

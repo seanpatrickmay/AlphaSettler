@@ -353,3 +353,36 @@ fn net_bots_with_and_without_the_offer_suffix_play_the_trading_game() {
         "no answer or confirmation was searched"
     );
 }
+
+#[test]
+fn compound_net_names_build_compound_bots_in_any_order() {
+    let dir = nets_dir("compound");
+    let names = ["net:tiny@16+c", "net:tiny@16+t+c", "net:tiny@16+c+s2+t"];
+    let roster = Roster::new(&names, &dir).unwrap();
+    for name in names {
+        let bot = roster.make(name, 0).unwrap();
+        let d: std::collections::HashMap<_, _> = bot.diagnostics().into_iter().collect();
+        assert_eq!(
+            (bot.name(), d["compound"], d["gumbel_root"]),
+            ("net", 1, 0),
+            "{name}"
+        );
+    }
+    let plain = Roster::new(&["net:tiny@16+t"], &dir)
+        .unwrap()
+        .make("net:tiny@16+t", 0)
+        .unwrap();
+    let d: std::collections::HashMap<_, _> = plain.diagnostics().into_iter().collect();
+    assert_eq!(d["compound"], 0);
+    for bad in [
+        "net:tiny@16+c+g",
+        "net:tiny@16+g+c",
+        "net:tiny@16+c+c",
+        "net:tiny+c@16",
+    ] {
+        let e = Roster::new(&[bad], &dir)
+            .err()
+            .unwrap_or_else(|| panic!("{bad} was accepted"));
+        assert!(e.contains("unknown bot"), "{bad}: {e}");
+    }
+}

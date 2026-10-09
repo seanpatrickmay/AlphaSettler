@@ -1,7 +1,7 @@
 //! Network bots (spec Section 3): `net:NAME` (1,000 simulations), `net:NAME@N` and
-//! `net:NAME@N+rD`, each optionally with `+sK`, `+t`, `+g` and `+o` (an opening model picks the
-//! setup settlements, spec 3d-1 Section 4.5) in any order (`+g` is split off by
-//! `ismcts::split_gumbel` before `parse_net_name` reads the rest), with the same limits on N, D
+//! `net:NAME@N+rD`, each optionally with `+sK`, `+t`, `+g`, `+c` and `+o` (an opening model picks
+//! the setup settlements, spec 3d-1 Section 4.5) in any order (`+g` and `+c` are split off by
+//! `ismcts::split_search_flags` before `parse_net_name` reads the rest), with the same limits on N, D
 //! and K as `ismcts`: IsmctsBot searching with a `NetEvaluator`. NAME is `[A-Za-z0-9_-]{1,64}`
 //! and names the file `<nets-dir>/NAME.bin`; the character set keeps every name a plain file name
 //! inside the directory.
@@ -42,8 +42,8 @@ pub struct NetName<'a> {
 
 /// `net:NAME` -> 1,000 simulations, no rollout; `net:NAME@N` -> N simulations; `net:NAME@N+rD`
 /// -> D rollout moves. `+sK`, `+t` and `+o` set the other fields; the suffixes come in any order
-/// (`ismcts::split_suffixes`). A name with `+g` gives `None`: callers split it off first with
-/// `ismcts::split_gumbel`, as `Roster` does.
+/// (`ismcts::split_suffixes`). A name with `+g` or `+c` gives `None`: callers split them off first
+/// with `ismcts::split_search_flags`, as `Roster` does.
 pub fn parse_net_name(name: &str) -> Option<NetName<'_>> {
     let (canon, flags) = ismcts::split_suffixes(name)?;
     let (canon, setup_factor) = ismcts::split_setup(&canon)?;

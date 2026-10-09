@@ -43,7 +43,8 @@ pub const STYLE_PREFIX: &str = "style:";
 /// A fresh bot by name, with its own random stream seeded from `seed`. Besides `BOT_NAMES`,
 /// `ismcts@N` (N simulations) and `ismcts@N+rD` (plus D greedy rollout moves per leaf), either
 /// with `+sK` to search setup settlements with K times the simulations, `+t` to make domestic
-/// offers and `+g` to search the root by Gumbel sequential halving, the suffixes in any order.
+/// offers and `+g` to search the root by Gumbel sequential halving and `+c` to search compound
+/// build moves (not with `+g`), the suffixes in any order.
 /// `style:STYLE` takes everything an `ismcts` name takes after `ismcts` (3d-3: the same bot with
 /// the style's heuristic weights). `net:` names (and `+o`, which only they take) need files
 /// loaded first: use a `Roster`.
@@ -52,7 +53,7 @@ pub fn make_bot(name: &str, seed: u64) -> Option<Box<dyn Bot>> {
         "random" => Some(Box::new(random::RandomBot::new(seed))),
         "greedy" => Some(Box::new(greedy::GreedyBot::new(seed))),
         _ => {
-            let (name, gumbel) = ismcts::split_gumbel(name)?;
+            let (name, gumbel, compound) = ismcts::split_search_flags(name)?;
             let (name, offers) = ismcts::split_trades(&name)?;
             let (base, factor) = ismcts::split_setup(&name)?;
             let bot = match base.strip_prefix(STYLE_PREFIX) {
@@ -65,7 +66,8 @@ pub fn make_bot(name: &str, seed: u64) -> Option<Box<dyn Bot>> {
             Some(Box::new(
                 bot.with_setup_factor(factor)
                     .with_offers(offers)
-                    .with_gumbel(gumbel),
+                    .with_gumbel(gumbel)
+                    .with_compound(compound),
             ))
         }
     }
@@ -96,7 +98,8 @@ pub fn unknown_bot(name: &str) -> String {
          to add D greedy rollout moves, net:NAME[@N[+rD]] for <nets-dir>/NAME.bin, style:STYLE[@N[+rD]] for a \
          league style (roads, army or production); +sK on any \
          searches setup settlements with K times the simulations, +t lets any make domestic \
-         offers, +g makes any search the root by Gumbel sequential halving, +o lets a net: bot \
+         offers, +g makes any search the root by Gumbel sequential halving, +c makes any search \
+         compound build moves (not with +g), +o lets a net: bot \
          pick its setup settlements with <nets-dir>/{OPENING_FILE})"
     )
 }
@@ -117,8 +120,8 @@ impl Roster {
         let mut nets: Vec<(String, Arc<Weights>)> = Vec::new();
         let mut opening = None;
         for &name in names {
-            // `+g` changes how a bot searches, not which files it loads.
-            let base = ismcts::split_gumbel(name).map(|(b, _)| b);
+            // `+g` and `+c` change how a bot searches, not which files it loads.
+            let base = ismcts::split_search_flags(name).map(|(b, _, _)| b);
             if let Some(n) = base.as_deref().and_then(netbot::parse_net_name) {
                 if !nets.iter().any(|(net, _)| net == n.net) {
                     nets.push((n.net.to_owned(), netbot::load_net(nets_dir, n.net)?));
@@ -136,14 +139,15 @@ impl Roster {
     /// A fresh bot; `None` for an unknown name, or a `net:` name whose network (or, with `+o`,
     /// opening model) this roster did not load.
     pub fn make(&self, name: &str, seed: u64) -> Option<Box<dyn Bot>> {
-        let (base, gumbel) = ismcts::split_gumbel(name)?;
+        let (base, gumbel, compound) = ismcts::split_search_flags(name)?;
         match netbot::parse_net_name(&base) {
             Some(n) => {
                 let (_, w) = self.nets.iter().find(|(net, _)| net == n.net)?;
                 let mut bot = netbot::net_bot(seed, w.clone(), n.simulations, n.rollout)
                     .with_setup_factor(n.setup_factor)
                     .with_offers(n.offers)
-                    .with_gumbel(gumbel);
+                    .with_gumbel(gumbel)
+                    .with_compound(compound);
                 if n.opening {
                     bot = bot.with_opening(self.opening.clone()?);
                 }

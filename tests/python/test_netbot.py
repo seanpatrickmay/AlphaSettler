@@ -142,3 +142,26 @@ def test_only_names_with_the_gumbel_suffix_search_the_root_by_gumbel(nets, name,
 def test_malformed_gumbel_names_are_unknown_bots(nets, bad):
     with pytest.raises(ValueError, match="unknown bot"):
         Bot(bad, 0, nets_dir=str(nets))
+
+
+@pytest.mark.parametrize(
+    "name, compound",
+    [
+        ("net:tiny@10", 0),
+        ("net:tiny@10+t+g", 0),
+        ("net:tiny@10+c", 1),
+        ("net:tiny@10+t+c+s2", 1),
+        ("net:tiny@10+c+t", 1),
+        ("ismcts@10", 0),
+        ("ismcts@10+c", 1),
+    ],
+)
+def test_only_names_with_the_compound_suffix_search_compound_moves(nets, name, compound):
+    assert Bot(name, 0, nets_dir=str(nets)).diagnostics()["compound"] == compound
+
+
+@pytest.mark.parametrize("bad", ["net:tiny@10+c+c", "net:tiny+c@10", "net:tiny@10+C", "ismcts@10+cc",
+                                 "ismcts@10+c+g", "net:tiny@10+g+t+c", "greedy+c"])
+def test_malformed_compound_names_are_unknown_bots(nets, bad):
+    with pytest.raises(ValueError, match="unknown bot"):
+        Bot(bad, 0, nets_dir=str(nets))

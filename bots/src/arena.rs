@@ -5,7 +5,7 @@ use crate::netbot::DEFAULT_NETS_DIR;
 use crate::{Bot, Roster};
 use settler_engine::legal::legal_actions;
 use settler_engine::rng::mix;
-use settler_engine::{Event, GameConfig, PlayerId, State, NUM_PLAYERS};
+use settler_engine::{Action, Event, GameConfig, PlayerId, State, NUM_PLAYERS};
 use std::ops::Range;
 use std::path::Path;
 
@@ -21,6 +21,12 @@ pub struct GameRecord {
     /// Belief resets over every seat at the game's end (bots that report none count 0); every
     /// arena run must show 0 (spec Section 2).
     pub belief_resets: u64,
+    /// 3d-4: the bank (maritime) trades each seat made.
+    pub bank_trades: [u32; NUM_PLAYERS],
+    /// 3d-4: each seat's searched decisions and those whose move set held a compound move (the
+    /// `searches` and `compound_decisions` diagnostics; 0 for a bot that reports none).
+    pub searches: [u64; NUM_PLAYERS],
+    pub compound_decisions: [u64; NUM_PLAYERS],
 }
 
 /// Largest seed range one `run_match` call accepts.
@@ -81,18 +87,47 @@ pub fn belief_resets<'a>(bots: impl IntoIterator<Item = &'a dyn Bot>) -> u64 {
         .sum()
 }
 
+/// Each seat's diagnostic `name`, 0 for a bot that does not report it.
+pub fn seat_counts(bots: &[Box<dyn Bot>], name: &str) -> [u64; NUM_PLAYERS] {
+    std::array::from_fn(|p| {
+        bots[p]
+            .diagnostics()
+            .into_iter()
+            .find(|&(n, _)| n == name)
+            .map_or(0, |(_, v)| v)
+    })
+}
+
+/// What `play_counted` reports of one game.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayedGame {
+    pub winner: Option<u8>,
+    pub vp: [u8; NUM_PLAYERS],
+    pub turns: u32,
+    pub actions: u32,
+    /// Bank (maritime) trades by seat.
+    pub bank_trades: [u32; NUM_PLAYERS],
+}
+
 /// Play one game. Returns (winner, final VP, turns, actions). Panics if a bot picks an illegal action.
 pub fn play_game(
     seed: u64,
     config: GameConfig,
     bots: &mut [Box<dyn Bot>],
 ) -> (Option<u8>, [u8; NUM_PLAYERS], u32, u32) {
+    let g = play_counted(seed, config, bots);
+    (g.winner, g.vp, g.turns, g.actions)
+}
+
+/// `play_game`, also counting each seat's bank trades.
+pub fn play_counted(seed: u64, config: GameConfig, bots: &mut [Box<dyn Bot>]) -> PlayedGame {
     assert_eq!(bots.len(), NUM_PLAYERS, "a game needs exactly 4 bots");
     let mut s = State::new(seed, config);
     let mut buf = Vec::with_capacity(512);
     let mut feed = EventFeed::default();
     let mut step = Vec::with_capacity(16);
     let mut actions = 0u32;
+    let mut bank_trades = [0u32; NUM_PLAYERS];
     while !s.is_over() {
         legal_actions(&s, &mut buf);
         let actor = s.current_actor() as usize;
@@ -104,17 +139,21 @@ pub fn play_game(
             bots[actor].name(),
             s.phase
         );
+        if matches!(a, Action::MaritimeTrade { .. }) {
+            bank_trades[actor] += 1;
+        }
         step.clear();
         s.apply_with(a, None, &mut step);
         feed.push(&step);
         actions += 1;
     }
-    (
-        s.winner(),
-        std::array::from_fn(|p| s.total_vp(p)),
-        s.turn,
+    PlayedGame {
+        winner: s.winner(),
+        vp: std::array::from_fn(|p| s.total_vp(p)),
+        turns: s.turn,
         actions,
-    )
+        bank_trades,
+    }
 }
 
 /// Every seed in `seeds`, four games each (candidate in seat 0..4), spread over `threads`
@@ -184,15 +223,18 @@ pub fn run_match_by(
                             let mut bots: Vec<Box<dyn Bot>> = (0..NUM_PLAYERS)
                                 .map(|seat| make(seat == cand, bot_seed(seed, seat)))
                                 .collect();
-                            let (winner, vp, turns, actions) = play_game(seed, config, &mut bots);
+                            let g = play_counted(seed, config, &mut bots);
                             out.push(GameRecord {
                                 seed,
                                 candidate_seat: cand as u8,
-                                winner,
-                                vp,
-                                turns,
-                                actions,
+                                winner: g.winner,
+                                vp: g.vp,
+                                turns: g.turns,
+                                actions: g.actions,
                                 belief_resets: belief_resets(bots.iter().map(|b| b.as_ref())),
+                                bank_trades: g.bank_trades,
+                                searches: seat_counts(&bots, "searches"),
+                                compound_decisions: seat_counts(&bots, "compound_decisions"),
                             });
                         }
                     }
