@@ -9,7 +9,8 @@ no search and no decision; the block then also holds `opening_sha256`, `opening_
 `opening_top`. With `league` (3d-3: `{"nets": [...], "styles": [...]}`, bot names), about half the games seat
 two of them, a past net and a style, whose moves are not recorded; the block then also holds
 `league_probability`, `league_nets` and `league_styles`, and a league game's record names its seats under
-`league` (null at a learner seat)."""
+`league` (null at a learner seat). With `compound` (3d-4), every learner seat searches compound build moves;
+the block then also holds `"compound": true`."""
 
 from __future__ import annotations
 
@@ -30,6 +31,8 @@ OPENING_WITH_GUMBEL = ("--opening and --gumbel cannot be used together: Gumbel s
                        "it was (spec 3d-1b Section 3)")
 LEAGUE_WITH_GUMBEL = ("--league and --gumbel cannot be used together: Gumbel self-play stays the P2 measurement "
                       "it was (spec 3d-3 Section 4)")
+COMPOUND_WITH_GUMBEL = ("--compound and --gumbel cannot be used together: compound moves are not searched with a "
+                        "Gumbel root (spec 3d-4 Section 4)")
 
 
 def check_gumbel(simulations: int) -> None:
@@ -47,6 +50,12 @@ def check_opening(path: str | Path, gumbel: int | None = None) -> str:
         raise ValueError(OPENING_WITH_GUMBEL)
     opening_forward(str(path), [])
     return files.sha256_file(path)
+
+
+def check_compound(compound: bool, gumbel: int | None = None) -> None:
+    """ValueError if compound moves are asked for with Gumbel self-play."""
+    if compound and gumbel is not None:
+        raise ValueError(COMPOUND_WITH_GUMBEL)
 
 
 def check_league(league: dict, nets_dir: str | Path, gumbel: int | None = None) -> None:
@@ -137,10 +146,11 @@ def league_mismatch(root: str | Path, stored: dict | None, asked: list[str | Pat
 
 def settings(net: str | None, nets_dir: str | Path, full_simulations: int, fast_simulations: int,
              full_probability: float, gumbel: int | None = None, opening: str | Path | None = None,
-             league: dict | None = None) -> dict:
+             league: dict | None = None, compound: bool = False) -> dict:
     """The `selfplay` block. Checks every argument, loads the net, reads the opening model and checks
     the league's bots, without playing a game. With `gumbel`, the PUCT arguments are not used;
-    `opening` or `league` with `gumbel` is a ValueError."""
+    `opening`, `league` or `compound` with `gumbel` is a ValueError."""
+    check_compound(compound, gumbel)
     opening_sha256 = None if opening is None else check_opening(opening, gumbel)
     if league is not None:
         check_league(league, nets_dir, gumbel)
@@ -177,6 +187,8 @@ def settings(net: str | None, nets_dir: str | Path, full_simulations: int, fast_
     if league is not None:  # only then: records without a league are unchanged
         block.update(league_probability=LEAGUE_PROBABILITY, league_nets=list(league["nets"]),
                      league_styles=list(league["styles"]))
+    if compound:  # only then: records without compound moves are unchanged
+        block["compound"] = True
     return block
 
 
@@ -184,12 +196,13 @@ def write_explore(out: str | Path, seed_start: int, games: int, *, config: dict,
                   fast_simulations: int, full_probability: float, net: str | None = None,
                   nets_dir: str | Path | None = None, threads: int | None = None,
                   counts: dict | None = None, gumbel: int | None = None, opening: str | Path | None = None,
-                  league: dict | None = None) -> dict:
+                  league: dict | None = None, compound: bool = False) -> dict:
     """Play `games` games from `seed_start` and write them to the new file `out`. Arguments are
     checked before the file is created. `counts` (if given) is updated as batches finish, so a
     caller that catches KeyboardInterrupt still knows what was kept."""
     nets_dir = DEFAULT_NETS_DIR if nets_dir is None else nets_dir
-    meta = settings(net, nets_dir, full_simulations, fast_simulations, full_probability, gumbel, opening, league)
+    meta = settings(net, nets_dir, full_simulations, fast_simulations, full_probability, gumbel, opening, league,
+                    compound)
     counts = {} if counts is None else counts
     counts.update(games=0, decisions=0, full_decisions=0, belief_resets=0)
     threads = threads or os.cpu_count() or 1
@@ -200,7 +213,7 @@ def write_explore(out: str | Path, seed_start: int, games: int, *, config: dict,
                                      full_probability, config, net, str(nets_dir), gumbel,
                                      None if opening is None else str(opening),
                                      None if league is None else list(league["nets"]),
-                                     None if league is None else list(league["styles"]))
+                                     None if league is None else list(league["styles"]), compound)
             for g in batch:
                 w.write_game({**g, "selfplay": meta}, config)
                 counts["games"] += 1

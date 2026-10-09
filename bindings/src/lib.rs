@@ -448,10 +448,11 @@ fn selfplay<'py>(
 /// `league_nets` and `league_styles` (bot names, both or neither, loaded from `nets_dir`), about
 /// half the games seat two of them, a past net and a style, whose moves are not recorded; a
 /// league game's dict names them under `league` (spec 3d-3 Section 2); refused with `gumbel`.
-/// With `net`, every learner seat is the network `<nets_dir>/<net>.bin` (loaded once);
-/// otherwise the heuristic. Decisions carry no observations. Releases the GIL while games run.
+/// With `compound`, every learner seat searches compound build moves (spec 3d-4; league seats play
+/// their pool names as given); refused with `gumbel`. With `net`, every learner seat is the
+/// network `<nets_dir>/<net>.bin` (loaded once); otherwise the heuristic. Decisions carry no observations. Releases the GIL while games run.
 #[pyfunction]
-#[pyo3(signature = (seed_start, games, threads, full_simulations, fast_simulations, full_probability, config=None, net=None, nets_dir=None, gumbel=None, opening=None, league_nets=None, league_styles=None))]
+#[pyo3(signature = (seed_start, games, threads, full_simulations, fast_simulations, full_probability, config=None, net=None, nets_dir=None, gumbel=None, opening=None, league_nets=None, league_styles=None, compound=false))]
 #[allow(clippy::too_many_arguments)]
 fn selfplay_explore<'py>(
     py: Python<'py>,
@@ -468,6 +469,7 @@ fn selfplay_explore<'py>(
     opening: Option<PathBuf>,
     league_nets: Option<Vec<String>>,
     league_styles: Option<Vec<String>>,
+    compound: bool,
 ) -> PyResult<Bound<'py, PyList>> {
     use settler_bots::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
     use settler_bots::netbot::{load_net, DEFAULT_NETS_DIR, NET_BATCH};
@@ -486,6 +488,7 @@ fn selfplay_explore<'py>(
             ..Exploration::standard()
         },
     };
+    let ex = Exploration { compound, ..ex };
     ex.validate().map_err(value_error)?;
     if games == 0 {
         return Err(value_error("games must be positive"));

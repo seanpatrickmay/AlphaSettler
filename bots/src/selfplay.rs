@@ -13,6 +13,9 @@
 //! 3d-3: with a league (`play_with_league`, `run_with_league`) about half the games
 //! (`LEAGUE_PROBABILITY`) seat two pool bots, a past net and a scripted style, built from their
 //! names by a `Roster` (`League`); their moves are neither searched by the learner nor recorded.
+//! 3d-4: with `Exploration::compound`, every learner seat searches compound build moves (`+c`); a
+//! compound's later steps are played unsearched and record no decision, and its visits sit on its
+//! first trade's entry of the decision's `visits`. League seats play their pool names as given.
 
 use crate::arena::{belief_resets, bot_seed, split_seeds, EventFeed, MAX_SEEDS};
 use crate::heuristic::{HeuristicEvaluator, DEFAULT_WEIGHTS};
@@ -95,6 +98,9 @@ pub struct Exploration {
     /// search of `full_simulations` recorded with its improved policy. Noise, playout cap
     /// randomization and visit sampling must be off: the draw is the exploration (`validate`).
     pub gumbel: bool,
+    /// 3d-4: every learner seat searches compound build moves (`+c`); league seats keep their pool
+    /// names. Not with `gumbel` (`validate`).
+    pub compound: bool,
 }
 
 impl Exploration {
@@ -107,6 +113,7 @@ impl Exploration {
             noise: None,
             sample_turns: 0,
             gumbel: false,
+            compound: false,
         }
     }
 
@@ -119,6 +126,7 @@ impl Exploration {
             noise: Some(NOISE),
             sample_turns: SAMPLE_TURNS,
             gumbel: false,
+            compound: false,
         }
     }
 
@@ -132,6 +140,7 @@ impl Exploration {
             noise: None,
             sample_turns: 0,
             gumbel: true,
+            compound: false,
         }
     }
 
@@ -163,6 +172,13 @@ impl Exploration {
             return Err(
                 "Gumbel self-play searches every move in full, with no root noise and no \
                         visit sampling: the Gumbel draw is the exploration"
+                    .into(),
+            );
+        }
+        if self.compound && self.gumbel {
+            return Err(
+                "compound moves are not searched with Gumbel self-play: the Gumbel root does not \
+                 take them (spec 3d-4 Section 4)"
                     .into(),
             );
         }
@@ -318,6 +334,9 @@ where
         } else {
             RootMode::Puct
         },
+        // 3d-4: compound build moves for every learner seat, each bot playing its compounds
+        // through. League seats play their pool bots as their names say (no `+c`, Ruling).
+        compound: ex.compound,
         ..SearchConfig::default()
     };
     let mut bots: Vec<IsmctsBot<E>> = (0..NUM_PLAYERS)

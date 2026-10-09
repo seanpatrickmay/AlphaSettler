@@ -134,6 +134,39 @@ def test_opening_self_play_refuses_gumbel_and_bad_model_files(tmp_path):
         selfplay_explore(0, 1, 1, 6, 3, 0.25, CONFIG, None, None, 6, str(model))
 
 
+def test_compound_self_play_records_say_so_and_put_compound_visits_on_first_trades(tmp_path):
+    games = explore_games(tmp_path, 3, config=TRADING, compound=True)
+    plain = explore_games(tmp_path, 3, config=TRADING, name="plain.jsonl.gz")
+    on_trades = 0
+    for g, p in zip(games, plain):
+        assert g["selfplay"] == {**p["selfplay"], "compound": True}
+        assert g["belief_resets"] == 0 and records.replay_mismatches(g) == []
+        for d in g["decisions"]:
+            trades = [(a, v) for a, v in zip(d["legal"], d["visits"]) if 233 <= a <= 257 and v > 0]
+            assert sum(d["visits"]) == (5 if d["full_search"] else 2)
+            if not trades:
+                continue
+            on_trades += 1
+            i = d["index"]
+            if 233 <= g["actions"][i] <= 257:  # a played compound: its later steps follow, unrecorded
+                recorded = {e["index"] for e in g["decisions"]}
+                rest = g["actions"][i + 1:i + 3]
+                j = next(k for k, a in enumerate(rest) if not 233 <= a <= 257)
+                assert rest[j] == 2 or 25 <= rest[j] <= 204, (g["seed"], i, rest)
+                assert all(i + 1 + k not in recorded for k in range(j + 1)), (g["seed"], i)
+    assert on_trades > 0, "no compound was visited"
+    assert any(g["actions"] != p["actions"] for g, p in zip(games, plain)), "compound moves change the games"
+
+
+def test_compound_self_play_refuses_gumbel(tmp_path):
+    with pytest.raises(ValueError, match="--compound and --gumbel"):
+        write_explore(tmp_path / "no.jsonl.gz", 0, 1, config=CONFIG, full_simulations=6, fast_simulations=3,
+                      full_probability=0.25, gumbel=6, compound=True)
+    assert not (tmp_path / "no.jsonl.gz").exists()
+    with pytest.raises(ValueError, match="Gumbel"):  # the native check, below the Python one
+        selfplay_explore(0, 1, 1, 6, 3, 0.25, CONFIG, None, None, 6, None, compound=True)
+
+
 LEAGUE_NETS = ["net:tiny@6+t", "ismcts@5+t"]
 LEAGUE_STYLE_BOTS = [f"style:{s}@6+t" for s in LEAGUE_STYLES]
 

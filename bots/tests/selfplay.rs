@@ -886,3 +886,178 @@ fn self_play_without_a_league_plays_the_games_it_played_before_3d3() {
         0x517b49ad6e41ec1e
     );
 }
+
+fn is_build(a: Action) -> bool {
+    matches!(
+        a,
+        Action::BuildRoad(_) | Action::BuildSettlement(_) | Action::BuildCity(_) | Action::BuyDev
+    )
+}
+
+/// spec 3d-4 Section 3: with compound moves, a searched decision that plays a bank trade starts a
+/// compound; its other steps (at most one more trade, then the build) follow at once, by the same
+/// player, unrecorded; no bank trade is played outside one. Every decision's visits still sum to
+/// its search's: a compound's sit on its first trade.
+#[test]
+fn compound_self_play_plays_each_compound_through_and_records_only_its_first_step() {
+    let ex = Exploration {
+        compound: true,
+        ..small_explore()
+    };
+    let (mut compounds, mut on_trades) = (0, 0);
+    for seed in 0..6 {
+        let g = play_with(seed, trading(), &ex, 8, &heuristic);
+        assert_eq!(g.belief_resets, 0, "seed {seed}");
+        let mut s = State::new(seed, trading());
+        let mut decisions = g.decisions.iter().peekable();
+        // The compound under way: who plays it, and its trades so far.
+        let mut under_way: Option<(PlayerId, u32)> = None;
+        for (i, &a) in g.actions.iter().enumerate() {
+            let d = decisions.next_if(|d| d.index as usize == i);
+            if let Some(d) = d {
+                let want = if d.full_search { 5 } else { 2 };
+                assert_eq!(d.visits.iter().sum::<u32>(), want, "seed {seed} move {i}");
+                on_trades += d
+                    .legal
+                    .iter()
+                    .zip(&d.visits)
+                    .any(|(x, &v)| matches!(x, Action::MaritimeTrade { .. }) && v > 0)
+                    as u32;
+            }
+            let actor = s.current_actor();
+            match under_way {
+                Some((who, trades)) => {
+                    assert!(
+                        d.is_none(),
+                        "seed {seed} move {i}: a later step was recorded"
+                    );
+                    assert_eq!(actor, who, "seed {seed} move {i}");
+                    if is_build(a) {
+                        under_way = None;
+                    } else {
+                        assert!(
+                            matches!(a, Action::MaritimeTrade { .. }) && trades < 2,
+                            "seed {seed} move {i}: {a:?}"
+                        );
+                        under_way = Some((who, trades + 1));
+                    }
+                }
+                None if matches!(a, Action::MaritimeTrade { .. }) => {
+                    assert!(
+                        d.is_some(),
+                        "seed {seed} move {i}: a bank trade outside a compound"
+                    );
+                    compounds += 1;
+                    under_way = Some((actor, 1));
+                }
+                None => {}
+            }
+            s.apply(a);
+        }
+        assert!(
+            under_way.is_none(),
+            "seed {seed}: a compound left unfinished"
+        );
+    }
+    assert!(
+        compounds > 0 && on_trades > 0,
+        "compounds played {compounds}, decisions with compound visits {on_trades}"
+    );
+}
+
+#[test]
+fn compound_self_play_is_deterministic_and_thread_independent() {
+    let ex = Exploration {
+        compound: true,
+        ..small_explore()
+    };
+    let a = run_with(0..4, trading(), &ex, 8, &heuristic, 1).unwrap();
+    assert_eq!(a, run_with(0..4, trading(), &ex, 8, &heuristic, 3).unwrap());
+    let plain = run_with(0..4, trading(), &small_explore(), 8, &heuristic, 1).unwrap();
+    assert_ne!(a, plain, "compound moves change the games");
+    // With an opening model too (arm F may need both).
+    let model = opening_model(7);
+    let both = run_with_opening(0..2, trading(), &ex, 8, &heuristic, 2, Some(&model)).unwrap();
+    assert!(both.iter().all(|g| g.belief_resets == 0));
+}
+
+#[test]
+fn compound_self_play_refuses_gumbel_and_is_off_by_default() {
+    let ex = Exploration {
+        compound: true,
+        ..Exploration::gumbel(8)
+    };
+    let e = run_with(0..1, no_trades(), &ex, 8, &heuristic, 1).unwrap_err();
+    assert!(e.contains("Gumbel"), "{e}");
+    for ex in [
+        Exploration::fixed(10),
+        Exploration::standard(),
+        Exploration::gumbel(8),
+    ] {
+        assert!(!ex.compound);
+    }
+}
+
+/// 3d-4 with a 3d-3 league: the learner seats search compound moves and the league seats play their
+/// pool names as given; the seats depend on the seed alone and a seed replays at any thread count.
+#[test]
+fn compound_league_self_play_gives_compound_moves_to_the_learner_seats_only() {
+    let dir = nets_dir("compound-league");
+    let pool = league(&dir);
+    let ex = Exploration {
+        compound: true,
+        ..small_explore()
+    };
+    let first = (0..).find(|&s| pool.draw(s).is_some()).unwrap();
+    let seeds = first..first + 2;
+    let a = run_with_league(
+        seeds.clone(),
+        trading(),
+        &ex,
+        8,
+        &heuristic,
+        1,
+        None,
+        Some(&pool),
+    )
+    .unwrap();
+    assert_eq!(
+        a,
+        run_with_league(
+            seeds.clone(),
+            trading(),
+            &ex,
+            8,
+            &heuristic,
+            2,
+            None,
+            Some(&pool)
+        )
+        .unwrap()
+    );
+    let plain = run_with_league(
+        seeds,
+        trading(),
+        &small_explore(),
+        8,
+        &heuristic,
+        1,
+        None,
+        Some(&pool),
+    )
+    .unwrap();
+    assert!(a[0].league.is_some());
+    assert_eq!(
+        a.iter().map(|g| &g.league).collect::<Vec<_>>(),
+        plain.iter().map(|g| &g.league).collect::<Vec<_>>()
+    );
+    assert!(a.iter().all(|g| g.belief_resets == 0));
+    assert!(a
+        .iter()
+        .flat_map(|g| g.league.iter().flatten().flatten())
+        .all(|n| !n.contains("+c")));
+    assert_ne!(
+        a, plain,
+        "the learner seats' compound moves change the games"
+    );
+}
