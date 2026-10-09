@@ -131,7 +131,7 @@ alpha = beta = 0.05; the point estimate is below 0.25 and the interval includes 
 window (12,844 to 13,018 against A's 13,175 to 13,280), the second cost of v4 at equal wall time
 beside its 1% slower search. D's higher self-play rate (7,084 games an hour against 6,829) cannot
 come from v4, which searches more slowly; arm A was not rerun (it ran on 2026-10-08 from 05:55, at
-90097ed), so the gap is the machine on the two days. Held-out scores are close (D's value loss ends
+90097ed), so the gap most likely comes from the machine on the two days. Held-out scores are close (D's value loss ends
 at 0.9468, A's at 0.9620), but each arm's held-out set is its own window, so they are not a strength
 measure.
 Zero-initialised inputs start the net where v3 left it (within 1e-5; bit-equal in a batch), and six generations of training
