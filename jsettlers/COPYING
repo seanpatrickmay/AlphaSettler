@@ -1,0 +1,13 @@
+The Java sources under jsettlers/src/ extend and link classes of JSettlers2
+(https://github.com/jdmonin/JSettlers2, release 2.6.10), which is distributed under the
+GNU General Public License, version 3 or (at your option) any later version.
+
+These sources are therefore distributed under the same terms: GPL-3.0-or-later.
+The full license text is at https://www.gnu.org/licenses/gpl-3.0.txt.
+
+Nothing outside jsettlers/ links JSettlers2. The rest of AlphaSettler talks to the harness
+only through JSON lines on the harness process's standard input and output
+(oracle/jsettlers/jvm.py), as a separate program.
+
+The JSettlers2 jar itself is not part of this repository; scripts/fetch-jsettlers.sh downloads
+the released jsettlers-2.6.10-server.jar and checks its sha256.

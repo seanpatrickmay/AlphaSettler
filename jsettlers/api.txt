@@ -1,0 +1,49 @@
+# class | substring of `javap -p -cp <jar> <class>` output that must be present
+soc.game.SOCGame | private java.util.Random rand;
+soc.game.SOCGame | private int[] devCardDeck;
+soc.game.SOCGame | void startGame_setupDevCards();
+soc.game.SOCGame | public void startGame();
+soc.game.SOCGame | rollDice();
+soc.game.SOCGame | public static soc.game.SOCBoard$BoardFactory boardFactory;
+soc.game.SOCGame | public int getNumDevCards();
+soc.game.SOCGame | public int getFirstPlayer();
+soc.game.SOCGame | public int getRoundCount();
+soc.game.SOCBoard4p | static final int[] PORTS_HEXNUM_V1;
+soc.game.SOCBoard4p | public int[] getPortsEdges();
+soc.game.SOCBoard4p | public int[] getPortsFacing();
+soc.game.SOCBoard | public void makeNewBoard(soc.game.SOCGameOptionSet);
+soc.game.SOCBoard | public void setHexLayout(int[])
+soc.game.SOCBoard | public void setNumberLayout(int[])
+soc.game.SOCBoard | public void setRobberHex(int, boolean)
+soc.game.SOCBoard | public int getHexNumFromCoord(int)
+soc.game.SOCBoard | public int getPortTypeFromNodeCoord(int);
+soc.game.SOCPlayingPiece | public int getCoordinates();
+soc.game.SOCPlayer | public boolean isPotentialRoad(int);
+soc.server.SOCServer | boolean readyGameAskRobotsJoin(soc.game.SOCGame, boolean[], soc.server.genericServer.Connection[], int)
+soc.server.SOCServer | protected void startEmptyLog(soc.game.SOCGame, boolean)
+soc.server.SOCServer | public soc.game.SOCGame createGameAndBroadcast(soc.server.genericServer.Connection, java.lang.String, soc.game.SOCGameOptionSet, boolean);
+soc.server.SOCServer | protected java.util.Vector<soc.server.genericServer.Connection> robots;
+soc.server.SOCServer | public static int ROBOT_FORCE_ENDTURN_SECONDS;
+soc.server.SOCBoardAtServer$BoardFactoryAtServer | public soc.game.SOCBoard createBoard(soc.game.SOCGameOptionSet, boolean, int)
+soc.robot.SOCRobotBrain | public static float BOTS_ONLY_FAST_PAUSE_FACTOR;
+soc.robot.SOCRobotBrain | protected void planAndDoActionForPLAY1();
+soc.robot.SOCRobotBrain | protected void rollOrPlayKnightOrExpectDice();
+soc.robot.SOCRobotBrain | protected void placeIfExpectPlacing();
+soc.robot.SOCRobotBrain | protected void moveRobber();
+soc.robot.SOCRobotBrain | protected void discard(int);
+soc.robot.SOCRobotBrain | protected int considerOffer(soc.game.SOCTradeOffer);
+soc.robot.SOCRobotBrain | protected boolean makeOffer(
+soc.robot.SOCRobotBrain | protected boolean makeCounterOffer(soc.game.SOCTradeOffer);
+soc.robot.SOCRobotBrain | protected void setStrategyFields();
+soc.robot.SOCRobotBrain | protected soc.robot.SOCRobotDM createDM();
+soc.robot.SOCRobotBrain | protected void resetFieldsAtEndTurn();
+soc.robot.SOCRobotDM | protected soc.game.SOCResourceSet resourceChoices;
+soc.robot.SOCRobotClient | protected java.lang.String rbclass;
+soc.robot.SOCRobotClient | public soc.robot.SOCRobotBrain createBrain(soc.util.SOCRobotParameters, soc.game.SOCGame, soc.util.CappedQueue<soc.message.SOCMessage>);
+soc.robot.SOCRobotClient | public boolean printedInitialWelcome;
+soc.robot.MonopolyStrategy | public void setMonopolyChoice(int);
+soc.robot.RobberStrategy | public int chooseRobberVictim(boolean[], boolean);
+soc.robot.OpeningBuildStrategy | public int planInitialSettlements();
+soc.robot.OpeningBuildStrategy | public int planSecondSettlement();
+soc.robot.OpeningBuildStrategy | public int planInitRoad();
+soc.util.Version | public static java.lang.String version();
