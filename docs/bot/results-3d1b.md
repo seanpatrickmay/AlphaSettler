@@ -69,7 +69,7 @@ Belief resets: 384 games, belief resets 0.
 - Records with a model carry `opening_sha256`, `opening_epsilon` and `opening_top` in their
   `selfplay` block; records without one are byte-identical to before.
 - Loops keep the model by its sha256 (`state.json`, `manifest.json`); a resume without the flag
-  keeps it, another file is refused, and a missing or changed `nets/opening.bin` stops the loop.
+  keeps it, another file is refused, and a changed `nets/opening.bin` stops the loop, and a missing one is restored from a matching `--opening FILE` (or stops the loop without it; 7e06fba).
   `train-loop`'s warm start uses the model too.
 - Arm C ran through `runs/p2/arm.sh`'s logic unchanged (as `runs/p2/arm-v3.sh`, which only changes the directory and the Python entry point to the v3 worktree); arm A was not rerun. The SPRT's nets directory
   is `runs/p2/nets` with `C.bin` and `opening.bin` copied in beside `A.bin`.
@@ -84,7 +84,7 @@ The result needs one caveat, because the arms are compared at equal wall time an
 in it. C finished 5 generations against A's 6: 10,000 self-play games against 12,000, and 3,075,537
 searched decisions against 3,955,577. Per self-play hour that is 6,130 games against 6,829 and
 1.89M decisions against 2.25M (16% fewer), although C's games need fewer decisions (307.6 a game
-against 329.6, since its 8 setup settlements are unsearched). The machine explains part of it: C's
+against 329.6; its 8 unsearched setup settlements account for 8 of the 22). The machine explains part of it: C's
 training, which the opening model does not touch, made 11,568 to 12,948 steps in its 10 minutes
 against A's 13,175 to 13,280 (about 6% fewer on average). The rest is not explained by these runs;
 the model's own picks were not timed. C's gates promoted all five of its generations (one at
