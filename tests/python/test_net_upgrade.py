@@ -1,10 +1,12 @@
 """`alphasettler net-upgrade` (specs 3c Section 4 and 3d-2 Section 3): an older net rewritten for
 this build's encoder, v4. Needs the `train` extra for the PyTorch twin, like test_train.py."""
 
+import json
 import random
 import struct
 import subprocess
 import sys
+from array import array
 
 import pytest
 import torch
@@ -12,15 +14,20 @@ import torch
 from alphasettler import Bot, Game, describe_action, netformat
 from alphasettler._engine import (
     NET_GLOBAL_WIDTH, NET_HIDDEN_LEN, NET_PUBLIC_LEN, NET_V2_ENCODING_HASH, NET_V2_GLOBAL_WIDTH, NET_V3_EDGE_WIDTH,
-    NET_V3_GLOBAL_WIDTH, NET_V3_NODE_WIDTH, encode, net_forward,
+    NET_V3_ENCODING_HASH, NET_V3_GLOBAL_WIDTH, NET_V3_NODE_WIDTH, encode, net_forward,
 )
 from alphasettler import netupgrade
 from alphasettler.netupgrade import ANSWER_IDS, OFFER_BIAS, OFFER_IDS, TRADE_SLOTS, pooled_row, upgrade
+from alphasettler.train.fastloop import STATE, FastLoop, FastLoopSettings
 from alphasettler.train.model import ACTIONS, MAGIC, TILE_END, Net, _floats, from_bytes, shapes, to_bytes
+
+from test_fast_loop import TINY
+from test_train import assert_parity, generation, random_positions
 
 NO_TRADES = {"max_offers_per_turn": 0}
 # (encoding hash, node, edge and global input widths) of encoder v2; its node and edge inputs are v3's.
 V2 = (NET_V2_ENCODING_HASH, NET_V3_NODE_WIDTH, NET_V3_EDGE_WIDTH, NET_V2_GLOBAL_WIDTH)
+V3 = (NET_V3_ENCODING_HASH, NET_V3_NODE_WIDTH, NET_V3_EDGE_WIDTH, NET_V3_GLOBAL_WIDTH)
 # Encoder v3's trade block in a v4 feature vector: globals 91 .. 115.
 TRADE_BLOCK = slice(TILE_END + NET_V2_GLOBAL_WIDTH, TILE_END + NET_V3_GLOBAL_WIDTH)
 
@@ -117,13 +124,14 @@ def test_an_upgraded_v2_net_keeps_every_no_trade_output(tmp_path, width, rounds)
     assert (torch.softmax(rv.double(), 1) - torch.softmax(ref[1].double(), 1)).abs().max().item() <= 1e-5
 
 
-def test_only_encoder_v2_nets_are_upgraded():
-    old = old_bytes(old_net(V2), V2)
+@pytest.mark.parametrize("widths", [V2, V3], ids=["v2", "v3"])
+def test_only_encoder_v2_and_v3_nets_are_upgraded(widths):
+    old = old_bytes(old_net(widths), widths)
     with pytest.raises(ValueError, match="already an encoder v4 net"):
         upgrade(to_bytes(Net(8, 1)))
     other = bytearray(old)
     other[12] ^= 1
-    with pytest.raises(ValueError, match="not encoder v2's"):
+    with pytest.raises(ValueError, match="neither encoder v2's .* nor encoder v3's"):
         upgrade(bytes(other))
     with pytest.raises(ValueError, match="wrong magic"):
         upgrade(b"XXNET\0\0\0" + old[8:])
@@ -148,10 +156,11 @@ def test_only_encoder_v2_nets_are_upgraded():
     assert from_bytes(upgrade(old)).width == 8
 
 
-def test_loaders_send_an_encoder_v2_net_to_net_upgrade(tmp_path):
+@pytest.mark.parametrize("widths", [V2, V3], ids=["v2", "v3"])
+def test_loaders_send_an_older_net_to_net_upgrade(tmp_path, widths):
     nets = tmp_path / "nets"
     nets.mkdir()
-    (nets / "old.bin").write_bytes(old_bytes(old_net(V2), V2))
+    (nets / "old.bin").write_bytes(old_bytes(old_net(widths), widths))
     p, h = encode(Game(0, NO_TRADES))
     loads = [lambda: net_forward(str(nets / "old.bin"), p, h),
              lambda: from_bytes((nets / "old.bin").read_bytes()),
@@ -172,14 +181,19 @@ def test_the_trade_rows_are_the_engines_offer_answer_and_confirmation_ids():
     assert netupgrade.shapes(48, 2, NET_GLOBAL_WIDTH) == shapes(48, 2)
 
 
-def test_cli_net_upgrade(tmp_path):
+@pytest.mark.parametrize("widths,did", [
+    # 24 - 19 node, 8 - 4 edge, 139 - 91 global inputs; offers 258 .. 664: 407 rows.
+    (V2, "(encoder v2) to encoder v4: width 8, 1 rounds; 5 node, 4 edge and 48 global inputs zeroed; "
+         "407 trade policy rows reset (offer bias -3); wrote"),
+    # 139 - 115 global inputs; v3 nets trained their trade rows: none reset.
+    (V3, "(encoder v3) to encoder v4: width 8, 1 rounds; 5 node, 4 edge and 24 global inputs zeroed; wrote"),
+], ids=["v2", "v3"])
+def test_cli_net_upgrade(tmp_path, widths, did):
     old, new = tmp_path / "old.bin", tmp_path / "new.bin"
-    old.write_bytes(old_bytes(old_net(V2), V2))
+    old.write_bytes(old_bytes(old_net(widths), widths))
     r = cli("net-upgrade", str(old), str(new))
     assert r.returncode == 0, r.stderr
-    # 24 - 19 node, 8 - 4 edge, 139 - 91 global inputs; offers 258 .. 664: 407 rows.
-    assert f"(encoder v2) to encoder v4: width 8, 1 rounds; 5 node, 4 edge and 48 global inputs zeroed; " \
-           f"407 trade policy rows reset (offer bias -3); wrote {new}" in r.stdout
+    assert f"{did} {new}" in r.stdout
     assert from_bytes(new.read_bytes()).width == 8
     r = cli("net-upgrade", str(old), str(new))
     assert r.returncode == 2 and "exists" in r.stderr
@@ -207,3 +221,50 @@ def test_net_upgrade_leaves_nothing_behind_when_the_rust_loader_refuses(tmp_path
     monkeypatch.undo()
     assert cli_mod.main(["net-upgrade", str(old), str(new)]) == 0
     assert from_bytes(new.read_bytes()).width == 8
+
+
+@pytest.mark.parametrize("width,rounds", [(48, 2), (5, 3)])
+def test_an_upgraded_v3_net_gives_the_v3_nets_outputs_on_every_position(tmp_path, width, rounds):
+    """A v3 net reads only the v3 slots of a v4 feature vector, which are its v3 features: `src` is
+    that net, with zero weights on the rest. The upgrade must be `src` exactly (nothing reset), and
+    its Rust forward pass must agree with `src` by the parity rule on positions of random trading
+    games, where the road distances, trails, open spots and threats v4 added are all in play."""
+    src = old_net(V3, width, rounds, seed=3)
+    data = upgrade(old_bytes(src, V3))
+    up = from_bytes(data).eval()
+    for i, (a, b) in enumerate(zip(up.layers(), src.layers())):
+        assert torch.equal(a.weight, b.weight) and torch.equal(a.bias, b.bias), i
+    path = tmp_path / "up.bin"
+    path.write_bytes(data)
+    n = 100
+    public, hidden, mask = random_positions(n)
+    pt = torch.frombuffer(bytearray(public), dtype=torch.float32).view(n, NET_PUBLIC_LEN)
+    ht = torch.frombuffer(bytearray(hidden), dtype=torch.float32).view(n, NET_HIDDEN_LEN)
+    threats = pt[:, TILE_END + NET_V3_GLOBAL_WIDTH:]
+    assert (threats != threats[:1]).any(), "the threat block varies"
+    with torch.no_grad():
+        ref = src(pt, ht)
+    assert_parity(net_forward(str(path), public, hidden), ref, mask)
+
+
+def test_a_fast_loop_runs_from_an_upgraded_v3_net(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    old, start = tmp_path / "v3.bin", tmp_path / "start.bin"
+    old.write_bytes(old_bytes(old_net(V3), V3))
+    r = cli("net-upgrade", str(old), str(start))
+    assert r.returncode == 0, r.stderr
+    root = tmp_path / "loop"
+    FastLoop.init(root, [seed], start, first=1)
+    assert FastLoop(root, FastLoopSettings(generations=1, **TINY)).run() == 1
+    state = json.loads((root / STATE).read_text())
+    assert [g["gen"] for g in state["generations"]] == [1]
+    assert (root / "nets" / "start.bin").read_bytes() == start.read_bytes()
+
+
+def test_a_layer_is_never_narrowed():
+    """`widened` only appends zero columns: fewer columns than the layer has would drop weights."""
+    layer = (2, 3, array("f", [1, 2, 3, 4, 5, 6]), array("f", [0, 0]))
+    assert netupgrade.widened(layer, 4)[2].tolist() == [1, 2, 3, 0, 4, 5, 6, 0]
+    assert netupgrade.widened(layer, 3)[2] == layer[2]
+    with pytest.raises(ValueError, match="cannot narrow"):
+        netupgrade.widened(layer, 2)

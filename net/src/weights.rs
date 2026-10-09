@@ -300,6 +300,9 @@ impl Weights {
             let why = if hash == V2_ENCODING_HASH {
                 "; it is an encoder v2 net (before the trade block): convert it with \
                  `alphasettler net-upgrade OLD NEW`"
+            } else if hash == V3_ENCODING_HASH {
+                "; it is an encoder v3 net (before the road and threat inputs): convert it with \
+                 `alphasettler net-upgrade OLD NEW`"
             } else {
                 ""
             };

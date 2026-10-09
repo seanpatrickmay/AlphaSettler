@@ -11,6 +11,9 @@ encoder v2's 91 globals.
   every answer was a hard-coded reject or cancel. All 400 offer rows are reset, not only the 20
   one-for-one offers the trading game allows, because the same reason holds for all of them. An
   upgraded v2 net makes the v2 net's moves in every no-trade game.
+- From encoder v3 (3c's and P2's nets) nothing else changes: an upgraded v3 net gives the v3 net's
+  outputs on every position, within the forward pass's 1e-5 (Accelerate sums the wider rows in
+  another order).
 - Every other byte is copied.
 
 No torch, so it runs without the train extra: the file is read by `alphasettler.netformat`, the
@@ -26,7 +29,8 @@ from pathlib import Path
 from alphasettler import files
 from alphasettler._engine import (
     NET_EDGE_WIDTH, NET_ENCODING_HASH, NET_GLOBAL_WIDTH, NET_NODE_WIDTH, NET_SETTLEMENT_BASE, NET_V2_ENCODING_HASH,
-    NET_V2_GLOBAL_WIDTH, NET_V3_EDGE_WIDTH, NET_V3_NODE_WIDTH, Game, encode, net_forward,
+    NET_V2_GLOBAL_WIDTH, NET_V3_EDGE_WIDTH, NET_V3_ENCODING_HASH, NET_V3_GLOBAL_WIDTH, NET_V3_NODE_WIDTH, Game, encode,
+    net_forward,
 )
 from alphasettler.netformat import (
     EDGE_ENCODER, ENTITY_SLOTS, GLOBAL_ENCODER, NODE_ENCODER, OTHER_POLICY, head_layer, header, read,
@@ -43,6 +47,7 @@ TRADE_SLOTS = range(258, 665)
 # widths). Encoder v2's node and edge inputs are v3's.
 SOURCES = {
     NET_V2_ENCODING_HASH: (2, NET_V3_NODE_WIDTH, NET_V3_EDGE_WIDTH, NET_V2_GLOBAL_WIDTH),
+    NET_V3_ENCODING_HASH: (3, NET_V3_NODE_WIDTH, NET_V3_EDGE_WIDTH, NET_V3_GLOBAL_WIDTH),
 }
 # Each encoder layer and its input count in this build.
 TARGET = {"node": (NODE_ENCODER, NET_NODE_WIDTH), "edge": (EDGE_ENCODER, NET_EDGE_WIDTH),
@@ -60,8 +65,8 @@ def _check_source(encoding: int) -> None:
     if encoding == NET_ENCODING_HASH:
         raise ValueError("already an encoder v4 net (this build's encoding hash): nothing to upgrade")
     if encoding not in SOURCES:
-        raise ValueError(f"encoding hash {encoding:#018x} is not encoder v2's {NET_V2_ENCODING_HASH:#018x}: "
-                         "only encoder v2 nets can be upgraded")
+        raise ValueError(f"encoding hash {encoding:#018x} is neither encoder v2's {NET_V2_ENCODING_HASH:#018x} "
+                         f"nor encoder v3's {NET_V3_ENCODING_HASH:#018x}: only encoder v2 and v3 nets can be upgraded")
 
 
 def read_old(data: bytes) -> tuple[int, int, int, list[tuple[int, int, array, array]]]:
@@ -71,6 +76,7 @@ def read_old(data: bytes) -> tuple[int, int, int, list[tuple[int, int, array, ar
     # The input widths follow from the encoding hash, which `read` checks only after the magic and the
     # version: peek at it, and let `read` report whatever is wrong in its own order.
     peek = int.from_bytes(data[12:20], "little") if len(data) >= 20 else None
+    # (An unknown or missing hash takes this build's widths: `read` then refuses it through `_check_source`.)
     version, node, edge, glob = SOURCES.get(peek, (0, NET_NODE_WIDTH, NET_EDGE_WIDTH, NET_GLOBAL_WIDTH))
     width, rounds, declared, floats = read(data, glob, _check_source, f"an encoder v{version} net",
                                            node_width=node, edge_width=edge)
@@ -87,6 +93,8 @@ def read_old(data: bytes) -> tuple[int, int, int, list[tuple[int, int, array, ar
 def widened(layer: tuple[int, int, array, array], cols: int) -> tuple[int, int, array, array]:
     """`layer` with `cols` inputs: its own first, then zero weights for the inputs appended after them."""
     rows, old, w, b = layer
+    if cols < old:
+        raise ValueError(f"cannot narrow a layer of {old} inputs to {cols}")
     wide = array("f")
     for r in range(rows):
         wide.extend(w[r * old:(r + 1) * old])

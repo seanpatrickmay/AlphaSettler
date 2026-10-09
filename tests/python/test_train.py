@@ -73,6 +73,24 @@ def random_positions(n, seed=0):
     return b"".join(public), b"".join(hidden), mask
 
 
+def assert_parity(rust, outs, mask):
+    """The spec's parity rule (preflight F9) between `net_forward`'s `rust` and PyTorch's `outs`
+    (policy, value, aux): raw logits and aux within 1e-5 x max(1, |PyTorch|); the prior over the
+    legal moves (`mask`) and the value probabilities within 1e-5 absolute."""
+    got = {key: torch.frombuffer(bytearray(rust[key]), dtype=torch.float32).view_as(ref)
+           for key, ref in zip(("policy", "value", "aux"), outs)}
+    for key, ref in zip(("policy", "value", "aux"), outs):
+        err = ((got[key] - ref).abs() / ref.abs().clamp(min=1.0)).max().item()
+        assert err <= 1e-5, (key, err)
+
+    def prior(logits):
+        return torch.softmax(logits.double().masked_fill(~mask, float("-inf")), dim=1)
+
+    assert (prior(got["policy"]) - prior(outs[0])).abs().max().item() <= 1e-5
+    value = (torch.softmax(got["value"].double(), 1) - torch.softmax(outs[1].double(), 1)).abs().max().item()
+    assert value <= 1e-5
+
+
 @pytest.mark.parametrize("width,rounds", [(NET_DEFAULT_WIDTH, NET_DEFAULT_ROUNDS), (5, 3)])
 def test_rust_and_pytorch_forward_passes_agree_on_random_weights(tmp_path, width, rounds):
     """Spec parity rule (preflight F9): the prior over legal moves and the value probabilities
@@ -88,18 +106,7 @@ def test_rust_and_pytorch_forward_passes_agree_on_random_weights(tmp_path, width
     ht = torch.frombuffer(bytearray(hidden), dtype=torch.float32).view(100, NET_HIDDEN_LEN)
     with torch.no_grad():
         outs = net(pt, ht)
-    got = {key: torch.frombuffer(bytearray(rust[key]), dtype=torch.float32).view_as(ref)
-           for key, ref in zip(("policy", "value", "aux"), outs)}
-    for key, ref in zip(("policy", "value", "aux"), outs):
-        err = ((got[key] - ref).abs() / ref.abs().clamp(min=1.0)).max().item()
-        assert err <= 1e-5, (key, err)
-
-    def prior(logits):
-        return torch.softmax(logits.double().masked_fill(~mask, float("-inf")), dim=1)
-
-    assert (prior(got["policy"]) - prior(outs[0])).abs().max().item() <= 1e-5
-    value = (torch.softmax(got["value"].double(), 1) - torch.softmax(outs[1].double(), 1)).abs().max().item()
-    assert value <= 1e-5
+    assert_parity(rust, outs, mask)
 
 
 def test_the_parity_positions_fill_every_v4_input_block():

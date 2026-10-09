@@ -21,6 +21,7 @@ from alphasettler import netformat
 from alphasettler._engine import (
     NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, NET_EDGE_WIDTH, NET_ENCODING_HASH, NET_GLOBAL_WIDTH, NET_HIDDEN_LEN,
     NET_NODE_WIDTH, NET_PUBLIC_LEN, NET_SETTLEMENT_BASE, NET_TILE_WIDTH, NET_V2_ENCODING_HASH,
+    NET_V3_ENCODING_HASH,
 )
 # The format's names, importable from here as before.
 from alphasettler.netformat import (  # noqa: F401
@@ -138,10 +139,15 @@ def to_bytes(net: Net) -> bytes:
     return b"".join(out)
 
 
+# Older encoders' hashes, for the error's hint (`alphasettler net-upgrade` converts them).
+_OLDER = {NET_V2_ENCODING_HASH: "an encoder v2 net (before the trade block)",
+          NET_V3_ENCODING_HASH: "an encoder v3 net (before the road and threat inputs)"}
+
+
 def _check_encoding(encoding: int) -> None:
     if encoding != NET_ENCODING_HASH:
-        why = ("; it is an encoder v2 net (before the trade block): convert it with `alphasettler net-upgrade OLD NEW`"
-               if encoding == NET_V2_ENCODING_HASH else "")
+        why = (f"; it is {_OLDER[encoding]}: convert it with `alphasettler net-upgrade OLD NEW`"
+               if encoding in _OLDER else "")
         raise ValueError(f"encoding hash {encoding:#018x} does not match this encoder's {NET_ENCODING_HASH:#018x}: "
                          f"the file was trained on a different feature layout{why}")
 

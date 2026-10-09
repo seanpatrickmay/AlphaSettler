@@ -1,7 +1,7 @@
 """Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic`, `train`,
 `sprt`, `fast-train`, `fast-score`, `fast-loop`, `train-loop`, `net-upgrade`, `opening-train` and `opening-diagnose`;
-`net-upgrade` rewrites an older net (encoder v2, 3b's) for this build's encoder v4. `selfplay --simulations S` writes 3a records;
-`selfplay --pcr` and `selfplay --net NAME` write 3b exploration records; `train` (the train extra)
+`net-upgrade` rewrites an older net (encoder v2 or v3) for this build's encoder v4. `selfplay --simulations S`
+writes 3a records; `selfplay --pcr` and `selfplay --net NAME` write 3b exploration records; `train` (the train extra)
 trains a network on them; `train-loop` (the train extra) runs the resumable self-play, train and
 gate generations; `fast-train` and `fast-score` (the train extra) train and score candidate nets on
 a fixed pool of generations, and `fast-loop` runs small generations trained that way. `opening-train`
@@ -179,8 +179,8 @@ def _parser() -> argparse.ArgumentParser:
                     help="first run only: an opening model (ASOPEN) picks self-play's setup settlements, "
                          "and both gate sides are +o")
 
-    nu = sub.add_parser("net-upgrade", help="rewrite an encoder v2 net (3b's) for encoder v4, same no-trade moves")
-    nu.add_argument("old", help="the encoder v2 weights file")
+    nu = sub.add_parser("net-upgrade", help="rewrite an encoder v2 or v3 net for encoder v4, same moves")
+    nu.add_argument("old", help="the encoder v2 or v3 weights file")
     nu.add_argument("new", help="the weights file to write (must not exist)")
 
     ot = sub.add_parser("opening-train", help="train the opening model on recorded games' setups (train extra)")

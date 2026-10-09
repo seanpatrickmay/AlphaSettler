@@ -562,7 +562,7 @@ fn softmax_sums_to_one_and_sends_minus_infinity_to_zero() {
 }
 
 #[test]
-fn an_encoder_v2_file_is_refused_with_the_way_to_upgrade_it() {
+fn an_encoder_v2_or_v3_file_is_refused_with_the_way_to_upgrade_it() {
     let mut bytes = Weights::random(SMALL, 1).to_bytes();
     bytes[12..20].copy_from_slice(&V2_ENCODING_HASH.to_le_bytes());
     let e = err(&bytes);
@@ -583,11 +583,18 @@ fn an_encoder_v2_file_is_refused_with_the_way_to_upgrade_it() {
         (5, 4)
     );
     assert_ne!(V3_ENCODING_HASH, ENCODING_HASH);
+    let mut v3 = Weights::random(SMALL, 1).to_bytes();
+    v3[12..20].copy_from_slice(&V3_ENCODING_HASH.to_le_bytes());
+    let e = err(&v3);
+    assert!(
+        e.contains("encoder v3") && e.contains("alphasettler net-upgrade"),
+        "{e}"
+    );
     let mut other = Weights::random(SMALL, 1).to_bytes();
     other[12] ^= 1;
     assert!(
         !err(&other).contains("net-upgrade"),
-        "only v2's hash gets the hint"
+        "only v2's and v3's hashes get the hint"
     );
 }
 
