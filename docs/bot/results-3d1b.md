@@ -73,24 +73,34 @@ Belief resets: 384 games, belief resets 0.
   `train-loop`'s warm start uses the model too.
 - Arm C ran through `runs/p2/arm.sh`'s logic unchanged (as `runs/p2/arm-v3.sh`, which only changes the directory and the Python entry point to the v3 worktree); arm A was not rerun. The SPRT's nets directory
   is `runs/p2/nets` with `C.bin` and `opening.bin` copied in beside `A.bin`.
+- `alphasettler selfplay` gets no `--opening`; the spec names only the two loops.
 - Fresh seeds: 4,000,000,000.
 
 ## Next
 
-Self-play with the opening model did not train a stronger net in three hours: C's best (gen-039)
-and A's best (gen-040) are level when both play with `+o` (0.250, z 0.00). C promoted all five of
-its generations (one gate at z 3.06) against A's five of six, but a gate measures a generation
-against the one before it, not against the other arm. C played 6,130 self-play games an hour
-against A's 6,829; the model's picks cost almost nothing, so the gap is most likely the machine (gen-038's self-play
-took 24 minutes against 16 to 21 for the others). Held-out scores are not comparable across the two
-arms: C's self-play records carry no policy targets at setup settlements. The opening model stays a
-play-time gain (`+o`, `results-3d1.md`), and the loop without it stays the default; 3d-2's arm D
-runs with arm A's settings.
+No gain was detected: against A's best (gen-040), C's best (gen-039) scored 0.250 when both play
+with `+o` (95% CI [0.214, 0.286]), so the SPRT rules out a gain of 0.05 at alpha = beta = 0.05.
+The result needs one caveat, because the arms are compared at equal wall time and C got less done
+in it. C finished 5 generations against A's 6: 10,000 self-play games against 12,000, and 3,075,537
+searched decisions against 3,955,577. Per self-play hour that is 6,130 games against 6,829 and
+1.89M decisions against 2.25M (16% fewer), although C's games need fewer decisions (307.6 a game
+against 329.6, since its 8 setup settlements are unsearched). The machine explains part of it: C's
+training, which the opening model does not touch, made 11,568 to 12,948 steps in its 10 minutes
+against A's 13,175 to 13,280 (about 6% fewer on average). The rest is not explained by these runs;
+the model's own picks were not timed. C's gates promoted all five of its generations (one at
+z 3.06) against A's five of six, but a gate measures a generation against the one before it, not
+against the other arm. Held-out scores are not comparable across the two arms: C's records carry
+no policy targets at setup settlements. The opening model stays a play-time gain (`+o`,
+`results-3d1.md`), and the loop without it stays the default; 3d-2's arm D runs with arm A's
+settings.
 
 ## How the run went
 
-The first arm C (`runs/p2/C-void-sleep*`) is void: the Mac slept on battery from 17:56 to 19:17, so
-its cut came after 12,109 s of wall time with three generations. A second (`runs/p2/C-informal*`)
-ran while the machine was shared with builds and a Catanatron match and is informal. The run
-reported here started at 23:00 on an otherwise idle machine; it was on battery (low-power mode) for
-210 s during gen-035's self-play and 31 s just before the cut.
+The first arm C (`runs/p2/C-void-sleep*`) is void: the Mac slept on battery from 17:56 to 19:17
+(`pmset -g log`), so its cut came after 12,109 s of wall time with three generations. A second
+(`runs/p2/C-informal*`) ran while the machine was shared with builds and a Catanatron match, and is
+informal. The run reported here started at 23:00 (epoch 1791514833); `pgrep` found no other bot or
+training process at launch, and the controller's power monitor recorded it on battery (low-power
+mode) from 1791515776 to 1791515986 (210 s, during gen-035's self-play) and from 1791525465 to
+1791525496 (31 s, after the last counted generation), with no sleep. Read-only review agents and
+git commits ran alongside it.
