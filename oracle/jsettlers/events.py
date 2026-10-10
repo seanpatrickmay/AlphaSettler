@@ -79,6 +79,10 @@ class Tracker:
         self.ctx = Context(self.board, start["first"])
         self.raw = start["s"]
         self.declined = [0] * 4
+        # Per seat of ours, acceptances the server refused (`SOCRejectOffer` with a reason): the offer was gone
+        # (withdrawn at the offerer's 5 s wait) by the time the acceptance arrived. Not a declined request: no
+        # decision of that seat repeats it, so the next one is not a fallback; the arena counts them `late`.
+        self.refused_accepts = [0] * 4
         self.bank_limit_hits = 0
         self.setup_cancelled: list[int] = []  # our seats whose setup settlement a forced end of turn removed
         self.over = False
@@ -118,7 +122,10 @@ class Tracker:
         req = entries[0] if entries[0].from_client else None
         server = [e for e in entries if not e.from_client]
         if req is not None and req.sender is not None and any(_declined(e) for e in server):
-            self.declined[self.ctx.ours(req.sender)] += 1
+            if req.name == "SOCAcceptOffer":
+                self.refused_accepts[self.ctx.ours(req.sender)] += 1
+            else:
+                self.declined[self.ctx.ours(req.sender)] += 1
         for r in range(5):
             b = sum(self.hand(before, q)[r] for q in range(4))
             a = sum(self.hand(after, q)[r] for q in range(4))

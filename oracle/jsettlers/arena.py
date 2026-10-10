@@ -58,9 +58,16 @@ def config(trades: bool) -> dict:
 
 class Seat:
     def __init__(self, bot, seed: int, config: dict, tracker: Tracker, seat: int, max_turns: int = MAX_TURNS,
-                 clock=time.monotonic):
+                 clock=time.monotonic, fork=None):
         self.bot, self.seed, self.config, self.tracker, self.seat = bot, seed, config, tracker, seat
         self.max_turns, self.clock = max_turns, clock
+        # `fork()` makes a fresh bot like ours (same name and seed) for a question at a hypothetical position
+        # (`_confirms`): it is shown everything our bot was shown (`shown`), then the hypothetical's events, so
+        # our bot's own belief never sees a position it did not observe. Without one (unit tests' stub bots),
+        # our bot itself is asked.
+        self.fork = fork
+        self.shown: list[dict] = []
+        self.fork_resets = 0  # belief resets in the forks, added to the record's `belief_resets`
         self.fallbacks: Counter = Counter()
         self.counts: Counter = Counter({k: 0 for k in COUNTERS})
         self.capped = False
@@ -69,6 +76,7 @@ class Seat:
         # building at 8-9 VP when nobody holds Longest Road (stall-debug.md), and Task 9 reports those games apart.
         self.last_build: list[int | None] = [None] * 4
         self._declined_seen = 0
+        self._refused_seen = 0  # the tracker's refused acceptances of ours already counted `late`
         self._virtual, self._virtual_turn = 0, 0  # offers declined inside our engine only, this turn
         self._robot_offers: Counter = Counter()  # (turn, seat) -> offers made
         # Our seat's next discard as the stream should report it: None (none asked), "stock" (the stock brain
@@ -78,6 +86,11 @@ class Seat:
     # --- the stream ---
 
     def observe(self, steps) -> None:
+        refused = self.tracker.refused_accepts[self.seat]
+        if refused != self._refused_seen:
+            # An acceptance of ours, sent inside our 4.5 s, reached the server after the robot withdrew the offer.
+            self.counts["late"] += refused - self._refused_seen
+            self._refused_seen = refused
         for st in steps:
             if st.kind in BUILD_STEPS and st.player is not None and st.actions:
                 self.last_build[st.player] = self.tracker.ctx.turn
@@ -96,7 +109,12 @@ class Seat:
                     self.counts["our_offers_accepted"] += 1
                 elif st.info["partner"] == self.seat:
                     self.counts["offers_to_us_accepted"] += 1
-            self.bot.observe(self.seat, [A.redact(e, self.seat) for e in self._unseen(st.events)])
+            self.show([A.redact(e, self.seat) for e in self._unseen(st.events)])
+
+    def show(self, events: list[dict]) -> None:
+        """Our bot observes `events` (each call, the game's first included, is kept for `fork`)."""
+        self.shown.extend(events)
+        self.bot.observe(self.seat, events)
 
     def _unseen(self, events: list[dict]) -> list[dict]:
         """`events` less our seat's discards the bot was shown while it chose them (`_discard`). A discard of
@@ -136,9 +154,9 @@ class Seat:
             return {"t": "reply", "id": ask["id"], "fallback": f.reason}
         return {"t": "reply", "id": ask["id"], **reply}
 
-    def _act(self, game: Game) -> int:
+    def _act(self, game: Game, bot=None) -> int:
         try:
-            return self.bot.act(game)
+            return (self.bot if bot is None else bot).act(game)
         except BaseException as e:  # noqa: BLE001 - an engine panic (PyO3 PanicException) is a counted fallback
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
                 raise
@@ -255,7 +273,7 @@ class Seat:
             cards[r] += 1
             seen = len(g.log(self.seat))
             g.apply(a)
-            self.bot.observe(self.seat, list(g.log(self.seat))[seen:])
+            self.show(list(g.log(self.seat))[seen:])
             shown[RESOURCE_NAMES[r]] += 1
         self._discard_expect = shown
         return {"res": ours_to_js5(cards)}
@@ -319,20 +337,32 @@ class Seat:
                     h.apply(A.ACCEPT)
                 else:
                     h.apply(A.REJECT)
-            if ok and h.phase == "trade_confirm" and self._act(h) == A.confirm(q):
+            if ok and h.phase == "trade_confirm" and self._confirms(h) == A.confirm(q):
                 to.append(q)
         if not to:
             h = g.copy()
             h.apply(a)
             while h.phase == "trade_response":
                 h.apply(A.REJECT)
-            self.bot.observe(self.seat, list(h.log(self.seat)))
+            self.show(list(h.log(self.seat)))
             self._virtual += 1
             return None
         js_to = [False] * 4
         for q in to:
             js_to[self.tracker.ctx.js(q)] = True
         return {"do": "offer", "to": js_to, "give": ours_to_js5(give), "get": ours_to_js5(get)}
+
+    def _confirms(self, h: Game) -> int:
+        """Our bot's choice at the hypothetical confirm `h`, asked of a fork shown our bot's history and the
+        offer's events since `h` was imported (as our engine shows them before a confirm)."""
+        if self.fork is None:
+            return self._act(h)
+        f = self.fork()
+        f.observe(self.seat, [*self.shown, *h.log(self.seat)])
+        try:
+            return self._act(h, f)
+        finally:
+            self.fork_resets += f.diagnostics().get("belief_resets", 0)
 
     def _answer(self, extra, received) -> dict:
         """A robot's offer to us: answered at the offerer's Main position, its earlier offers this turn
@@ -408,10 +438,11 @@ def play_game(jvm: Jvm, seed: int, k: int, candidate: str, nets_dir: str | None 
         t = m["t"]
         if t == "start":
             tracker = Tracker(m)
-            seat = Seat(bot, seed, cfg, tracker, tracker.ctx.ours(0), max_turns)
+            seat = Seat(bot, seed, cfg, tracker, tracker.ctx.ours(0), max_turns,
+                        fork=lambda: Bot(candidate, seed * 4 + k, nets_dir))
             if seat.seat != k:
                 raise RuntimeError(f"{name}: the bridge has turn position {seat.seat}, not {k}")
-            bot.observe(seat.seat, [])
+            seat.show([])
             continue
         if t == "ev":
             seat.observe(tracker.feed(m))
@@ -438,7 +469,7 @@ def play_game(jvm: Jvm, seed: int, k: int, candidate: str, nets_dir: str | None 
                 "robot_desync": bool(tracker.setup_cancelled),
                 "last_build_turn": list(seat.last_build),
                 "fallbacks": sum(seat.fallbacks.values()), "fallback_reasons": dict(seat.fallbacks),
-                "belief_resets": bot.diagnostics().get("belief_resets", 0),
+                "belief_resets": bot.diagnostics().get("belief_resets", 0) + seat.fork_resets,
                 **{c: seat.counts[c] for c in COUNTERS},
                 "bank_limit_hits": tracker.bank_limit_hits, "arm": arm,
             }

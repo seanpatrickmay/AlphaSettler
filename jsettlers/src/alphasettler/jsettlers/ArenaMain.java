@@ -26,8 +26,8 @@ import soc.server.SOCServer;
 import soc.util.Version;
 
 /**
- * The harness process: `java ... alphasettler.jsettlers.ArenaMain stock` (or `aligned`, Task 7).
- * Starts the server and its robots, says "ready", then reads commands from stdin until it closes.
+ * The harness process: `java ... alphasettler.jsettlers.ArenaMain stock` (or `aligned`: the robots'
+ * offers capped to our trading game, {@link CappedBrain}). Starts the server and its robots, says "ready", then reads commands from stdin until it closes.
  */
 public final class ArenaMain {
     private ArenaMain() {}
@@ -45,7 +45,8 @@ public final class ArenaMain {
     }
 
     private static void run(String mode, Pipe pipe) throws Exception {
-        if (!mode.equals("stock")) throw new IllegalArgumentException("unknown mode " + mode + " (stock)");
+        if (!mode.equals("stock") && !mode.equals("aligned"))
+            throw new IllegalArgumentException("unknown mode " + mode + " (stock, aligned)");
         SOCRobotBrain.BOTS_ONLY_FAST_PAUSE_FACTOR = 0.01f;
         SOCServer.ROBOT_FORCE_ENDTURN_SECONDS = 60;
         // A stubborn robot's turn (one force-ended before) as long, so our discards on it get the same window.
@@ -59,7 +60,7 @@ public final class ArenaMain {
         for (int i = 1; i <= 4; i++) {
             String name = "robot " + i;
             names.add(name);
-            start(new SOCRobotClient(sci, name, "pw"), srv);
+            start(mode.equals("aligned") ? new CappedClient(sci, name) : new SOCRobotClient(sci, name, "pw"), srv);
         }
         start(new BridgeClient(sci, pipe), srv);
         names.add(ArenaServer.BRIDGE);

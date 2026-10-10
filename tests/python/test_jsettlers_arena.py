@@ -132,3 +132,21 @@ def test_check_rejects_bad_requests_before_any_game(args, match):
 def test_native_boards_without_trades_are_refused_before_any_game():
     with pytest.raises(ValueError, match="native boards need trades"):
         run_match("ismcts@20", "smart", 1, trades=False, native_boards=True)
+
+
+def test_a_native_trading_game_answers_and_counts_the_robots_offers(jvm):
+    r = play_game(jvm, 61, 2, "ismcts@20+t", trades=True, arm="native")
+    assert r["belief_resets"] == 0 and r["arm"] == "native"
+    assert r["robot_offers"] > 0, "stock smart robots offer in a full trading game"
+    assert r["offers_to_us"] >= r["unrepresentable"] + r["counters_rejected"] + r["late"]
+    assert r["our_offers_accepted"] <= r["our_offers"] and r["offers_to_us_accepted"] <= r["offers_to_us"]
+    assert set(r["fallback_reasons"]) <= set(FALLBACK_REASONS)
+
+
+def test_aligned_robots_offer_only_within_our_trading_game(tmp_path):
+    require()
+    with Jvm("aligned", log=tmp_path / "jvm.log") as j:
+        assert j.ready["mode"] == "aligned"
+        r = play_game(j, 62, 0, "ismcts@20+t", trades=True, arm="aligned")
+    assert r["robot_offers"] > 0, "capped robots still make one-card offers"
+    assert r["robot_offers_over_caps"] == 0 and r["belief_resets"] == 0 and r["arm"] == "aligned"

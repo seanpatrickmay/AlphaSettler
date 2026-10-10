@@ -6,25 +6,33 @@
 
 package alphasettler.jsettlers;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import soc.game.SOCCity;
 import soc.game.SOCDevCardConstants;
 import soc.game.SOCGame;
+import soc.game.SOCPlayer;
 import soc.game.SOCPlayingPiece;
+import soc.game.SOCResourceConstants;
 import soc.game.SOCResourceSet;
 import soc.game.SOCRoad;
 import soc.game.SOCSettlement;
+import soc.game.SOCTradeOffer;
 import soc.message.SOCMessage;
+import soc.robot.SOCBuildPlan;
 import soc.robot.SOCRobotBrain;
 import soc.robot.SOCRobotClient;
 import soc.robot.SOCRobotDM;
+import soc.robot.SOCRobotNegotiator;
 import soc.util.CappedQueue;
 import soc.util.SOCRobotParameters;
 
 /**
  * The stock robot brain with its decision hooks asked of Python: initial placement, roll or knight
- * before the roll, the main-phase choice, free roads, the robber and its victim, discards, and
- * (Task 7) offers and answers. The stock turn machine decides when to ask; a null answer (Python
+ * before the roll, the main-phase choice, free roads, the robber and its victim, discards, our
+ * offers and our answers to offers. The stock turn machine decides when to ask; a null answer (Python
  * fell back, or no reply in time) lets the stock brain decide that hook. Each reply sets the flags
  * the stock code path it replaces sets, so the stock loop waits for the same server answers.
  */
@@ -34,6 +42,8 @@ final class BridgeBrain extends SOCRobotBrain {
     static final int STOCK_ROBBER = -2;
     private final Pipe pipe;
     private volatile int victim = STOCK_ROBBER;
+    /** Answers by offer (offerer, sets, offer time): the stock brain may consider one offer twice. */
+    private final Map<String, Integer> answers = new ConcurrentHashMap<>();
 
     BridgeBrain(SOCRobotClient rc, SOCRobotParameters params, SOCGame ga, CappedQueue<SOCMessage> mq, Pipe pipe) {
         super(rc, params, ga, mq);
@@ -64,6 +74,12 @@ final class BridgeBrain extends SOCRobotBrain {
 
     static SOCResourceSet set(int[] js5) {
         return new SOCResourceSet(js5[0], js5[1], js5[2], js5[3], js5[4], 0);
+    }
+
+    static int[] js5(SOCResourceSet s) {
+        return new int[] {s.getAmount(SOCResourceConstants.CLAY), s.getAmount(SOCResourceConstants.ORE),
+            s.getAmount(SOCResourceConstants.SHEEP), s.getAmount(SOCResourceConstants.WHEAT),
+            s.getAmount(SOCResourceConstants.WOOD)};
     }
 
     @Override
@@ -112,7 +128,7 @@ final class BridgeBrain extends SOCRobotBrain {
         main(r);
     }
 
-    /** One main-phase reply, with the flags of the stock path it replaces. Task 7 adds "offer". */
+    /** One main-phase reply, with the flags of the stock path it replaces. */
     void main(Map<String, Object> r) {
         switch (Json.str(r, "do")) {
             case "end" -> {  // as planAndDoActionForPLAY1's end of turn
@@ -139,6 +155,16 @@ final class BridgeBrain extends SOCRobotBrain {
                 waitingForTradeMsg = true;
                 counter = 0;
                 client.bankTrade(game, set(Json.intArray(r, "give")), set(Json.intArray(r, "get")));
+            }
+            case "offer" -> {  // as makeOffer: the stock loop waits for the answers, then plans (asks) again
+                SOCTradeOffer offer = new SOCTradeOffer(game.getName(), getOurPlayerNumber(), Json.boolArray(r, "to"),
+                    set(Json.intArray(r, "give")), set(Json.intArray(r, "get")));
+                ourPlayerData.setCurrentOffer(offer);
+                for (int pn = 0; pn < game.maxPlayers; pn++) offerRejections[pn] = false;
+                waitingForTradeResponse = true;
+                tradeResponseTimeoutSec = TRADE_RESPONSE_TIMEOUT_SEC_BOTS_ONLY;
+                counter = 0;
+                client.offerTrade(game, offer);
             }
             default -> pipe.fatal("unknown main reply " + r);
         }
@@ -229,5 +255,45 @@ final class BridgeBrain extends SOCRobotBrain {
             return;
         }
         client.discard(game, set(Json.intArray(r, "res")));
+    }
+
+    /**
+     * An offer made to us is asked of Python (which rejects counter-offers and offers outside our trading
+     * game unasked, counted); a fallback is the stock negotiator's answer.
+     */
+    @Override
+    protected int considerOffer(SOCTradeOffer offer) {
+        if (!offer.getTo()[getOurPlayerNumber()]) return SOCRobotNegotiator.IGNORE_OFFER;
+        SOCPlayer from = game.getPlayer(offer.getFrom());
+        String key = offer.getFrom() + "|" + offer.getGiveSet() + "|" + offer.getGetSet() + "|" + from.getCurrentOfferTime();
+        Integer known = answers.get(key);
+        if (known != null) return known;
+        List<Object> toList = new ArrayList<>();
+        for (boolean b : offer.getTo()) toList.add(b);
+        Map<String, Object> r = ask("answer", Json.map("from", offer.getFrom(), "to", toList,
+            "give", js5(offer.getGiveSet()), "get", js5(offer.getGetSet())));
+        int answer = r == null ? super.considerOffer(offer)
+            : (Json.bool(r, "accept") ? SOCRobotNegotiator.ACCEPT_OFFER : SOCRobotNegotiator.REJECT_OFFER);
+        answers.put(key, answer);
+        return answer;
+    }
+
+    /** Our seat offers only what our bot chose (the "offer" reply); the stock negotiator never offers for it. */
+    @Override
+    protected boolean makeOffer(SOCBuildPlan buildPlan) {
+        doneTrading = true;
+        return false;
+    }
+
+    /** Our rules have no counter-offers: the stock brain then rejects. */
+    @Override
+    protected boolean makeCounterOffer(SOCTradeOffer offer) {
+        return false;
+    }
+
+    @Override
+    protected void resetFieldsAtEndTurn() {
+        super.resetFieldsAtEndTurn();
+        answers.clear();
     }
 }

@@ -84,13 +84,13 @@ Each is a **Ruling** (with its reason) the results file repeats, so it can be ov
 - **Domestic trades.** The replay re-imports the position after an executed trade (allowlisted `domestic-trade`). Our bot is shown each offer when made (`trade_offered`), each rejection, and an executed trade as the accepted offer re-stated, its acceptance and its confirmation, so its belief checks the cards that moved; clearing an open offer is `trade_cancelled`.
 - **Pre-roll.** Our bot rolls or plays a knight before the roll; any other card it would play there is left to the stock brain's roll-or-knight (fallback `preroll-card`), because the stock turn machine plays only knights before the roll.
 - **Robber victim.** Chosen with the robber move, at the hypothetical steal position, as the Catanatron arena does; JSettlers' own victim request takes it.
-- **Our offers** (spec Section 5): sent to the opponents who hold the asked card and whose lone acceptance our bot would confirm (asked at that hypothetical position). An offer with no such opponent is made and declined inside our engine only: our bot is shown its events and decides again (at most `max_offers_per_turn` times). `our_offers` counts every offer our bot chose; `our_offers_accepted` the executed ones.
-- **Robot offers.** One made to us while we are the current player (a counter-offer, or an offer to the player on turn) is rejected unasked and counted in `counters_rejected`. One outside our trading game (not one card a side, a resource on both sides, or the no-trades arm) is rejected unasked and counted in `unrepresentable`. The rest are answered at the offerer's Main position with its earlier offers this turn clamped to 1, the offer applied and the seats before ours rejecting; an answer ready 4.5 s or more after the request is sent as a rejection and counted in `late`.
+- **Our offers** (spec Section 5): sent to the opponents who hold the asked card and whose lone acceptance our bot would confirm (asked at that hypothetical position, of a fresh bot like ours shown our bot's history and the offer's events, so our bot's belief never meets an acceptance it did not observe). An offer with no such opponent is made and declined inside our engine only: our bot is shown its events and decides again (at most `max_offers_per_turn` times). `our_offers` counts every offer our bot chose; `our_offers_accepted` the executed ones.
+- **Robot offers.** One made to us while we are the current player (a counter-offer, or an offer to the player on turn) is rejected unasked and counted in `counters_rejected`. One outside our trading game (not one card a side, a resource on both sides, or the no-trades arm) is rejected unasked and counted in `unrepresentable`. The rest are answered at the offerer's Main position with its earlier offers this turn clamped to 1, the offer applied and the seats before ours rejecting; an answer ready 4.5 s or more after the request is sent as a rejection and counted in `late`. An acceptance sent in time that reaches the server after the robot withdrew the offer (its 5 s wait ended first, or our brain thread was busy asking) is refused by the server (`SOCRejectOffer` with a reason); it is counted in `late` too (`Tracker.refused_accepts`), not as a declined request, so our next decision is not charged a `declined` fallback.
 - **Fallbacks** (spec Section 2): a position that does not import, an engine panic or error, a request JSettlers declined since the last decision, a reply the brain cannot carry out, a Java-side timeout (600 s), or a victim JSettlers will not take. The stock brain decides that hook (a free road falls back to the first road JSettlers allows, since the stock placement needs a plan the bridge never made); the record counts `fallbacks` and `fallback_reasons` by reason (`position`, `declined`, `engine`, `choice`, `preroll-card`, `turn-cap`, `java-timeout`, `victim`, `forced-discard`). A refusal is charged to the hook it happened in (every hook checks for one first). A discard of ours the server forced (no reply of ours asked for it) is `forced-discard`. The robber move JSettlers asks after our winning knight (our rules ended the game at the card) is answered `after-win` and not counted.
 - **Our seat never trades by the stock negotiator.** The bridge's `makeOffer` and `makeCounterOffer` send nothing, so every offer from our seat is our bot's; an answer that falls back is the stock brain's `considerOffer`.
 - **Timeouts.** Built-in robots' forced end of turn (`SOCServer.ROBOT_FORCE_ENDTURN_SECONDS`, 8 s) is raised to 60 s so our thinking during a robot's turn (an answer, a discard) never forces it, and a stubborn robot's (`ROBOT_FORCE_ENDTURN_STUBBORN_SECONDS`, 4 s) likewise; our own turns have `jsettlers.bots.timeout.turn` 600 s, and the bridge waits 540 s for a reply, so a slow one is a counted `java-timeout` before the server's end.
 - **Turn cap.** At our `max_turns` (1000) the driver aborts the game: no winner, `aborted: true`, `abort_reason: "turn-cap"`.
-- **The aligned arm.** `CappedBrain` sends the stock negotiator's offer only if it is one card a side, sends it to every opponent, at most two a turn, and never counter-offers; when the negotiator's offer does not fit, that robot stops offering for the turn. Records count robot offers (`robot_offers`) and those outside these caps (`robot_offers_over_caps`) in every arm.
+- **The aligned arm.** `CappedBrain` sends the stock negotiator's offer only if it is one card a side, sends it to every opponent, at most two a turn (counted by `SOCGame.getTurnCount`, since a forced end of turn skips `resetFieldsAtEndTurn`), and never counter-offers; when the negotiator's offer does not fit, that robot stops offering for the turn. Its client logs in as a built-in robot (the default brain class), so a stalled capped robot turn is force-ended after the same 60 s as a stock robot's: `jsettlers.bots.timeout.turn` (600 s) applies to every third-party robot on turn, our seat included, so it stays 600 and the capped robots do not report a third-party class (the server reads that class only for this timeout, the login version check and its third-party join pool, which the arena does not use). Records count robot offers (`robot_offers`) and those outside these caps (`robot_offers_over_caps`) in every arm.
 - **Records**, per game: `seed`, `candidate_seat`, `winner`, `vp`, `turns`, `rounds`, `aborted`, `abort_reason` (`turn-cap` or `robot-desync`, null when not aborted by the driver), `robot_desync` (a setup settlement was cancelled by a forced end), `last_build_turn` (per seat of ours, the last turn it built a piece or bought a card after setup, null if never: stock robots can stop building at 8-9 VP while nobody holds Longest Road, so Task 9 reports results with and without those games), `fallbacks`, `fallback_reasons`, `belief_resets`, `our_offers`, `our_offers_accepted`, `offers_to_us`, `offers_to_us_accepted`, `unrepresentable`, `counters_rejected`, `late`, `robot_offers`, `robot_offers_over_caps`, `bank_limit_hits`, `arm` (the order of `RECORD_KEYS`).
 - **Workers.** One JVM per worker process, games one at a time. A JVM that reports an error or sends nothing for 15 minutes fails the run, naming its log; a JVM exits when its stdin closes.
 - **B** is chosen in Task 9 Step 4 by an explicit table from the results files present at run time; the candidate name stays the spec's `net:B@1000+t+o` (no `+c`) whatever B is.
@@ -6017,8 +6017,8 @@ git -c user.email=sean.may101@gmail.com commit -m "jsettlers: the bridge seat an
 
 **Files:**
 - Create: `jsettlers/src/alphasettler/jsettlers/CappedClient.java`, `jsettlers/src/alphasettler/jsettlers/CappedBrain.java`
-- Modify: `jsettlers/src/alphasettler/jsettlers/BridgeBrain.java` (`considerOffer`, `makeOffer`, `makeCounterOffer`, the `offer` reply), `jsettlers/src/alphasettler/jsettlers/ArenaMain.java` (mode `aligned`), `jsettlers/api.txt`
-- Test: `tests/python/test_jsettlers_arena.py` (two tests added)
+- Modify: `jsettlers/src/alphasettler/jsettlers/BridgeBrain.java` (`considerOffer`, `makeOffer`, `makeCounterOffer`, the `offer` reply), `jsettlers/src/alphasettler/jsettlers/ArenaMain.java` (mode `aligned`), `jsettlers/api.txt`, `oracle/jsettlers/events.py` and `oracle/jsettlers/arena.py` (a refused acceptance of ours is `late`, Step 3b; the hypothetical confirm asked of a fork, Step 3c)
+- Test: `tests/python/test_jsettlers_arena.py` (two tests added), `tests/python/test_jsettlers_seat.py` (two tests added)
 
 **Interfaces:**
 - Consumes: Task 6's `BridgeBrain.ask`, `BridgeBrain.main`, `Seat._answer` and `Seat._offer` (already written and unit-tested in Task 6), the stock `handleMAKEOFFER` / `handleTradeResponse` / `tradeStopWaitingClearOffer` machinery, `SOCRobotNegotiator.makeOffer(SOCBuildPlan)`.
@@ -6037,11 +6037,12 @@ def test_a_native_trading_game_answers_and_counts_the_robots_offers(jvm):
     assert set(r["fallback_reasons"]) <= set(FALLBACK_REASONS)
 
 
-def test_aligned_robots_offer_only_within_our_trading_game():
+def test_aligned_robots_offer_only_within_our_trading_game(tmp_path):
     require()
-    with Jvm("aligned") as j:
+    with Jvm("aligned", log=tmp_path / "jvm.log") as j:  # suite runs leave no logs under runs/
         assert j.ready["mode"] == "aligned"
         r = play_game(j, 62, 0, "ismcts@20+t", trades=True, arm="aligned")
+    assert r["robot_offers"] > 0, "capped robots still make one-card offers"
     assert r["robot_offers_over_caps"] == 0 and r["belief_resets"] == 0 and r["arm"] == "aligned"
 ```
 
@@ -6136,6 +6137,12 @@ import soc.util.SOCRobotParameters;
 final class CappedBrain extends SOCRobotBrain {
     static final int MAX_OFFERS = 2;
     private int offersThisTurn;
+    /**
+     * The game turn {@link #offersThisTurn} counts. Kept by turn number rather than reset at the end of
+     * the turn: resetFieldsAtEndTurn runs only when the robot ends its own turn, not when the server
+     * force-ends it, and resetFieldsAndBuildingPlan also runs after a declined request mid-turn.
+     */
+    private int offersTurn = -1;
 
     CappedBrain(SOCRobotClient rc, SOCRobotParameters params, SOCGame ga, CappedQueue<SOCMessage> mq) {
         super(rc, params, ga, mq);
@@ -6143,6 +6150,10 @@ final class CappedBrain extends SOCRobotBrain {
 
     @Override
     protected boolean makeOffer(SOCBuildPlan buildPlan) {
+        if (offersTurn != game.getTurnCount()) {
+            offersTurn = game.getTurnCount();
+            offersThisTurn = 0;
+        }
         SOCTradeOffer o = offersThisTurn < MAX_OFFERS ? negotiator.makeOffer(buildPlan) : null;
         negotiator.resetWantsAnotherOffer();
         if (o == null || o.getGiveSet().getTotal() != 1 || o.getGetSet().getTotal() != 1) {
@@ -6170,12 +6181,6 @@ final class CappedBrain extends SOCRobotBrain {
     protected boolean makeCounterOffer(SOCTradeOffer offer) {
         return false;
     }
-
-    @Override
-    protected void resetFieldsAtEndTurn() {
-        super.resetFieldsAtEndTurn();
-        offersThisTurn = 0;
-    }
 }
 ```
 
@@ -6191,11 +6196,17 @@ import soc.robot.SOCRobotClient;
 import soc.util.CappedQueue;
 import soc.util.SOCRobotParameters;
 
-/** A robot named "robot N" (smart parameters) whose brain is {@link CappedBrain}. */
+/**
+ * A robot named "robot N" (smart parameters) whose brain is {@link CappedBrain}. Unlike {@link BridgeClient}
+ * it reports the default (built-in) brain class to the server, which uses that class for a stalled turn's
+ * timeout (built-in: ROBOT_FORCE_ENDTURN_SECONDS, 60 s here; third-party: jsettlers.bots.timeout.turn,
+ * 600 s, which our seat needs), the login version check (same jar) and its third-party join pool (unused
+ * by the arena, which seats robots itself); so the aligned arm's stalled robot turns end after 60 s, as
+ * the stock robots' do.
+ */
 final class CappedClient extends SOCRobotClient {
     CappedClient(ServerConnectInfo sci, String name) {
         super(sci, name, "pw");
-        rbclass = CappedClient.class.getName();
     }
 
     @Override
@@ -6215,19 +6226,28 @@ and the robot construction line with
             start(mode.equals("aligned") ? new CappedClient(sci, name) : new SOCRobotClient(sci, name, "pw"), srv);
 ```
 
-Add to `jsettlers/api.txt` and re-run `bash jsettlers/check-api.sh` (expected: `62 members present`):
+Add to `jsettlers/api.txt` and re-run `bash jsettlers/check-api.sh` (expected: `63 members present`):
 ```
 soc.robot.SOCRobotNegotiator | public soc.game.SOCTradeOffer makeOffer(soc.robot.SOCBuildPlan);
 soc.robot.SOCRobotNegotiator | public void resetWantsAnotherOffer();
 soc.robot.SOCRobotBrain | protected static final int TRADE_RESPONSE_TIMEOUT_SEC_BOTS_ONLY;
 soc.game.SOCPlayer | public long getCurrentOfferTime();
 soc.game.SOCTradeOffer | public soc.game.SOCTradeOffer(java.lang.String, int, boolean[], soc.game.SOCResourceSet, soc.game.SOCResourceSet);
+soc.game.SOCGame | public int getTurnCount();
 ```
+
+- [ ] **Step 3b: A refused acceptance is late**
+
+The server refuses an acceptance whose offer is gone with `SOCRejectOffer` carrying a reason, which the tracker counted as a declined request of the acceptor, so our seat's next decision fell back `declined`. In `Tracker.__init__` add `self.refused_accepts = [0] * 4`; in `_close`, when the declined request is a `SOCAcceptOffer`, count it there instead of in `declined`. `Seat.observe` adds each new refused acceptance of ours to `counts["late"]` (`self._refused_seen` tracks those counted). Test: `test_an_acceptance_the_server_refuses_after_the_offer_is_withdrawn_is_late_not_a_declined_request` in `test_jsettlers_seat.py` (a robot's clear, our acceptance, the server's refusal: `refused_accepts == [1, 0, 0, 0]`, `declined` all 0, `late == 1`, counted once).
+
+- [ ] **Step 3c: The hypothetical confirm is asked of a fork**
+
+`Seat._offer` asked our bot itself at the hypothetical confirm (one opponent accepted). Our bot never observed that acceptance, so a searching bot's belief check failed there: a counted belief reset that rebuilt its belief from the hypothetical, and more resets after (net `A@50+t` live: 3 resets in one game of 4 offers; `ismcts@N+t` never offers, so the tests' bots never hit it). `Seat` now keeps every event our bot was shown (`show`, used for every observe, the game's first `[]` included) and takes `fork`, a maker of a fresh bot like ours (`play_game`: `Bot(candidate, seed * 4 + k, nets_dir)`, same seed, so the same belief from the same events); `_confirms(h)` shows a fork the history and `h.log(seat)` (the offer and the answers, as our engine shows them before a confirm) and asks it. Fork resets are added to the record's `belief_resets`. Without `fork` (unit tests' stubs) our bot is asked, as before. Test: `test_the_confirm_at_a_hypothetical_acceptance_is_asked_of_a_fork_shown_our_bots_history`.
 
 - [ ] **Step 4: Build and run the tests to verify they pass**
 
 Run: `pgrep -fl 'arm.sh' || echo idle`, then `bash jsettlers/build.sh && .venv/bin/pytest -q tests/python/test_jsettlers_seat.py tests/python/test_jsettlers_arena.py`
-Expected: `built 17 sources`; PASS, 23 + 13 tests.
+Expected: `built 17 sources`; PASS, 25 + 13 tests.
 
 - [ ] **Step 5: Format, lint, the full suite**
 

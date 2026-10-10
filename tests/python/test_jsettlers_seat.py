@@ -299,6 +299,21 @@ def test_late_answers_are_sent_as_rejections_and_counted():
     assert r["accept"] is False and seat.counts["late"] == 1
 
 
+def test_an_acceptance_the_server_refuses_after_the_offer_is_withdrawn_is_late_not_a_declined_request():
+    # Our answer beat our 4.5 s, but the robot's 5 s wait ended first: the server refuses the acceptance.
+    s, seat, _ = seat_at(current=2, hands={0: [1, 0, 0, 0, 0], 2: [0, 0, 1, 0, 0]})
+    js0, js2 = s.js(0), s.js(2)
+    s.send(f"f{js2}", "SOCClearOffer:game=x|playerNumber=0")
+    s.send("all", f"SOCClearOffer:game=x|playerNumber={js2}")
+    s.send(f"f{js0}", f"SOCAcceptOffer:game=x|accepting=0|offering={js2}")
+    s.send(f"p{js0}", f"SOCRejectOffer:game=x|playerNumber={js0}|reasonCode=1")
+    seat.observe(s.tracker.flush())
+    assert s.tracker.refused_accepts == [1, 0, 0, 0] and s.tracker.declined == [0] * 4
+    assert seat.counts["late"] == 1
+    seat.observe([])
+    assert seat.counts["late"] == 1  # counted once
+
+
 def test_our_offer_goes_to_those_we_would_confirm_and_an_unsent_one_is_declined_in_our_engine():
     give, get = [1, 0, 0, 0, 0], [0, 0, 0, 0, 1]
     a = offer(give, get)
@@ -323,6 +338,31 @@ def test_our_offer_goes_to_those_we_would_confirm_and_an_unsent_one_is_declined_
     assert seat.counts["our_offers"] == 2
     kinds = [e["type"] for e in bot.seen]
     assert kinds.count("trade_offered") == 2 and "trade_cancelled" in kinds and "trade_confirmed" not in kinds
+
+
+def test_the_confirm_at_a_hypothetical_acceptance_is_asked_of_a_fork_shown_our_bots_history():
+    # Our own bot's belief would meet an acceptance it never observed (a counted reset that rebuilds it from the
+    # hypothetical): a fresh bot like ours, shown the same history and the offer's events, answers instead.
+    give, get = [1, 0, 0, 0, 0], [0, 0, 0, 0, 1]
+    a = offer(give, get)
+    hands = {0: [1, 0, 0, 0, 0], 1: [0, 0, 0, 0, 1], 2: [0, 0, 0, 0, 1], 3: [0, 0, 0, 0, 0]}
+    forks = []
+
+    def fork():
+        forks.append(StubBot(lambda g: confirm(2) if confirm(2) in g.legal_actions() else CANCEL))
+        return forks[-1]
+    s, _, _ = seat_at(hands=hands)
+    bot = StubBot(lambda g: a if a in g.legal_actions() else END_TURN)
+    seat = Seat(bot, 5, TRADES, s.tracker, 0, clock=lambda: 0.0, fork=fork)
+    seat.show([{"type": "turn_ended", "player": 3}])
+    r = seat.decide(ask("main"), 0.0)
+    assert r["do"] == "offer" and r["to"] == [i == s.js(2) for i in range(4)]
+    assert all(p[0] != "trade_confirm" for p in bot.positions) and bot.seen == [{"type": "turn_ended", "player": 3}]
+    assert len(forks) == 2 and all(f.positions == [("trade_confirm", 0)] for f in forks)  # seats 1 and 2 hold wood
+    for f in forks:
+        assert f.seen[0] == {"type": "turn_ended", "player": 3}
+        assert [e["type"] for e in f.seen[1:]][:2] == ["trade_offered", "trade_responded"]
+    assert seat.fork_resets == 0
 
 
 def test_robot_offers_and_their_caps_are_counted_from_the_stream():
