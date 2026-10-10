@@ -44,18 +44,36 @@ class GameResult:
     capped: bool = False
 
 
-# What a turn's end changes (turn bookkeeping, and the phase fields that only hold inside a turn).
-TURN_FIELDS = ("current", "phase", "turn", "return_phase", "dev_played_this_turn", "offers_this_turn", "roads_left",
-               "setup_road_node")
-TURN_PLAYER_FIELDS = ("dev_new", "discard_remaining")
+def traded(st: Step) -> tuple[list[int], list[int]]:
+    """The cards a bank trade step gave and got, summed over its maritime trades."""
+    gave, got = [0] * 5, [0] * 5
+    for e in st.events:
+        if e["type"] == "maritime_traded":
+            gave = [a + b for a, b in zip(gave, e["gave"])]
+            got = [a + b for a, b in zip(got, e["got"])]
+    return gave, got
+
+
+def undo_fault(rates: list[int], gave: list[int], got: list[int], last) -> str | None:
+    """Why an allowlisted bank trade is not JSettlers' undo of the player's last bank trade this turn,
+    or None. An undo is the exact reverse of whole maritime trades at the player's rates (`rates`, our
+    resource order): it gets back `rate` cards of a resource for each card it gives, never a resource
+    on both sides, and it reverses `last`, the player's last bank trade this turn as (gave, got)."""
+    units = sum(g // rate for g, rate in zip(got, rates))
+    if (not any(gave) or any(g % rate for g, rate in zip(got, rates)) or units != sum(gave)
+            or any(a and b for a, b in zip(gave, got))):
+        return f"{gave} for {got} is not the undo of whole maritime trades at rates {rates}"
+    if last != (got, gave):
+        return f"{gave} for {got} reverses no bank trade of the player this turn (last: {last})"
+    return None
 
 
 def excused(ours: dict, theirs: dict, st: Step) -> dict:
     """Our position `ours` (before the step, its translatable actions applied) with what the step's
     allowlist rule changes done as the rule does it: a domestic trade moves exactly the traded cards
     between the two traders, a bank trade exactly the cards traded with the bank, and a turn that ends
-    (forced, or inside Road Building) takes JSettlers' turn fields. Compared with JSettlers' position,
-    anything else that differs is a mismatch."""
+    (forced, or inside Road Building) passes to the next player's roll as our end of turn does. `theirs`
+    is not read: compared with JSettlers' position, anything that differs is a mismatch."""
     exp = copy.deepcopy(ours)
     hands = [p["hand"] for p in exp["players"]]
 
@@ -67,23 +85,22 @@ def excused(ours: dict, theirs: dict, st: Step) -> dict:
         move(i["offerer"], i["get"], i["give"])
         move(i["partner"], i["give"], i["get"])
     elif st.untranslatable == "bank-trade":
-        for e in st.events:
-            if e["type"] == "maritime_traded":
-                move(e["player"], e["got"], e["gave"])
+        gave, got = traded(st)
+        move(st.player, got, gave)
     if st.untranslatable in ("domestic-trade", "bank-trade"):
         exp["bank"] = [max(0, 19 - sum(h[r] for h in hands)) for r in range(5)]  # the bank with its limit off
     if any(e["type"] == "turn_ended" for e in st.events):
-        for k in TURN_FIELDS:
-            exp[k] = theirs[k]
-        for a, b in zip(exp["players"], theirs["players"]):
-            for k in TURN_PLAYER_FIELDS:
-                a[k] = b[k]
+        exp.update(current=(exp["current"] + 1) % 4, phase="pre_roll", return_phase="pre_roll", roads_left=None,
+                   setup_road_node=None, dev_played_this_turn=False, offers_this_turn=0, turn=exp["turn"] + 1)
+        for q in exp["players"]:
+            q["dev_new"], q["discard_remaining"] = [0] * 5, 0
     return exp
 
 
-def _replay(res: GameResult, seed: int, tracker: Tracker, ours: Game, st: Step) -> Game:
+def _replay(res: GameResult, seed: int, tracker: Tracker, ours: Game, st: Step, trades: dict) -> Game:
     """Replay one step on `ours` and compare; returns the game to go on with (JSettlers' position,
-    re-imported, after an allowlisted step)."""
+    re-imported, after an allowlisted step). `trades` keeps each player's last bank trade as
+    (turn, gave, got), to check an undo against."""
     if st.kind == "end_turn" and tracker.ctx.turn >= MAX_TURNS:
         res.capped = True  # our engine ends the game here; JSettlers would play on
         return ours
@@ -91,6 +108,7 @@ def _replay(res: GameResult, seed: int, tracker: Tracker, ours: Game, st: Step) 
     if kind is not None and kind not in allowlist.ENTRIES:
         res.mismatch = f"step {res.steps} ({st.kind}): our rules cannot replay it ({kind})"
         return ours
+    turn = ours.turn
     if st.actions:  # an allowlisted step's translatable actions (a roll before a forced end) replay too
         try:
             for a, chance in st.actions:
@@ -117,6 +135,15 @@ def _replay(res: GameResult, seed: int, tracker: Tracker, ours: Game, st: Step) 
     except Untranslatable as e:
         res.mismatch = f"step {res.steps} ({st.kind}): JSettlers' position after it does not translate: {e}"
         return ours
+    if st.kind == "maritime":
+        last = trades.get(st.player)
+        trades[st.player] = (turn, *traded(st))
+        if kind == "bank-trade":
+            why = undo_fault(tracker.rates(st.after, st.player), *traded(st),
+                             last[1:] if last is not None and last[0] == turn else None)
+            if why is not None:
+                res.mismatch = f"step {res.steps} ({st.kind}) by {st.player} ({kind}): {why}"
+                return ours
     if kind is None:
         diffs = compare(ours.snapshot(), theirs)
         if diffs:
@@ -128,23 +155,19 @@ def _replay(res: GameResult, seed: int, tracker: Tracker, ours: Game, st: Step) 
         res.mismatch = f"step {res.steps} after {st.kind} by {st.player} ({kind}): beyond what its rule changes: {diffs}"
         return ours
     try:
-        imported = Game.from_snapshot(seed, theirs, CONFIG)
+        return Game.from_snapshot(seed, theirs, CONFIG)
     except ValueError as e:
         res.mismatch = f"step {res.steps} ({st.kind}): JSettlers' position does not import: {e}"
         return ours
-    diffs = compare(imported.snapshot(), theirs)
-    if diffs:
-        res.mismatch = f"step {res.steps} ({st.kind}): JSettlers' position does not import as itself: {diffs}"
-    return imported
 
 
-def _advance(res: GameResult, seed: int, tracker: Tracker | None, ours: Game | None, m: dict):
+def _advance(res: GameResult, seed: int, tracker: Tracker | None, ours: Game | None, m: dict, trades: dict):
     if m["t"] == "start":
         tracker = Tracker(m)
         return tracker, import_game(seed, tracker.raw, tracker.ctx, CONFIG)
     for st in tracker.feed(m) if m["t"] == "ev" else tracker.flush():
         if res.mismatch is None and not res.capped:
-            ours = _replay(res, seed, tracker, ours, st)
+            ours = _replay(res, seed, tracker, ours, st, trades)
     return tracker, ours
 
 
@@ -156,7 +179,7 @@ def play_game(jvm: Jvm, seed: int, k: int | None = None) -> GameResult:
     name = f"diff-{seed}-{k}"
     res = GameResult(seed)
     jvm.send(game_command(name, seed, k, bridge=False))
-    tracker, ours, aborted = None, None, False
+    tracker, ours, aborted, trades = None, None, False, {}
     while True:
         m = jvm.recv(GAME_TIMEOUT)
         if m.get("g") != name:
@@ -165,7 +188,7 @@ def play_game(jvm: Jvm, seed: int, k: int | None = None) -> GameResult:
             if m["t"] == "ev":
                 res.trace = (res.trace + [f"{m['a']}:{m['m']}"])[-TRACE_LEN:]
             try:
-                tracker, ours = _advance(res, seed, tracker, ours, m)
+                tracker, ours = _advance(res, seed, tracker, ours, m, trades)
             except BaseException as e:  # noqa: BLE001 - a panic (PyO3 PanicException) is a finding too
                 if isinstance(e, (KeyboardInterrupt, SystemExit)):
                     raise

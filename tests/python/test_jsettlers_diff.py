@@ -48,7 +48,7 @@ class Stream:
     """One game's harness messages written by hand. JSettlers' first player is seat 0, so our seat i is
     its seat i; `raw` is the server-side position, and `ev(..., changed=True)` attaches it."""
 
-    def __init__(self, state=T.PLAY1, hands=()):
+    def __init__(self, state=T.PLAY1, hands=(), settlements=(), roads=()):
         board = native_board(SEED)
         players = [{"res": [0] * 5, "dev": [0] * 10, "played": [0] * 4, "settlements": [], "cities": [], "roads": [],
                     "discard": 0, "played_dev": False, "vp": 0} for _ in range(4)]
@@ -57,6 +57,11 @@ class Stream:
                     "longest": -1, "largest": -1, "winner": -1}
         for seat, h in hands:
             self.hand(seat, h)
+        for seat, node in settlements:
+            players[seat]["settlements"].append(T.OUR_NODE_TO_JS_NODE[node])
+            players[seat]["vp"] += 1
+        for seat, edge in roads:
+            players[seat]["roads"].append(T.OUR_EDGE_TO_JS_EDGE[edge])
         self.msgs = [{"t": "start", "g": NAME, "first": 0, "board": board_raw(board), "s": copy.deepcopy(self.raw)}]
 
     def hand(self, seat, h):
@@ -145,17 +150,25 @@ def test_a_result_summary_counts_allowlisted_kinds():
     assert (s.games, s.steps, s.clean_games, s.allowlisted["bank-trade"]) == (2, 15, 1, 2)
 
 
-def roll_then_forced_end(stream, gain=None):
-    """Player 0 rolls a 9 (nobody has a building on it) and the server then ends its stalled turn."""
+def roll_then_forced_end(stream, gain=None, nxt=1, state=T.ROLL_OR_CARD):
+    """Player 0 rolls a 9 (nobody has a building on it) and the server then ends its stalled turn,
+    handing it to seat `nxt` in `state` (JSettlers' position as the stream shows it)."""
     stream.ev("f0", "SOCRollDice:game=x")
     stream.ev("all", "SOCDiceResult:game=x|param=9")
     if gain is not None:
         stream.hand(*gain)
     stream.raw["state"] = T.PLAY1
     stream.ev("all", "SOCGameState:game=x|state=20", changed=True)
-    stream.raw["current"], stream.raw["state"] = 1, T.ROLL_OR_CARD
-    stream.ev("all", "SOCTurn:game=x|playerNumber=1|gameState=15", changed=True)  # SOCForceEndTurnThread
-    stream.ev("all", "SOCRollDicePrompt:game=x|playerNumber=1")
+    stream.raw["current"], stream.raw["state"] = nxt, state
+    stream.ev("all", f"SOCTurn:game=x|playerNumber={nxt}|gameState=15", changed=True)  # SOCForceEndTurnThread
+    stream.ev("all", f"SOCRollDicePrompt:game=x|playerNumber={nxt}")
+
+
+def road_building_ended(stream, nxt=1):
+    """Player 0 ends its turn with both free roads unplaced; the turn goes to seat `nxt`."""
+    stream.ev("f0", "SOCEndTurn:game=x")
+    stream.raw["current"], stream.raw["state"] = nxt, T.ROLL_OR_CARD
+    stream.ev("all", f"SOCTurn:game=x|playerNumber={nxt}|gameState=15", changed=True)
 
 
 def domestic_trade(stream, partner_gets):
@@ -171,41 +184,69 @@ def domestic_trade(stream, partner_gets):
     stream.ev("all", "SOCClearOffer:game=x|playerNumber=-1")
 
 
-def undone_bank_trade(stream, got):
-    """Player 0 trades one wheat for four ore (undoing an earlier 4:1); JSettlers' position shows it holding `got`."""
-    give, get = rset([0, 0, 0, 1, 0]), rset([0, 0, 0, 0, 4])
-    stream.ev("f0", f"SOCBankTrade:game=x|give={give}|get={get}")
-    stream.hand(0, got)
-    stream.ev("all", f"SOCBankTrade:game=x|give={give}|get={get}|pn=0", changed=True)
+def bank_trades(stream, *trades):
+    """Player 0's bank trades, each (give, get, its hand after) in our resource order."""
+    for give, get, hand in trades:
+        stream.ev("f0", f"SOCBankTrade:game=x|give={rset(give)}|get={rset(get)}")
+        stream.hand(0, hand)
+        stream.ev("all", f"SOCBankTrade:game=x|give={rset(give)}|get={rset(get)}|pn=0", changed=True)
 
 
-EXCUSED = {
-    "forced-end-turn": (dict(state=T.ROLL_OR_CARD), roll_then_forced_end, (), ((2, [1, 0, 0, 0, 0]),),
-                        "players[2].hand"),
-    "domestic-trade": (dict(hands=((0, [1, 0, 0, 0, 0]), (2, [0, 0, 0, 1, 0]))), domestic_trade,
-                       ([1, 0, 0, 0, 0],), ([2, 0, 0, 0, 0],), "players[2].hand"),
-    "bank-trade": (dict(hands=((0, [0, 0, 0, 1, 0]),)), undone_bank_trade, ([0, 0, 0, 0, 4],), ([0, 0, 0, 0, 3],),
-                   "players[0].hand"),
+def one(r, n=1):
+    return [n if i == r else 0 for i in range(5)]
+
+
+WOOD, ORE = 0, 4
+PORT_EDGE, PORT_KIND = next((e, k) for e, k in native_board(SEED)["ports"] if k != "generic")
+K = T.RESOURCE_NAMES.index(PORT_KIND)  # player 0's 2:1 port resource in the port cases
+R, Z = [r for r in range(5) if r != K][:2]  # two resources it trades at 4:1
+AT_PORT = dict(state=T.PLAY1, hands=((0, one(K, 2)),), settlements=((0, T.EDGE_NODES[PORT_EDGE][0]),))
+FOUR_WOOD = dict(state=T.PLAY1, hands=((0, one(WOOD, 4)),))
+WOOD_FOR_ORE = (one(WOOD, 4), one(ORE), one(ORE))  # a whole 4:1 maritime trade, replayed as ours
+ROAD_BUILDING = dict(state=T.PLACING_FREE_ROAD1, settlements=((0, T.EDGE_NODES[0][0]),), roads=((0, 0),))
+TRADERS = dict(hands=((0, [1, 0, 0, 0, 0]), (2, [0, 0, 0, 1, 0])))
+
+# id: (start, script, its arguments, None when the step must pass, else a fragment the mismatch names)
+ALLOWLISTED = {
+    "forced end after a roll": (dict(state=T.ROLL_OR_CARD), roll_then_forced_end, (), None),
+    "forced end after a roll that pays a card no building pays": (
+        dict(state=T.ROLL_OR_CARD), roll_then_forced_end, ((2, [1, 0, 0, 0, 0]),), "players[2].hand"),
+    "forced end handing the turn to the wrong seat": (
+        dict(state=T.ROLL_OR_CARD), roll_then_forced_end, (None, 2), "'current'"),
+    "forced end leaving the player in main": (
+        dict(state=T.ROLL_OR_CARD), roll_then_forced_end, (None, 0, T.PLAY1), "'phase'"),
+    "road building ended": (ROAD_BUILDING, road_building_ended, (), None),
+    "road building ended handing the turn to the wrong seat": (
+        ROAD_BUILDING, road_building_ended, (2,), "'current'"),
+    "domestic trade": (TRADERS, domestic_trade, ([1, 0, 0, 0, 0],), None),
+    "domestic trade moving more than the traded cards": (TRADERS, domestic_trade, ([2, 0, 0, 0, 0],),
+                                                         "players[2].hand"),
+    "bank trade undone": (FOUR_WOOD, bank_trades, (WOOD_FOR_ORE, (one(ORE), one(WOOD, 4), one(WOOD, 4))), None),
+    "bank trade undone at a port": (AT_PORT, bank_trades, ((one(K, 2), one(R), one(R)), (one(R), one(K, 2), one(K, 2))),
+                                    None),
+    "bank trade one for one at no port": (
+        FOUR_WOOD, bank_trades, (WOOD_FOR_ORE, (one(ORE), one(WOOD), one(WOOD))), "not the undo of whole maritime"),
+    "bank trade of nothing for five": (
+        FOUR_WOOD, bank_trades, ((one(WOOD, 0), one(ORE, 5), [4, 0, 0, 0, 5]),), "not the undo of whole maritime"),
+    "bank trade at a port the player does not have": (
+        AT_PORT, bank_trades, ((one(K, 2), one(R), one(R)), (one(R), one(Z, 2), one(Z, 2))),
+        "not the undo of whole maritime"),
+    "bank trade undoing no trade of the player": (
+        dict(state=T.PLAY1, hands=((0, one(ORE)),)), bank_trades, ((one(ORE), one(WOOD, 4), one(WOOD, 4)),),
+        "reverses no bank trade"),
 }
 
 
-@pytest.mark.parametrize("kind", sorted(EXCUSED))
-def test_an_allowlisted_step_is_compared_but_for_what_its_rule_changes(kind):
-    start, script, right, _, _ = EXCUSED[kind]
+@pytest.mark.parametrize("case", list(ALLOWLISTED))
+def test_an_allowlisted_step_is_compared_but_for_what_its_rule_changes(case):
+    start, script, args, wrong = ALLOWLISTED[case]
     s = Stream(**start)
-    script(s, *right)
+    script(s, *args)
     r, _ = s.play()
-    assert r.mismatch is None and dict(r.allowlisted) == {kind: 1}
-
-
-@pytest.mark.parametrize("kind", sorted(EXCUSED))
-def test_a_translation_error_on_an_allowlisted_step_is_a_mismatch(kind):
-    start, script, _, wrong, field = EXCUSED[kind]
-    s = Stream(**start)
-    script(s, *wrong)
-    r, _ = s.play()
-    assert r.mismatch is not None and f"({kind}): beyond what its rule changes" in r.mismatch, r.mismatch
-    assert field in r.mismatch
+    if wrong is None:
+        assert r.mismatch is None and sum(r.allowlisted.values()) == 1, (r.mismatch, r.allowlisted)
+    else:
+        assert r.mismatch is not None and wrong in r.mismatch, r.mismatch
 
 
 def test_an_untranslatable_kind_off_the_allowlist_is_a_mismatch():
