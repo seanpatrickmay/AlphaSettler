@@ -4,7 +4,10 @@ from pathlib import Path
 
 import pytest
 
+import oracle.jsettlers.arena
+from alphasettler import Bot
 from jsettlers_harness import require
+from oracle.jsettlers import actions as A
 from oracle.jsettlers import diff
 from oracle.jsettlers import tables as T
 from oracle.jsettlers.arena import FALLBACK_REASONS, RECORD_KEYS, check, play_game, run_match
@@ -138,7 +141,7 @@ def test_a_native_trading_game_answers_and_counts_the_robots_offers(jvm):
     r = play_game(jvm, 61, 2, "ismcts@20+t", trades=True, arm="native")
     assert r["belief_resets"] == 0 and r["arm"] == "native"
     assert r["robot_offers"] > 0, "stock smart robots offer in a full trading game"
-    assert r["offers_to_us"] >= r["unrepresentable"] + r["counters_rejected"] + r["late"]
+    assert r["offers_to_us"] >= r["unrepresentable"] + r["counters_rejected"] + r["late"] + r["beaten"]
     assert r["our_offers_accepted"] <= r["our_offers"] and r["offers_to_us_accepted"] <= r["offers_to_us"]
     assert set(r["fallback_reasons"]) <= set(FALLBACK_REASONS)
 
@@ -150,3 +153,43 @@ def test_aligned_robots_offer_only_within_our_trading_game(tmp_path):
         r = play_game(j, 62, 0, "ismcts@20+t", trades=True, arm="aligned")
     assert r["robot_offers"] > 0, "capped robots still make one-card offers"
     assert r["robot_offers_over_caps"] == 0 and r["belief_resets"] == 0 and r["arm"] == "aligned"
+
+
+class Offering:
+    """`ismcts@20+t` (which itself never offers), but it plays the first legal offer at each main decision and
+    the first move other than cancelling at a confirm, so our offers cross the bridge (forks included)."""
+
+    def __init__(self, name, seed, nets_dir=None):
+        self.bot = Bot(name, seed, nets_dir)
+
+    def act(self, g):
+        legal = g.legal_actions()
+        if g.phase == "main" and (offers := [a for a in legal if A.is_offer(a)]):
+            return offers[0]
+        if g.phase == "trade_confirm":
+            return next(a for a in legal if a != A.CANCEL)
+        return self.bot.act(g)
+
+    def observe(self, seat, events):
+        self.bot.observe(seat, events)
+
+    def diagnostics(self):
+        return self.bot.diagnostics()
+
+
+@pytest.mark.parametrize("mode,arm", [("stock", "native"), ("aligned", "aligned")])
+def test_our_offers_cross_the_bridge_and_are_answered(mode, arm, tmp_path, monkeypatch):
+    require()
+    monkeypatch.setattr(oracle.jsettlers.arena, "Bot", Offering)
+    with Jvm(mode, log=tmp_path / "jvm.log") as j:
+        sent = []
+        send = j.send
+
+        def spy(m):
+            if m.get("do") == "offer":
+                sent.append(m)
+            send(m)
+        monkeypatch.setattr(j, "send", spy)
+        r = play_game(j, 63, 1, "ismcts@20+t", trades=True, arm=arm)
+    assert len(sent) > 0 and r["our_offers"] >= len(sent) and r["our_offers_accepted"] <= r["our_offers"]
+    assert r["belief_resets"] == 0 and set(r["fallback_reasons"]) <= set(FALLBACK_REASONS)

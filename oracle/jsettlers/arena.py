@@ -40,7 +40,7 @@ AFTER_WIN = "after-win"  # a decision JSettlers asks once our rules have ended t
 ROBOT_DESYNC = "robot-desync"  # `abort_reason` of a game stopped once a robot's copy of it went wrong
 ABORT_REASONS = ("turn-cap", ROBOT_DESYNC)
 COUNTERS = ("our_offers", "our_offers_accepted", "offers_to_us", "offers_to_us_accepted", "unrepresentable",
-            "counters_rejected", "late", "robot_offers", "robot_offers_over_caps")
+            "counters_rejected", "late", "beaten", "robot_offers", "robot_offers_over_caps")
 RECORD_KEYS = ("seed", "candidate_seat", "winner", "vp", "turns", "rounds", "aborted", "abort_reason", "robot_desync",
                "last_build_turn", "fallbacks", "fallback_reasons", "belief_resets", *COUNTERS, "bank_limit_hits", "arm")
 BUILD_STEPS = frozenset({"build", "road_building", "buy"})  # a piece built (setup aside) or a card bought
@@ -76,7 +76,7 @@ class Seat:
         # building at 8-9 VP when nobody holds Longest Road (stall-debug.md), and Task 9 reports those games apart.
         self.last_build: list[int | None] = [None] * 4
         self._declined_seen = 0
-        self._refused_seen = 0  # the tracker's refused acceptances of ours already counted `late`
+        self._refused_seen = [0, 0]  # the tracker's refused acceptances of ours already counted (late, beaten)
         self._virtual, self._virtual_turn = 0, 0  # offers declined inside our engine only, this turn
         self._robot_offers: Counter = Counter()  # (turn, seat) -> offers made
         # Our seat's next discard as the stream should report it: None (none asked), "stock" (the stock brain
@@ -86,11 +86,11 @@ class Seat:
     # --- the stream ---
 
     def observe(self, steps) -> None:
-        refused = self.tracker.refused_accepts[self.seat]
-        if refused != self._refused_seen:
-            # An acceptance of ours, sent inside our 4.5 s, reached the server after the robot withdrew the offer.
-            self.counts["late"] += refused - self._refused_seen
-            self._refused_seen = refused
+        # An acceptance of ours sent inside our 4.5 s that reached the server after the offer was gone: withdrawn
+        # by the robot (`late`), or cleared by another player's trade (`beaten`).
+        for i, (c, n) in enumerate((("late", self.tracker.late_accepts), ("beaten", self.tracker.beaten_accepts))):
+            self.counts[c] += n[self.seat] - self._refused_seen[i]
+            self._refused_seen[i] = n[self.seat]
         for st in steps:
             if st.kind in BUILD_STEPS and st.player is not None and st.actions:
                 self.last_build[st.player] = self.tracker.ctx.turn
@@ -137,6 +137,8 @@ class Seat:
     # --- decisions ---
 
     def decide(self, ask: dict, received: float) -> dict:
+        if ask["kind"] == "answer":
+            self.counts["offers_to_us"] += 1  # before any fallback, so `offers_to_us_accepted` never exceeds it
         if ask["kind"] == "discard":
             self._discard_expect = "stock"  # unless `_discard` replies with the cards it showed
         if self.tracker.over:
@@ -362,12 +364,17 @@ class Seat:
         try:
             return self._act(h, f)
         finally:
-            self.fork_resets += f.diagnostics().get("belief_resets", 0)
+            # A fork replays our bot's history: once our bot has reset on it, every fork would reset there too.
+            if self.bot.diagnostics().get("belief_resets", 0) == 0:
+                self.fork_resets += f.diagnostics().get("belief_resets", 0)
+
+    def belief_resets(self) -> int:
+        """Our bot's belief resets, plus the forks' while our bot has none."""
+        return self.bot.diagnostics().get("belief_resets", 0) + self.fork_resets
 
     def _answer(self, extra, received) -> dict:
         """A robot's offer to us: answered at the offerer's Main position, its earlier offers this turn
-        clamped to 1, the offer applied and the seats before ours rejecting."""
-        self.counts["offers_to_us"] += 1
+        clamped to 1, the offer applied and the seats before ours rejecting (`decide` counted it in `offers_to_us`)."""
         ctx, raw = self.tracker.ctx, self.tracker.raw
         if raw["current"] == ctx.js(self.seat):
             self.counts["counters_rejected"] += 1
@@ -469,7 +476,7 @@ def play_game(jvm: Jvm, seed: int, k: int, candidate: str, nets_dir: str | None 
                 "robot_desync": bool(tracker.setup_cancelled),
                 "last_build_turn": list(seat.last_build),
                 "fallbacks": sum(seat.fallbacks.values()), "fallback_reasons": dict(seat.fallbacks),
-                "belief_resets": bot.diagnostics().get("belief_resets", 0) + seat.fork_resets,
+                "belief_resets": seat.belief_resets(),
                 **{c: seat.counts[c] for c in COUNTERS},
                 "bank_limit_hits": tracker.bank_limit_hits, "arm": arm,
             }

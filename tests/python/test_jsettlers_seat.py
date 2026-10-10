@@ -299,19 +299,47 @@ def test_late_answers_are_sent_as_rejections_and_counted():
     assert r["accept"] is False and seat.counts["late"] == 1
 
 
-def test_an_acceptance_the_server_refuses_after_the_offer_is_withdrawn_is_late_not_a_declined_request():
-    # Our answer beat our 4.5 s, but the robot's 5 s wait ended first: the server refuses the acceptance.
-    s, seat, _ = seat_at(current=2, hands={0: [1, 0, 0, 0, 0], 2: [0, 0, 1, 0, 0]})
-    js0, js2 = s.js(0), s.js(2)
-    s.send(f"f{js2}", "SOCClearOffer:game=x|playerNumber=0")
-    s.send("all", f"SOCClearOffer:game=x|playerNumber={js2}")
+def refused_acceptance(beaten: bool):
+    """Robot seat 2 offers to all; seat 1's acceptance executes first (`beaten`) or seat 2 withdraws the offer;
+    then our acceptance reaches the server and is refused."""
+    s, seat, _ = seat_at(current=2, hands={0: [1, 0, 0, 0, 0], 1: [1, 0, 0, 0, 0], 2: [0, 0, 1, 0, 0]})
+    js0, js1, js2 = s.js(0), s.js(1), s.js(2)
+    give, get = js_rset([0, 0, 1, 0, 0]), js_rset([1, 0, 0, 0, 0])
+    s.send(f"f{js2}", f"SOCMakeOffer:game=x|from={js2}|to=true,true,true,true|give={give}|get={get}")
+    s.send("all", f"SOCMakeOffer:game=x|from={js2}|to=true,true,true,true|give={give}|get={get}")
+    if beaten:
+        s.send(f"f{js1}", f"SOCAcceptOffer:game=x|accepting=0|offering={js2}")
+        s.hand(1, [0, 0, 1, 0, 0])
+        s.hand(2, [1, 0, 0, 0, 0])
+        s.send("all", f"SOCAcceptOffer:game=x|accepting={js1}|offering={js2}|toAccepting={give}|toOffering={get}",
+               changed=True)
+        s.send("all", "SOCClearOffer:game=x|playerNumber=-1")
+    else:
+        s.send(f"f{js2}", "SOCClearOffer:game=x|playerNumber=0")
+        s.send("all", f"SOCClearOffer:game=x|playerNumber={js2}")
     s.send(f"f{js0}", f"SOCAcceptOffer:game=x|accepting=0|offering={js2}")
     s.send(f"p{js0}", f"SOCRejectOffer:game=x|playerNumber={js0}|reasonCode=1")
     seat.observe(s.tracker.flush())
-    assert s.tracker.refused_accepts == [1, 0, 0, 0] and s.tracker.declined == [0] * 4
-    assert seat.counts["late"] == 1
+    return s, seat
+
+
+def test_an_acceptance_the_server_refuses_after_the_offer_is_withdrawn_is_late_not_a_declined_request():
+    # Our answer beat our 4.5 s, but the robot's 5 s wait ended first: the server refuses the acceptance.
+    s, seat = refused_acceptance(beaten=False)
+    assert s.tracker.late_accepts == [1, 0, 0, 0] and s.tracker.beaten_accepts == [0] * 4
+    assert s.tracker.declined == [0] * 4
+    assert seat.counts["late"] == 1 and seat.counts["beaten"] == 0
     seat.observe([])
     assert seat.counts["late"] == 1  # counted once
+
+
+def test_an_acceptance_refused_after_another_players_trade_executed_is_beaten_not_late():
+    s, seat = refused_acceptance(beaten=True)
+    assert s.tracker.beaten_accepts == [1, 0, 0, 0] and s.tracker.late_accepts == [0] * 4
+    assert s.tracker.declined == [0] * 4
+    assert seat.counts["beaten"] == 1 and seat.counts["late"] == 0 and seat.counts["offers_to_us_accepted"] == 0
+    seat.observe([])
+    assert seat.counts["beaten"] == 1
 
 
 def test_our_offer_goes_to_those_we_would_confirm_and_an_unsent_one_is_declined_in_our_engine():
@@ -363,6 +391,38 @@ def test_the_confirm_at_a_hypothetical_acceptance_is_asked_of_a_fork_shown_our_b
         assert f.seen[0] == {"type": "turn_ended", "player": 3}
         assert [e["type"] for e in f.seen[1:]][:2] == ["trade_offered", "trade_responded"]
     assert seat.fork_resets == 0
+
+
+class ResetBot(StubBot):
+    def __init__(self, choose, resets):
+        super().__init__(choose)
+        self.resets = resets
+
+    def diagnostics(self):
+        return {"belief_resets": self.resets}
+
+
+def test_fork_resets_are_not_counted_again_once_our_bot_has_reset():
+    # A fork replays our bot's history: after our bot reset on it, each fork resets there too (up to 3 an offer).
+    give, get = [1, 0, 0, 0, 0], [0, 0, 0, 0, 1]
+    a = offer(give, get)
+    hands = {0: [1, 0, 0, 0, 0], 1: [0, 0, 0, 0, 1], 2: [0, 0, 0, 0, 1], 3: [0, 0, 0, 0, 0]}
+
+    def confirming(g):
+        return confirm(2) if confirm(2) in g.legal_actions() else CANCEL
+    for ours, counted in ((1, 1), (0, 2)):  # our bot reset once: the record says 1; it had none: each fork's
+        s, _, _ = seat_at(hands=hands)
+        bot = ResetBot(lambda g: a if a in g.legal_actions() else END_TURN, ours)
+        seat = Seat(bot, 5, TRADES, s.tracker, 0, clock=lambda: 0.0, fork=lambda: ResetBot(confirming, 1))
+        assert seat.decide(ask("main"), 0.0)["do"] == "offer"
+        assert seat.belief_resets() == counted
+
+
+def test_an_answer_asked_after_the_cap_is_still_an_offer_to_us():
+    s, seat, _ = seat_at(current=2)
+    seat.capped = True
+    r = seat.decide(ask("answer", **robot_offer(s.js(2), [0, 0, 1, 0, 0], [1, 0, 0, 0, 0])), 0.0)
+    assert r["fallback"] == "turn-cap" and seat.counts["offers_to_us"] == 1
 
 
 def test_robot_offers_and_their_caps_are_counted_from_the_stream():

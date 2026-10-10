@@ -9,11 +9,9 @@ package alphasettler.jsettlers;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import soc.game.SOCCity;
 import soc.game.SOCDevCardConstants;
 import soc.game.SOCGame;
-import soc.game.SOCPlayer;
 import soc.game.SOCPlayingPiece;
 import soc.game.SOCResourceConstants;
 import soc.game.SOCResourceSet;
@@ -42,8 +40,6 @@ final class BridgeBrain extends SOCRobotBrain {
     static final int STOCK_ROBBER = -2;
     private final Pipe pipe;
     private volatile int victim = STOCK_ROBBER;
-    /** Answers by offer (offerer, sets, offer time): the stock brain may consider one offer twice. */
-    private final Map<String, Integer> answers = new ConcurrentHashMap<>();
 
     BridgeBrain(SOCRobotClient rc, SOCRobotParameters params, SOCGame ga, CappedQueue<SOCMessage> mq, Pipe pipe) {
         super(rc, params, ga, mq);
@@ -259,23 +255,21 @@ final class BridgeBrain extends SOCRobotBrain {
 
     /**
      * An offer made to us is asked of Python (which rejects counter-offers and offers outside our trading
-     * game unasked, counted); a fallback is the stock negotiator's answer.
+     * game unasked, counted); a fallback is the stock negotiator's answer. Asked once an offer: every trade
+     * message is applied on this brain thread, which waits here, so the offer cannot change during the ask or
+     * the pause after it, and handleMAKEOFFER's second considerOffer (on a changed offer time) never runs. An
+     * acceptance of an offer withdrawn meanwhile is therefore sent from stale data; the server refuses it,
+     * and Python counts it (late, or beaten when another trade cleared the offer).
      */
     @Override
     protected int considerOffer(SOCTradeOffer offer) {
         if (!offer.getTo()[getOurPlayerNumber()]) return SOCRobotNegotiator.IGNORE_OFFER;
-        SOCPlayer from = game.getPlayer(offer.getFrom());
-        String key = offer.getFrom() + "|" + offer.getGiveSet() + "|" + offer.getGetSet() + "|" + from.getCurrentOfferTime();
-        Integer known = answers.get(key);
-        if (known != null) return known;
         List<Object> toList = new ArrayList<>();
         for (boolean b : offer.getTo()) toList.add(b);
         Map<String, Object> r = ask("answer", Json.map("from", offer.getFrom(), "to", toList,
             "give", js5(offer.getGiveSet()), "get", js5(offer.getGetSet())));
-        int answer = r == null ? super.considerOffer(offer)
-            : (Json.bool(r, "accept") ? SOCRobotNegotiator.ACCEPT_OFFER : SOCRobotNegotiator.REJECT_OFFER);
-        answers.put(key, answer);
-        return answer;
+        if (r == null) return super.considerOffer(offer);
+        return Json.bool(r, "accept") ? SOCRobotNegotiator.ACCEPT_OFFER : SOCRobotNegotiator.REJECT_OFFER;
     }
 
     /** Our seat offers only what our bot chose (the "offer" reply); the stock negotiator never offers for it. */
@@ -289,11 +283,5 @@ final class BridgeBrain extends SOCRobotBrain {
     @Override
     protected boolean makeCounterOffer(SOCTradeOffer offer) {
         return false;
-    }
-
-    @Override
-    protected void resetFieldsAtEndTurn() {
-        super.resetFieldsAtEndTurn();
-        answers.clear();
     }
 }

@@ -80,9 +80,14 @@ class Tracker:
         self.raw = start["s"]
         self.declined = [0] * 4
         # Per seat of ours, acceptances the server refused (`SOCRejectOffer` with a reason): the offer was gone
-        # (withdrawn at the offerer's 5 s wait) by the time the acceptance arrived. Not a declined request: no
-        # decision of that seat repeats it, so the next one is not a fallback; the arena counts them `late`.
-        self.refused_accepts = [0] * 4
+        # when the acceptance arrived. Not a declined request: no decision of that seat repeats it, so the next one
+        # is not a fallback. `beaten_accepts`: a trade executed after the offer was made (every trade clears every
+        # offer), so another player's acceptance won; `late_accepts`: none did, so the offerer withdrew it (its
+        # 5 s wait ended first). The arena counts them `beaten` and `late`.
+        self.late_accepts = [0] * 4
+        self.beaten_accepts = [0] * 4
+        self._trades = 0  # trades executed so far
+        self._offer_trades: dict[int, int] = {}  # per offerer (ours), `_trades` when its latest offer was made
         self.bank_limit_hits = 0
         self.setup_cancelled: list[int] = []  # our seats whose setup settlement a forced end of turn removed
         self.over = False
@@ -123,7 +128,9 @@ class Tracker:
         server = [e for e in entries if not e.from_client]
         if req is not None and req.sender is not None and any(_declined(e) for e in server):
             if req.name == "SOCAcceptOffer":
-                self.refused_accepts[self.ctx.ours(req.sender)] += 1
+                q, o = self.ctx.ours(req.sender), self.ctx.ours(int(req.f["offering"]))
+                beaten = self._trades > self._offer_trades.get(o, self._trades)
+                (self.beaten_accepts if beaten else self.late_accepts)[q] += 1
             else:
                 self.declined[self.ctx.ours(req.sender)] += 1
         for r in range(5):
@@ -402,6 +409,7 @@ class Tracker:
     def _trade(self, e, after) -> Step:
         a, o = self.ctx.ours(int(e.f["accepting"])), self.ctx.ours(int(e.f["offering"]))
         give, get = ours5(e.f["toAccepting"]), ours5(e.f["toOffering"])
+        self._trades += 1
         events = [_offered(o, give, get), {"type": "trade_responded", "player": a, "accepted": True},
                   {"type": "trade_confirmed", "offerer": o, "partner": a, "offerer_gave": give, "partner_gave": get}]
         return Step("trade", o, [], events, after, untranslatable="domestic-trade",
@@ -421,6 +429,7 @@ class Tracker:
         o = self.ctx.ours(int(e.f["from"]))
         to = sorted(self.ctx.ours(i) for i, t in enumerate(e.f["to"].split(",")) if t == "true")
         give, get = ours5(e.f["give"]), ours5(e.f["get"])
+        self._offer_trades[o] = self._trades
         if after["current"] == self.ctx.js(o):
             self.ctx.offers += 1
         return Step("offer", o, [], [_offered(o, give, get)], after, info={"from": o, "to": to, "give": give, "get": get})

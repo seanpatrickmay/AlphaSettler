@@ -19,7 +19,9 @@ import soc.util.SOCRobotParameters;
  * A stock smart robot whose offers fit our trading game (the aligned arm, spec Section 5): it sends
  * the stock negotiator's offer only when it is one card a side, sends it to every opponent, at most
  * two a turn, and never counter-offers. When the negotiator's offer does not fit, it stops offering
- * for the turn. Everything else is the stock brain.
+ * (doneTrading) until the stock brain clears that flag, at a new turn or after a declined request
+ * mid-turn (resetFieldsAndBuildingPlan); it may then offer again, within the same caps. Everything else
+ * is the stock brain.
  */
 final class CappedBrain extends SOCRobotBrain {
     static final int MAX_OFFERS = 2;
