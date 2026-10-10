@@ -229,6 +229,29 @@ def stalled_setup_road(stream, removed=SECOND_NODE, takes_back=True, nxt=1):
     stream.ev("all", f"SOCTurn:game=x|playerNumber={nxt}|gameState=15")
 
 
+def cancelled_at(step, second):
+    """Our engine's last setup position on SEED's board with `setup_step` set to `step`, and a forced setup end of
+    player 0's settlement awaiting its road, placed in JSettlers' second round (START2B) or not."""
+    g = Game(SEED)
+    while not (g.phase == "setup_road" and g.snapshot()["setup_step"] == 7):
+        g.apply(g.legal_actions()[0])
+    ours = {**g.snapshot(), "setup_step": step}
+    theirs = {**ours, "phase": "pre_roll", "current": 1, "setup_road_node": None, "setup_step": 8}
+    st = events.Step("forced_setup_end", 0, [], [], None, untranslatable="forced-setup-end",
+                     info={"second_round": second})
+    return ours, diff.excused(ours, theirs, st)
+
+
+def test_a_cancelled_settlements_cards_go_back_by_jsettlers_round_not_our_setup_step():
+    # After a round-1 skip our setup step no longer says the round: JSettlers takes the cards back (it clears the
+    # hand) exactly when the settlement was placed in its second round, START2A, the one that pays.
+    ours, exp = cancelled_at(3, True)
+    assert exp["players"][0]["hand"] == [0] * 5 and any(ours["players"][0]["hand"])
+    assert ours["setup_road_node"] not in exp["players"][0]["settlements"]
+    ours, exp = cancelled_at(7, False)
+    assert exp["players"][0]["hand"] == ours["players"][0]["hand"]
+
+
 def one(r, n=1):
     return [n if i == r else 0 for i in range(5)]
 

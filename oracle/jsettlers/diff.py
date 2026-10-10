@@ -24,7 +24,6 @@ from oracle.jsettlers.actions import decode
 from oracle.jsettlers.boards import game_command
 from oracle.jsettlers.events import Step, Tracker
 from oracle.jsettlers.jvm import Jvm
-from oracle.jsettlers.tables import RESOURCE_NAMES, TILE_NODES
 from oracle.jsettlers.translate import Untranslatable, import_game, snapshot
 
 CONFIG = {"max_offers_per_turn": 0, "bank_limit": False}
@@ -74,8 +73,9 @@ def excused(ours: dict, theirs: dict, st: Step) -> dict:
     allowlist rule changes done as the rule does it: a domestic trade moves exactly the traded cards
     between the two traders, a bank trade exactly the cards traded with the bank, and a turn that ends
     (forced, or inside Road Building) passes to the next player's roll as our end of turn does. A setup turn
-    the server ended loses the settlement awaiting its road and what that settlement produced; the setup
-    order after it (current player, phase, step, turn) is JSettlers' own, the one field set read from `theirs`.
+    the server ended loses the settlement awaiting its road and, in JSettlers' second round, the hand it
+    paid; the setup order after it (current player, phase, step, turn) is JSettlers' own, the one field set
+    read from `theirs`.
     Otherwise `theirs` is not read: compared with JSettlers' position, anything that differs is a mismatch."""
     exp = copy.deepcopy(ours)
     hands = [p["hand"] for p in exp["players"]]
@@ -94,11 +94,10 @@ def excused(ours: dict, theirs: dict, st: Step) -> dict:
         node = exp["setup_road_node"] if exp["phase"] == "setup_road" else None
         if node is not None:
             exp["players"][st.player]["settlements"].remove(node)
-            if exp["setup_step"] >= 4:  # a second settlement: what it produced goes back
-                res = exp["board"]["tile_resource"]
-                for t, nodes in enumerate(TILE_NODES):
-                    if node in nodes and res[t] is not None:
-                        hands[st.player][RESOURCE_NAMES.index(res[t])] -= 1
+            if st.info["second_round"]:
+                # JSettlers' second round (START2A) pays the settlement and undoing it in START2B clears the
+                # player's hand (SOCPlayer.undoPutPiece), whatever our setup step says after a round-1 skip.
+                hands[st.player][:] = [0] * 5
         for k in ("current", "phase", "setup_road_node", "setup_step", "turn", "return_phase", "roads_left"):
             exp[k] = theirs[k]
     if st.untranslatable in ("domestic-trade", "bank-trade", "forced-setup-end"):

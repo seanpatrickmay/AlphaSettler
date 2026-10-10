@@ -386,6 +386,7 @@ def test_a_setup_turn_the_server_ends_is_its_own_allowlisted_step_and_a_robot_de
     [step] = s.flush()
     assert (step.kind, step.player, step.actions, step.events) == ("forced_setup_end", 0, [], [])
     assert step.untranslatable == "forced-setup-end" and step.after["state"] == T.START2A
+    assert step.info == {"second_round": True}  # placed in START2A: JSettlers clears the cards it paid
     assert s.tracker.setup_cancelled == [0] and s.tracker.ctx.turn == 0
 
 

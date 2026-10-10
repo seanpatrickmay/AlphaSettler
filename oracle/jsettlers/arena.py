@@ -37,10 +37,12 @@ MAX_TURNS = 1000
 FALLBACK_REASONS = ("position", "declined", "engine", "choice", "preroll-card", "turn-cap", "java-timeout", "victim",
                     "forced-discard")
 AFTER_WIN = "after-win"  # a decision JSettlers asks once our rules have ended the game: answered, not counted
+ROBOT_DESYNC = "robot-desync"  # `abort_reason` of a game stopped once a robot's copy of it went wrong
+ABORT_REASONS = ("turn-cap", ROBOT_DESYNC)
 COUNTERS = ("our_offers", "our_offers_accepted", "offers_to_us", "offers_to_us_accepted", "unrepresentable",
             "counters_rejected", "late", "robot_offers", "robot_offers_over_caps")
-RECORD_KEYS = ("seed", "candidate_seat", "winner", "vp", "turns", "rounds", "aborted", "robot_desync", "last_build_turn",
-               "fallbacks", "fallback_reasons", "belief_resets", *COUNTERS, "bank_limit_hits", "arm")
+RECORD_KEYS = ("seed", "candidate_seat", "winner", "vp", "turns", "rounds", "aborted", "abort_reason", "robot_desync",
+               "last_build_turn", "fallbacks", "fallback_reasons", "belief_resets", *COUNTERS, "bank_limit_hits", "arm")
 BUILD_STEPS = frozenset({"build", "road_building", "buy"})  # a piece built (setup aside) or a card bought
 
 
@@ -62,6 +64,7 @@ class Seat:
         self.fallbacks: Counter = Counter()
         self.counts: Counter = Counter({k: 0 for k in COUNTERS})
         self.capped = False
+        self.stopped: str | None = None  # the driver stopped the game for this reason (not the turn cap): uncounted
         # Per seat of ours, the last turn it built a piece or bought a card (None if never): stock robots can stop
         # building at 8-9 VP when nobody holds Longest Road (stall-debug.md), and Task 9 reports those games apart.
         self.last_build: list[int | None] = [None] * 4
@@ -122,6 +125,8 @@ class Seat:
             # Our rules ended the game (a knight's Largest Army reached the target) while JSettlers plays on to
             # the robber move: no decision of ours is owed, so the stock brain moves it, uncounted.
             return {"t": "reply", "id": ask["id"], "fallback": AFTER_WIN}
+        if self.stopped is not None:  # the game is being aborted: nothing to decide, nothing to count
+            return {"t": "reply", "id": ask["id"], "fallback": self.stopped}
         try:
             if self.capped or self.tracker.ctx.turn >= self.max_turns:
                 raise Fallback("turn-cap")
@@ -379,7 +384,17 @@ def play_game(jvm: Jvm, seed: int, k: int, candidate: str, nets_dir: str | None 
     bot = Bot(candidate, seed * 4 + k, nets_dir)
     jvm.send(game_command(name, seed, k, injected=not native_boards, no_trades=not trades, bridge=True))
     tracker = seat = None
-    aborted = False
+    abort_reason = None
+
+    def stop(reason: str) -> None:
+        nonlocal abort_reason
+        jvm.send({"t": "abort", "g": name})
+        abort_reason = reason
+        if reason == ROBOT_DESYNC:
+            seat.stopped = reason
+        else:
+            seat.capped = True
+
     while True:
         m = jvm.recv(SILENCE)
         if m.get("g") != name:
@@ -403,6 +418,8 @@ def play_game(jvm: Jvm, seed: int, k: int, candidate: str, nets_dir: str | None 
         elif t == "ask":
             received = time.monotonic()
             seat.observe(tracker.flush())
+            if abort_reason is None and tracker.setup_cancelled:
+                stop(ROBOT_DESYNC)  # before the decision: the game ends here
             jvm.send(seat.decide(m, received))
         elif t == "fallback":
             seat.fellback(m["reason"])
@@ -414,8 +431,10 @@ def play_game(jvm: Jvm, seed: int, k: int, candidate: str, nets_dir: str | None 
                 "winner": None if m["winner"] < 0 else ctx.ours(m["winner"]),
                 "vp": [m["vp"][ctx.js(i)] for i in range(4)],
                 "turns": ctx.turn, "rounds": m["rounds"], "aborted": m["aborted"],
+                "abort_reason": abort_reason if m["aborted"] else None,
                 # A setup settlement the server cancelled by a forced end: a stock robot keeps it in its own copy of
-                # the game when the turn was its own, and plays the rest of the game on a board it does not have.
+                # the game when the turn was its own, and would play the rest on a board it does not have (about
+                # 60 s a turn, force-ended), so the game is aborted at once and recorded with no winner.
                 "robot_desync": bool(tracker.setup_cancelled),
                 "last_build_turn": list(seat.last_build),
                 "fallbacks": sum(seat.fallbacks.values()), "fallback_reasons": dict(seat.fallbacks),
@@ -425,9 +444,10 @@ def play_game(jvm: Jvm, seed: int, k: int, candidate: str, nets_dir: str | None 
             }
         else:
             raise RuntimeError(f"{name}: unexpected message {m}")
-        if not aborted and tracker.ctx.turn >= max_turns:
-            jvm.send({"t": "abort", "g": name})
-            aborted = seat.capped = True
+        if abort_reason is None and tracker.setup_cancelled:
+            stop(ROBOT_DESYNC)
+        elif abort_reason is None and tracker.ctx.turn >= max_turns:
+            stop("turn-cap")
 
 
 def check(candidate: str, baseline: str, seeds: int, seed_start: int = 0, nets_dir: str | None = None) -> None:

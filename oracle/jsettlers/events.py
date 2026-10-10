@@ -22,7 +22,7 @@ from oracle.jsettlers.messages import Entry, ours5, parse
 from oracle.jsettlers.tables import (
     CITY, DEV_NAMES, EDGE_NODES, JS_DEV_TO_OURS, JS_EDGE_TO_OUR_EDGE, JS_HEX_TO_OUR_TILE, JS_NODE_TO_OUR_NODE,
     JS_RES, OVER, PLACING_CITY, PLACING_FREE_ROAD1, PLACING_FREE_ROAD2, PLACING_ROAD, PLACING_SETTLEMENT,
-    RESOURCE_NAMES, ROAD, SETTLEMENT, SETUP_STATES, WAITING_FOR_DISCARDS, WAITING_FOR_DISCOVERY,
+    RESOURCE_NAMES, ROAD, SETTLEMENT, SETUP_STATES, START2B, WAITING_FOR_DISCARDS, WAITING_FOR_DISCOVERY,
     WAITING_FOR_MONOPOLY, js5_to_ours,
 )
 from oracle.jsettlers.translate import Context, snapshot
@@ -203,13 +203,16 @@ class Tracker:
     def _forced_setup_end(self, before, after, cancelled: bool) -> Step:
         """The server ended a stalled setup turn (SOCForceEndTurnThread): the settlement awaiting its road, if
         any, is removed with the cards it produced, and the setup order moves on (JSettlers may move its first
-        player). Our engine has no such end, and no event removes a settlement, so our bot is shown nothing and
+        player); a settlement of JSettlers' second round (cancelled in START2B) takes back the hand it paid
+        (`info["second_round"]`, read from JSettlers' state: our setup step does not say the round after a
+        skip). Our engine has no such end, and no event removes a settlement, so our bot is shown nothing and
         the replay re-imports. A stock robot whose own settlement is cancelled keeps it in its copy of the game
         (`setup_cancelled`, the arena's `robot_desync`)."""
         p = self.ctx.ours(before["current"])
         if cancelled:
             self.setup_cancelled.append(p)
-        return Step("forced_setup_end", p, [], [], after, untranslatable="forced-setup-end")
+        return Step("forced_setup_end", p, [], [], after, untranslatable="forced-setup-end",
+                    info={"second_round": before["state"] == START2B})
 
     def _forced_end(self, step: Step | None, before, after) -> Step:
         """The server ended the turn (SOCForceEndTurnThread) in a stretch whose first rule read another

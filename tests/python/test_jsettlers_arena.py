@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,7 @@ def jvm(tmp_path_factory):
 def test_a_no_trades_bridge_game_records_every_counter(jvm):
     r = play_game(jvm, 51, 1, "ismcts@20", trades=False, arm="no-trades")
     assert tuple(r) == RECORD_KEYS
-    assert r["candidate_seat"] == 1 and r["arm"] == "no-trades" and r["aborted"] is False
+    assert r["candidate_seat"] == 1 and r["arm"] == "no-trades" and r["aborted"] is False and r["abort_reason"] is None
     assert r["winner"] in (0, 1, 2, 3) and r["vp"][r["winner"]] >= 10
     assert r["turns"] > 10 and r["belief_resets"] == 0
     assert set(r["fallback_reasons"]) <= set(FALLBACK_REASONS)
@@ -34,7 +35,7 @@ def test_a_no_trades_bridge_game_records_every_counter(jvm):
 
 def test_a_game_at_the_turn_cap_ends_with_no_winner_and_the_jvm_plays_on(jvm):
     r = play_game(jvm, 52, 0, "ismcts@20", trades=False, arm="no-trades", max_turns=3)
-    assert r["aborted"] is True and r["winner"] is None and r["turns"] >= 3
+    assert r["aborted"] is True and r["abort_reason"] == "turn-cap" and r["winner"] is None and r["turns"] >= 3
     # The aborted game's bridge may still ask after its "over"; the next game on this JVM answers it.
     r = play_game(jvm, 52, 1, "ismcts@20", trades=False, arm="no-trades", max_turns=3)
     assert r["aborted"] is True and r["candidate_seat"] == 1
@@ -70,7 +71,7 @@ def test_late_messages_of_an_earlier_aborted_game_are_answered_and_dropped():
     r = play_game(j, 52, 2, "random", trades=False, arm="no-trades")
     assert j.sent[0]["t"] == "game" and j.sent[1] == {"t": "reply", "id": 41, "fallback": "turn-cap"}
     assert r["fallbacks"] == 0 and r["aborted"] is True and r["last_build_turn"] == [None] * 4
-    assert r["robot_desync"] is False
+    assert r["robot_desync"] is False and r["abort_reason"] is None
     j = FakeJvm([{"t": "ev", "g": "elsewhere", "a": "all", "m": "SOCGameState:game=elsewhere|state=20"}])
     with pytest.raises(RuntimeError, match="a message from another game"):
         play_game(j, 52, 3, "random", trades=False, arm="no-trades")
@@ -84,13 +85,16 @@ def seed78(name=None):
     return msgs if name is None else [{**m, "g": name} for m in msgs if m["t"] in ("start", "ev", "over")]
 
 
-def test_a_robots_setup_settlement_cancelled_by_a_forced_end_is_a_desync_and_one_belief_reset():
+def test_a_robots_setup_settlement_cancelled_by_a_forced_end_aborts_the_game_at_once():
     # Seed 78, k=1 (stall-debug.md): robot 3's planInitRoad returns an edge off the board, the server ends its setup
-    # turn and cancels its settlement, and the robot keeps it in its own copy. Our bot is shown no event for the
-    # cancelled settlement (no engine event removes one), so its next searched decision resets its belief once.
-    r = play_game(FakeJvm(seed78()), 78, 1, "ismcts@20", trades=False, arm="y")
-    assert r["robot_desync"] is True and r["belief_resets"] == 1 and r["fallbacks"] == 0
-    assert r["last_build_turn"][0] is None  # the desynced robot (our seat 0 here) never builds again
+    # turn and cancels its settlement, and the robot keeps it in its own copy: the rest would be played against a
+    # robot on a board it does not have, force-ended every turn. The driver aborts at the first decision after it.
+    j = FakeJvm(seed78())
+    r = play_game(j, 78, 1, "ismcts@20", trades=False, arm="y")
+    assert [m["t"] for m in j.sent[:7]] == ["game", "reply", "reply", "reply", "reply", "abort", "reply"]
+    assert j.sent[6]["fallback"] == "robot-desync"  # answered, not decided and not counted
+    assert r["robot_desync"] is True and r["abort_reason"] == "robot-desync" and r["winner"] is None
+    assert r["fallbacks"] == 0 and r["belief_resets"] == 0  # (the recording plays on; a real abort stops it)
 
 
 def test_the_seed_78_stream_replays_with_the_forced_setup_end_allowlisted():
@@ -98,9 +102,13 @@ def test_the_seed_78_stream_replays_with_the_forced_setup_end_allowlisted():
     assert res.mismatch is None and res.allowlisted["forced-setup-end"] == 1 and res.steps > 30
 
 
-def test_seed_78_desyncs_a_robot_in_the_live_harness(jvm):
-    r = play_game(jvm, 78, 1, "ismcts@20", trades=False, arm="no-trades", max_turns=1)  # one forced end: about 60 s
-    assert r["robot_desync"] is True and r["aborted"] is True
+def test_seed_78_desyncs_a_robot_in_the_live_harness_and_the_jvm_plays_on(jvm):
+    t = time.monotonic()
+    r = play_game(jvm, 78, 1, "ismcts@20", trades=False, arm="no-trades")  # the forced setup end itself takes 60 s
+    assert r["robot_desync"] is True and r["abort_reason"] == "robot-desync" and r["winner"] is None
+    assert r["turns"] == 0 and time.monotonic() - t < 100
+    r = play_game(jvm, 51, 1, "ismcts@20", trades=False, arm="after-desync")
+    assert r["aborted"] is False and r["winner"] is not None and r["robot_desync"] is False
 
 
 def test_run_match_rotates_the_seat_on_one_board(tmp_path):
