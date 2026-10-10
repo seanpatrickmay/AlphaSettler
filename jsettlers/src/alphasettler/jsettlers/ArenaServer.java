@@ -53,6 +53,8 @@ final class ArenaServer extends SOCServer {
     private final Set<String> started = ConcurrentHashMap.newKeySet();
     private final Set<String> finished = ConcurrentHashMap.newKeySet();
     private volatile GameSpec creating;
+    /** Serializes recording and aborting (see {@link #record}). */
+    private final Object recording = new Object();
 
     ArenaServer(Pipe pipe) {
         super(PORT, props());
@@ -122,11 +124,13 @@ final class ArenaServer extends SOCServer {
 
     void abort(String g) {
         SOCGame ga = getGame(g);
-        if (ga == null || !finished.add(g)) return;
-        Map<String, Object> over = over(ga, true);
-        destroyGameAndBroadcast(g, "arena abort");
+        if (ga == null) return;
+        synchronized (recording) {  // no event of g is queued after its "over"
+            if (!finished.add(g)) return;
+            pipe.send(over(ga, true));
+        }
+        destroyGameAndBroadcast(g, "arena abort");  // outside the lock: it takes JSettlers' own locks
         forget(g);
-        pipe.send(over);
     }
 
     @Override
@@ -183,49 +187,54 @@ final class ArenaServer extends SOCServer {
     }
 
     /**
-     * Runs on the recording thread without taking the game's monitor: the server's own callers hold it
-     * ({@code takeMonitor} is not reentrant), and only the server's treater thread changes the server-side game.
+     * Serialized by {@link #recording}: the server's treater thread and {@code SOCForceEndTurnThread} (which holds
+     * the game's monitor) can both record events of one game, so the start block, the raw position, its comparison
+     * with the last one and the queued lines are one atomic step per event, in the order recorded. The game's own
+     * monitor is not taken ({@code takeMonitor} is not reentrant, and most callers already hold it); the game is
+     * looked up outside the lock, and nothing under it waits on a JSettlers lock.
      */
     private void record(String g, String aud, Object m) {
-        if (!specs.containsKey(g) || finished.contains(g)) return;
+        if (!specs.containsKey(g)) return;
         SOCGame ga = getGame(g);
         if (ga == null) return;
-        int state = ga.getGameState();
-        if (!started.contains(g)) {
-            if (state < SOCGame.START1A || state >= SOCGame.OVER) return;  // joins and sit-downs before the game
-            started.add(g);
-            Map<String, Object> raw = Snapshots.raw(ga);
-            lastRaw.put(g, Json.write(raw));
-            List<Object> seats = new ArrayList<>(), smart = new ArrayList<>();
-            for (int pn = 0; pn < 4; pn++) {
-                String name = ga.getPlayer(pn).getName();
-                seats.add(name);
-                smart.add(getRobotParameters(name).getStrategyType());
-            }
-            pipe.send(Json.map("t", "start", "g", g, "first", ga.getFirstPlayer(), "seats", seats, "smart", smart,
-                "board", Snapshots.board(ga), "s", raw));
-        }
-        Map<String, Object> ev = Json.map("t", "ev", "g", g, "a", aud, "m", String.valueOf(m));
-        String raw = Json.write(Snapshots.raw(ga));
-        if (!raw.equals(lastRaw.get(g))) {
-            ev.put("s", new Json.Raw(raw));
-            lastRaw.put(g, raw);
-        }
-        pipe.send(ev);
-        if (state == SOCGame.OVER && finished.add(g)) {
-            pipe.send(over(ga, false));
-            Thread t = new Thread(() -> {
-                try {
-                    Thread.sleep(200);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+        synchronized (recording) {
+            if (finished.contains(g)) return;
+            int state = ga.getGameState();
+            if (!started.contains(g) && (state < SOCGame.START1A || state >= SOCGame.OVER))
+                return;  // joins and sit-downs before the game
+            if (started.add(g)) {
+                Map<String, Object> raw = Snapshots.raw(ga);
+                lastRaw.put(g, Json.write(raw));
+                List<Object> seats = new ArrayList<>(), smart = new ArrayList<>();
+                for (int pn = 0; pn < 4; pn++) {
+                    String name = ga.getPlayer(pn).getName();
+                    seats.add(name);
+                    smart.add(getRobotParameters(name).getStrategyType());
                 }
-                destroyGameAndBroadcast(g, "arena game over");
-                forget(g);
-            }, "arena-destroy");
-            t.setDaemon(true);
-            t.start();
+                pipe.send(Json.map("t", "start", "g", g, "first", ga.getFirstPlayer(), "seats", seats, "smart", smart,
+                    "board", Snapshots.board(ga), "s", raw));
+            }
+            Map<String, Object> ev = Json.map("t", "ev", "g", g, "a", aud, "m", String.valueOf(m));
+            String raw = Json.write(Snapshots.raw(ga));
+            if (!raw.equals(lastRaw.get(g))) {
+                ev.put("s", new Json.Raw(raw));
+                lastRaw.put(g, raw);
+            }
+            pipe.send(ev);
+            if (state != SOCGame.OVER || !finished.add(g)) return;
+            pipe.send(over(ga, false));
         }
+        Thread t = new Thread(() -> {
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            destroyGameAndBroadcast(g, "arena game over");
+            forget(g);
+        }, "arena-destroy");
+        t.setDaemon(true);
+        t.start();
     }
 
     private void forget(String g) {

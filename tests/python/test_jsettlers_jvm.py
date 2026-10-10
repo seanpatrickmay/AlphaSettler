@@ -12,9 +12,9 @@ GAME_TIMEOUT = 600.0  # a robots-only game at the fast pace takes well under a m
 
 
 @pytest.fixture(scope="module")
-def jvm():
+def jvm(tmp_path_factory):
     require()
-    with Jvm() as j:
+    with Jvm(log=tmp_path_factory.mktemp("jvm") / "jvm.log") as j:  # suite runs leave no logs under runs/
         yield j
 
 
@@ -88,9 +88,9 @@ def test_native_boards_are_jsettlers_own(jvm):
     assert normalized(board) != normalized(native_board(7))
 
 
-def test_errors_and_silence_fail_loudly_naming_the_log():
+def test_errors_and_silence_fail_loudly_naming_the_log(tmp_path):
     require()
-    with Jvm() as j:
+    with Jvm(log=tmp_path / "jvm.log") as j:
         with pytest.raises(TimeoutError, match=str(j.log)):
             j.recv(0.5)
         j.send({"t": "nonsense"})
@@ -100,9 +100,9 @@ def test_errors_and_silence_fail_loudly_naming_the_log():
         assert j.proc.wait(timeout=30) == 1
 
 
-def test_the_jvm_exits_when_its_stdin_closes():
+def test_the_jvm_exits_when_its_stdin_closes(tmp_path):
     require()
-    j = Jvm()
+    j = Jvm(log=tmp_path / "jvm.log")
     j.proc.stdin.close()
     assert j.proc.wait(timeout=30) == 0
     j.close()

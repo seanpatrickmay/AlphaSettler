@@ -71,7 +71,7 @@
 Each is a **Ruling** (with its reason) the results file repeats, so it can be overridden.
 
 - **The stream, not a request, holds the positions.** The harness streams every recorded message as GameEventLog writes it (`all:`, `pN:`, `!pN:`, `fN:` for a client request, then `toString()`), and on the line where the server-side game changed it attaches that game in JSettlers' own coordinates and codes (`Snapshots.raw`); Python translates. A decision imports the latest position in the stream before the request, the one matching the events our bot has seen, never a separate read.
-- **Monitor.** `Snapshots.raw` runs on the recording thread without taking the game's monitor: the server's own callers hold it (it is not reentrant), and only the server's treater thread changes the server-side game.
+- **Monitor.** `ArenaServer.record` serializes recording with its own lock, because the server's treater thread and `SOCForceEndTurnThread` (holding the game's monitor) can both change the game and record its events: the start line, `Snapshots.raw`, its comparison with the last position and the queued lines are one step per event, and `abort` queues `over` under the same lock, so no event follows it. The game's monitor is not taken (it is not reentrant, and most callers hold it); the game is looked up outside the lock and `destroyGameAndBroadcast` runs after it, so nothing under the lock waits on a JSettlers lock.
 - **Stretches.** A client request line starts a stretch; the server's messages up to the next request are what it did (one `Step`). Python closes the open stretch before every decision and at the end of the game. Two stretches are one action of ours when the first leaves a position we have no phase for: a build request and its placement, a Year of Plenty or Monopoly and its pick. A robber move with one victim and JSettlers' automatic robbery are one stretch, so one step of two actions.
 - **Seats.** The bridge is JSettlers seat 0 (seated by `readyGameAskRobotsJoin`'s `robotSeats`, reached by reflection); the first player is scripted to `(4 - k) % 4` so our seat has turn position k. Our player i is JSettlers seat `(first + i) % 4`, so our player 0 moves first as in our engine; records use our numbering and `candidate_seat` is k.
 - **Boards.** A seed's board is the native arena's (`Game(seed).snapshot()["board"]`): its tiles and numbers as they are, its nine port kinds in our port order moved onto JSettlers' nine port edges (`SOCBoard4p.PORTS_EDGE_V1`) in their order. The native-boards check arm leaves board generation to JSettlers (`BC` on, no common random numbers for the board).
@@ -1443,9 +1443,9 @@ GAME_TIMEOUT = 600.0  # a robots-only game at the fast pace takes well under a m
 
 
 @pytest.fixture(scope="module")
-def jvm():
+def jvm(tmp_path_factory):
     require()
-    with Jvm() as j:
+    with Jvm(log=tmp_path_factory.mktemp("jvm") / "jvm.log") as j:  # suite runs leave no logs under runs/
         yield j
 
 
@@ -1519,9 +1519,9 @@ def test_native_boards_are_jsettlers_own(jvm):
     assert normalized(board) != normalized(native_board(7))
 
 
-def test_errors_and_silence_fail_loudly_naming_the_log():
+def test_errors_and_silence_fail_loudly_naming_the_log(tmp_path):
     require()
-    with Jvm() as j:
+    with Jvm(log=tmp_path / "jvm.log") as j:
         with pytest.raises(TimeoutError, match=str(j.log)):
             j.recv(0.5)
         j.send({"t": "nonsense"})
@@ -1531,9 +1531,9 @@ def test_errors_and_silence_fail_loudly_naming_the_log():
         assert j.proc.wait(timeout=30) == 1
 
 
-def test_the_jvm_exits_when_its_stdin_closes():
+def test_the_jvm_exits_when_its_stdin_closes(tmp_path):
     require()
-    j = Jvm()
+    j = Jvm(log=tmp_path / "jvm.log")
     j.proc.stdin.close()
     assert j.proc.wait(timeout=30) == 0
     j.close()
@@ -1925,6 +1925,8 @@ final class ArenaServer extends SOCServer {
     private final Set<String> started = ConcurrentHashMap.newKeySet();
     private final Set<String> finished = ConcurrentHashMap.newKeySet();
     private volatile GameSpec creating;
+    /** Serializes recording and aborting (see {@link #record}). */
+    private final Object recording = new Object();
 
     ArenaServer(Pipe pipe) {
         super(PORT, props());
@@ -1994,11 +1996,13 @@ final class ArenaServer extends SOCServer {
 
     void abort(String g) {
         SOCGame ga = getGame(g);
-        if (ga == null || !finished.add(g)) return;
-        Map<String, Object> over = over(ga, true);
-        destroyGameAndBroadcast(g, "arena abort");
+        if (ga == null) return;
+        synchronized (recording) {  // no event of g is queued after its "over"
+            if (!finished.add(g)) return;
+            pipe.send(over(ga, true));
+        }
+        destroyGameAndBroadcast(g, "arena abort");  // outside the lock: it takes JSettlers' own locks
         forget(g);
-        pipe.send(over);
     }
 
     @Override
@@ -2055,49 +2059,54 @@ final class ArenaServer extends SOCServer {
     }
 
     /**
-     * Runs on the recording thread without taking the game's monitor: the server's own callers hold it
-     * ({@code takeMonitor} is not reentrant), and only the server's treater thread changes the server-side game.
+     * Serialized by {@link #recording}: the server's treater thread and {@code SOCForceEndTurnThread} (which holds
+     * the game's monitor) can both record events of one game, so the start block, the raw position, its comparison
+     * with the last one and the queued lines are one atomic step per event, in the order recorded. The game's own
+     * monitor is not taken ({@code takeMonitor} is not reentrant, and most callers already hold it); the game is
+     * looked up outside the lock, and nothing under it waits on a JSettlers lock.
      */
     private void record(String g, String aud, Object m) {
-        if (!specs.containsKey(g) || finished.contains(g)) return;
+        if (!specs.containsKey(g)) return;
         SOCGame ga = getGame(g);
         if (ga == null) return;
-        int state = ga.getGameState();
-        if (!started.contains(g)) {
-            if (state < SOCGame.START1A || state >= SOCGame.OVER) return;  // joins and sit-downs before the game
-            started.add(g);
-            Map<String, Object> raw = Snapshots.raw(ga);
-            lastRaw.put(g, Json.write(raw));
-            List<Object> seats = new ArrayList<>(), smart = new ArrayList<>();
-            for (int pn = 0; pn < 4; pn++) {
-                String name = ga.getPlayer(pn).getName();
-                seats.add(name);
-                smart.add(getRobotParameters(name).getStrategyType());
-            }
-            pipe.send(Json.map("t", "start", "g", g, "first", ga.getFirstPlayer(), "seats", seats, "smart", smart,
-                "board", Snapshots.board(ga), "s", raw));
-        }
-        Map<String, Object> ev = Json.map("t", "ev", "g", g, "a", aud, "m", String.valueOf(m));
-        String raw = Json.write(Snapshots.raw(ga));
-        if (!raw.equals(lastRaw.get(g))) {
-            ev.put("s", new Json.Raw(raw));
-            lastRaw.put(g, raw);
-        }
-        pipe.send(ev);
-        if (state == SOCGame.OVER && finished.add(g)) {
-            pipe.send(over(ga, false));
-            Thread t = new Thread(() -> {
-                try {
-                    Thread.sleep(200);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+        synchronized (recording) {
+            if (finished.contains(g)) return;
+            int state = ga.getGameState();
+            if (!started.contains(g) && (state < SOCGame.START1A || state >= SOCGame.OVER))
+                return;  // joins and sit-downs before the game
+            if (started.add(g)) {
+                Map<String, Object> raw = Snapshots.raw(ga);
+                lastRaw.put(g, Json.write(raw));
+                List<Object> seats = new ArrayList<>(), smart = new ArrayList<>();
+                for (int pn = 0; pn < 4; pn++) {
+                    String name = ga.getPlayer(pn).getName();
+                    seats.add(name);
+                    smart.add(getRobotParameters(name).getStrategyType());
                 }
-                destroyGameAndBroadcast(g, "arena game over");
-                forget(g);
-            }, "arena-destroy");
-            t.setDaemon(true);
-            t.start();
+                pipe.send(Json.map("t", "start", "g", g, "first", ga.getFirstPlayer(), "seats", seats, "smart", smart,
+                    "board", Snapshots.board(ga), "s", raw));
+            }
+            Map<String, Object> ev = Json.map("t", "ev", "g", g, "a", aud, "m", String.valueOf(m));
+            String raw = Json.write(Snapshots.raw(ga));
+            if (!raw.equals(lastRaw.get(g))) {
+                ev.put("s", new Json.Raw(raw));
+                lastRaw.put(g, raw);
+            }
+            pipe.send(ev);
+            if (state != SOCGame.OVER || !finished.add(g)) return;
+            pipe.send(over(ga, false));
         }
+        Thread t = new Thread(() -> {
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            destroyGameAndBroadcast(g, "arena game over");
+            forget(g);
+        }, "arena-destroy");
+        t.setDaemon(true);
+        t.start();
     }
 
     private void forget(String g) {
