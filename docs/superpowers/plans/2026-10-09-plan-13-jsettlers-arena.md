@@ -71,6 +71,7 @@
 Each is a **Ruling** (with its reason) the results file repeats, so it can be overridden.
 
 - **The stream, not a request, holds the positions.** The harness streams every recorded message as GameEventLog writes it (`all:`, `pN:`, `!pN:`, `fN:` for a client request, then `toString()`), and on the line where the server-side game changed it attaches that game in JSettlers' own coordinates and codes (`Snapshots.raw`); Python translates. A decision imports the latest position in the stream before the request, the one matching the events our bot has seen, never a separate read.
+- **Monitor.** `Snapshots.raw` runs on the recording thread without taking the game's monitor: the server's own callers hold it (it is not reentrant), and only the server's treater thread changes the server-side game.
 - **Stretches.** A client request line starts a stretch; the server's messages up to the next request are what it did (one `Step`). Python closes the open stretch before every decision and at the end of the game. Two stretches are one action of ours when the first leaves a position we have no phase for: a build request and its placement, a Year of Plenty or Monopoly and its pick. A robber move with one victim and JSettlers' automatic robbery are one stretch, so one step of two actions.
 - **Seats.** The bridge is JSettlers seat 0 (seated by `readyGameAskRobotsJoin`'s `robotSeats`, reached by reflection); the first player is scripted to `(4 - k) % 4` so our seat has turn position k. Our player i is JSettlers seat `(first + i) % 4`, so our player 0 moves first as in our engine; records use our numbering and `candidate_seat` is k.
 - **Boards.** A seed's board is the native arena's (`Game(seed).snapshot()["board"]`): its tiles and numbers as they are, its nine port kinds in our port order moved onto JSettlers' nine port edges (`SOCBoard4p.PORTS_EDGE_V1`) in their order. The native-boards check arm leaves board generation to JSettlers (`BC` on, no common random numbers for the board).
@@ -1955,7 +1956,9 @@ final class ArenaServer extends SOCServer {
     }
 
     void create(GameSpec spec) throws ReflectiveOperationException {
-        if (specs.containsKey(spec.name())) throw new IllegalArgumentException("game exists: " + spec.name());
+        // A finished game's name stays taken: its late events are dropped by name, so a reused name would go silent.
+        if (specs.containsKey(spec.name()) || finished.contains(spec.name()))
+            throw new IllegalArgumentException("game name already used: " + spec.name());
         SOCGameOptionSet opts = new SOCGameOptionSet();
         for (SOCGameOption opt : knownOpts) {
             if (!((opt.key.charAt(0) == '_') || opt.hasFlag(SOCGameOption.FLAG_INACTIVE_HIDDEN)
@@ -2051,6 +2054,10 @@ final class ArenaServer extends SOCServer {
         return "p" + pn;
     }
 
+    /**
+     * Runs on the recording thread without taking the game's monitor: the server's own callers hold it
+     * ({@code takeMonitor} is not reentrant), and only the server's treater thread changes the server-side game.
+     */
     private void record(String g, String aud, Object m) {
         if (!specs.containsKey(g) || finished.contains(g)) return;
         SOCGame ga = getGame(g);
@@ -2340,8 +2347,9 @@ def first_player(k: int) -> int:
 def native_board(seed: int) -> dict:
     b = Game(seed).snapshot()["board"]
     kinds = [kind for _, kind in b["ports"]]
+    # Port pairs are tuples, as `Game.snapshot()` writes them, so boards compare with ==.
     return {"tile_resource": list(b["tile_resource"]), "tile_number": list(b["tile_number"]),
-            "ports": [[JS_EDGE_TO_OUR_EDGE[e], kind] for e, kind in zip(PORT_EDGES, kinds)]}
+            "ports": [(JS_EDGE_TO_OUR_EDGE[e], kind) for e, kind in zip(PORT_EDGES, kinds)]}
 
 
 def normalized(board: dict) -> dict:
@@ -2374,7 +2382,7 @@ def our_board(raw: dict) -> dict:
         t = JS_HEX_TO_OUR_TILE[h]
         if kind != DESERT_HEX:
             tile_resource[t], tile_number[t] = RESOURCE_NAMES[JS_RES[kind]], number
-    ports = [[JS_EDGE_TO_OUR_EDGE[e], "generic" if kind == MISC_PORT else RESOURCE_NAMES[JS_RES[kind]]]
+    ports = [(JS_EDGE_TO_OUR_EDGE[e], "generic" if kind == MISC_PORT else RESOURCE_NAMES[JS_RES[kind]])
              for e, kind in raw["ports"]]
     return {"tile_resource": tile_resource, "tile_number": tile_number, "ports": ports}
 
