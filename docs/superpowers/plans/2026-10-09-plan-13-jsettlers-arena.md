@@ -74,23 +74,24 @@ Each is a **Ruling** (with its reason) the results file repeats, so it can be ov
 - **Monitor.** `ArenaServer.record` serializes recording with its own lock, because the server's treater thread and `SOCForceEndTurnThread` (holding the game's monitor) can both change the game and record its events: the start line, `Snapshots.raw`, its comparison with the last position and the queued lines are one step per event, and `abort` queues `over` under the same lock, so no event follows it. The game's monitor is not taken (it is not reentrant, and most callers hold it); the game is looked up outside the lock and `destroyGameAndBroadcast` runs after it, so nothing under the lock waits on a JSettlers lock.
 - **Stretches.** A client request line starts a stretch; the server's messages up to the next request are what it did (one `Step`). Python closes the open stretch before every decision and at the end of the game. Two stretches are one action of ours when the first leaves a position we have no phase for: a build request and its placement, a Year of Plenty or Monopoly and its pick. A robber move with one victim and JSettlers' automatic robbery are one stretch, so one step of two actions.
 - **The end of a game.** The stream ends at the first message recorded once the game is over, which can come before the server reports the winning action (JSettlers announces a winning placement in text first): the winning action is read from its request and checked against the final position. Our rules end the game the moment the player on turn reaches the target; where JSettlers plays on (a knight's Largest Army wins there only after the robber moves), the step carries the position as our rules leave it and nothing after it is a step. A forced end of turn (`SOCTurn` with no end-turn request, in any stretch) ends the turn of ours as well and carries `forced-end-turn`.
+- **A forced end in setup.** The server ends a stalled setup turn itself (stock robots: `planInitRoad` can return an edge off the board), removing the settlement awaiting its road and the cards it produced, and the setup order and JSettlers' first player move on. It is its own step, allowlisted `forced-setup-end`: the replay compares everything but that settlement, its cards and the setup turn order, then re-imports. Our engine has no event that removes a settlement, so our bot is shown nothing and takes one counted belief reset at its next searched decision. A stock robot whose own settlement was cancelled keeps it in its copy of the game (`handleCANCELBUILDREQUEST` undoes it only on another player's turn) and plays the rest on a board it does not have; the record's `robot_desync` says so, and Task 9 reports those games apart.
 - **Seats.** The bridge is JSettlers seat 0 (seated by `readyGameAskRobotsJoin`'s `robotSeats`, reached by reflection); the first player is scripted to `(4 - k) % 4` so our seat has turn position k. Our player i is JSettlers seat `(first + i) % 4`, so our player 0 moves first as in our engine; records use our numbering and `candidate_seat` is k.
 - **Boards.** A seed's board is the native arena's (`Game(seed).snapshot()["board"]`): its tiles and numbers as they are, its nine port kinds in our port order moved onto JSettlers' nine port edges (`SOCBoard4p.PORTS_EDGE_V1`) in their order. The native-boards check arm leaves board generation to JSettlers (`BC` on, no common random numbers for the board).
 - **Random streams.** `SOCGame.rand` is replaced by `RoutedRandom`, which routes `nextInt()` by its caller's method name: `startGame` returns the scripted first player, `rollDice` draws from the seed's dice stream, `startGame_setupDevCards` from its deck stream, anything else (steals) from its misc stream. JSettlers reports only a roll's total; our forced roll and our event use the pair `(min(n - 1, 6), n - min(n - 1, 6))`.
 - **The unlimited bank.** With `bank_limit` off our engine never runs short (production, maritime trades, Year of Plenty), and its `bank` shows what a 19-card bank would hold, 19 less the cards in hands, never below 0 (refreshed after every action; `from_snapshot` keeps the bank it is given). A belief built from an observation alone (after a reset) can under-deal a resource of which more than 19 are held. The conservation and second-settlement bank invariants are checked only with the limit on. `config_dict` writes `bank_limit` only when it is off, so resolved configs and record files are unchanged. Compound moves (`+c`) keep their limited-bank rule (not measured here). `bank_limit_hits` counts the stretches after which some resource's cards in hands exceed 19 and grew (the payouts our limit would have refused).
-- **Discards.** JSettlers' players discard concurrently; the replay applies them in our seat order once the last one is in (the steps before compare nothing), and our bot is shown each discard as it comes. Our seat's discards are chosen one card at a time on a copy of the position where only our seat owes, our bot shown each before it chooses the next (and not again when the stream reports them). Our bot is shown every discard's resources, as our rules show them (its belief has no hidden discard); JSettlers shows opponents only the count, so this is a small information edge for our bot, stated in the results.
+- **Discards.** JSettlers' players discard concurrently; the replay applies them in our seat order once the last one is in (the steps before compare nothing), and our bot is shown each discard as it comes. Our seat's discards are chosen one card at a time on a copy of the position where only our seat owes, our bot shown each before it chooses the next (and not again when the stream reports them); a choice that fails after the first card completes with the first discards our rules allow, counted, so the reply is what the bot was shown. Our bot is shown every discard's resources, as our rules show them (its belief has no hidden discard); JSettlers shows opponents only the count, so this is a small information edge for our bot, stated in the results.
 - **Bank trades.** One JSettlers bank trade is as many maritime trades of ours as whole rates it gives, paired with the cards it gets in resource order; anything else (an undone trade) is the allowlisted `bank-trade`.
 - **Domestic trades.** The replay re-imports the position after an executed trade (allowlisted `domestic-trade`). Our bot is shown each offer when made (`trade_offered`), each rejection, and an executed trade as the accepted offer re-stated, its acceptance and its confirmation, so its belief checks the cards that moved; clearing an open offer is `trade_cancelled`.
 - **Pre-roll.** Our bot rolls or plays a knight before the roll; any other card it would play there is left to the stock brain's roll-or-knight (fallback `preroll-card`), because the stock turn machine plays only knights before the roll.
 - **Robber victim.** Chosen with the robber move, at the hypothetical steal position, as the Catanatron arena does; JSettlers' own victim request takes it.
 - **Our offers** (spec Section 5): sent to the opponents who hold the asked card and whose lone acceptance our bot would confirm (asked at that hypothetical position). An offer with no such opponent is made and declined inside our engine only: our bot is shown its events and decides again (at most `max_offers_per_turn` times). `our_offers` counts every offer our bot chose; `our_offers_accepted` the executed ones.
 - **Robot offers.** One made to us while we are the current player (a counter-offer, or an offer to the player on turn) is rejected unasked and counted in `counters_rejected`. One outside our trading game (not one card a side, a resource on both sides, or the no-trades arm) is rejected unasked and counted in `unrepresentable`. The rest are answered at the offerer's Main position with its earlier offers this turn clamped to 1, the offer applied and the seats before ours rejecting; an answer ready 4.5 s or more after the request is sent as a rejection and counted in `late`.
-- **Fallbacks** (spec Section 2): a position that does not import, an engine panic or error, a request JSettlers declined since the last decision, a reply the brain cannot carry out, a Java-side timeout (600 s), or a victim JSettlers will not take. The stock brain decides that hook (a free road falls back to the first road JSettlers allows, since the stock placement needs a plan the bridge never made); the record counts `fallbacks` and `fallback_reasons` by reason (`position`, `declined`, `engine`, `choice`, `preroll-card`, `turn-cap`, `java-timeout`, `victim`). The robber move JSettlers asks after our winning knight (our rules ended the game at the card) is answered `after-win` and not counted.
+- **Fallbacks** (spec Section 2): a position that does not import, an engine panic or error, a request JSettlers declined since the last decision, a reply the brain cannot carry out, a Java-side timeout (600 s), or a victim JSettlers will not take. The stock brain decides that hook (a free road falls back to the first road JSettlers allows, since the stock placement needs a plan the bridge never made); the record counts `fallbacks` and `fallback_reasons` by reason (`position`, `declined`, `engine`, `choice`, `preroll-card`, `turn-cap`, `java-timeout`, `victim`, `forced-discard`). A refusal is charged to the hook it happened in (every hook checks for one first). A discard of ours the server forced (no reply of ours asked for it) is `forced-discard`. The robber move JSettlers asks after our winning knight (our rules ended the game at the card) is answered `after-win` and not counted.
 - **Our seat never trades by the stock negotiator.** The bridge's `makeOffer` and `makeCounterOffer` send nothing, so every offer from our seat is our bot's; an answer that falls back is the stock brain's `considerOffer`.
-- **Timeouts.** Built-in robots' forced end of turn (`SOCServer.ROBOT_FORCE_ENDTURN_SECONDS`, 8 s) is raised to 60 s so our thinking during a robot's turn (an answer, a discard) never forces it; our own turns have `jsettlers.bots.timeout.turn` 600 s.
+- **Timeouts.** Built-in robots' forced end of turn (`SOCServer.ROBOT_FORCE_ENDTURN_SECONDS`, 8 s) is raised to 60 s so our thinking during a robot's turn (an answer, a discard) never forces it, and a stubborn robot's (`ROBOT_FORCE_ENDTURN_STUBBORN_SECONDS`, 4 s) likewise; our own turns have `jsettlers.bots.timeout.turn` 600 s, and the bridge waits 540 s for a reply, so a slow one is a counted `java-timeout` before the server's end.
 - **Turn cap.** At our `max_turns` (1000) the driver aborts the game: no winner, `aborted: true`.
 - **The aligned arm.** `CappedBrain` sends the stock negotiator's offer only if it is one card a side, sends it to every opponent, at most two a turn, and never counter-offers; when the negotiator's offer does not fit, that robot stops offering for the turn. Records count robot offers (`robot_offers`) and those outside these caps (`robot_offers_over_caps`) in every arm.
-- **Records**, per game: `seed`, `candidate_seat`, `winner`, `vp`, `turns`, `rounds`, `aborted`, `last_build_turn` (per seat of ours, the last turn it built a piece or bought a card after setup, null if never: stock robots can stop building at 8-9 VP while nobody holds Longest Road, so Task 9 reports results with and without those games), `fallbacks`, `fallback_reasons`, `belief_resets`, `our_offers`, `our_offers_accepted`, `offers_to_us`, `offers_to_us_accepted`, `unrepresentable`, `counters_rejected`, `late`, `bank_limit_hits`, `robot_offers`, `robot_offers_over_caps`, `arm`.
+- **Records**, per game: `seed`, `candidate_seat`, `winner`, `vp`, `turns`, `rounds`, `aborted`, `robot_desync` (a setup settlement was cancelled by a forced end), `last_build_turn` (per seat of ours, the last turn it built a piece or bought a card after setup, null if never: stock robots can stop building at 8-9 VP while nobody holds Longest Road, so Task 9 reports results with and without those games), `fallbacks`, `fallback_reasons`, `belief_resets`, `our_offers`, `our_offers_accepted`, `offers_to_us`, `offers_to_us_accepted`, `unrepresentable`, `counters_rejected`, `late`, `robot_offers`, `robot_offers_over_caps`, `bank_limit_hits`, `arm` (the order of `RECORD_KEYS`).
 - **Workers.** One JVM per worker process, games one at a time. A JVM that reports an error or sends nothing for 15 minutes fails the run, naming its log; a JVM exits when its stdin closes.
 - **B** is chosen in Task 9 Step 4 by an explicit table from the results files present at run time; the candidate name stays the spec's `net:B@1000+t+o` (no `+c`) whatever B is.
 - **Fresh seeds:** the arms from 8,000,000,000 (the spec's), the native-boards check on the first 20 of them, the differential gate from 9,000,000,000, the smoke run from 9,100,000,000; no self-play (below 1e9), gate (1e9 + 0..200) or SPRT (2e9 to 7.001e9) used them. Tests use seeds below 100.
@@ -3108,6 +3109,47 @@ def test_a_card_left_unpicked_then_a_forced_end_of_turn_ends_the_turn():
     assert step.events == [{"type": "turn_ended", "player": 0}] and s.tracker.ctx.turn == 1
 
 
+def stalled_setup_road(s, nxt=1, state=T.START2A):
+    """Player 0 asks for a road JSettlers refuses, stalls, and the server ends its setup turn: the settlement
+    awaiting that road goes, with the cards it produced, and the turn passes to seat `nxt` in `state`."""
+    s.send("f0", "SOCPutPiece:game=x|playerNumber=0|pieceType=0|coord=16")
+    s.send("p0", "SOCDeclinePlayerRequest:game=x|state=0|reason=4|detail1=0|detail2=22|text=You can't build a road there.")
+    s.send("p0", "SOCCancelBuildRequest:game=x|pieceType=0")
+    s.raw["players"][0]["settlements"].pop()
+    s.hand(0, [0, 0, 0, 0, 0])
+    s.send("all", "SOCCancelBuildRequest:game=x|pieceType=1", changed=True)
+    s.raw["current"], s.raw["state"] = nxt, state
+    s.send("all", "SOCClearOffer:game=x|playerNumber=-1", changed=True)
+    s.send("all", f"SOCTurn:game=x|playerNumber={nxt}|gameState={state}")
+
+
+def test_a_setup_turn_the_server_ends_is_its_own_allowlisted_step_and_a_robot_desync():
+    # Stock robots: planInitRoad can return an edge off the board, and the robot whose own setup settlement the
+    # server then cancels keeps it in its copy of the game (stall-debug.md, seed 78).
+    s = Script(first=0, state=T.START2B, current=0)
+    s.raw["players"][0]["settlements"] = [T.OUR_NODE_TO_JS_NODE[n] for n in (10, 20)]
+    s.raw["players"][0]["roads"] = [T.OUR_EDGE_TO_JS_EDGE[min(e for e, (a, b) in enumerate(T.EDGE_NODES) if 10 in (a, b))]]
+    s.hand(0, [0, 0, 0, 1, 0])
+    s.send("all", "SOCGameState:game=x|state=11", changed=True)
+    s.tracker.flush()
+    stalled_setup_road(s)
+    [step] = s.flush()
+    assert (step.kind, step.player, step.actions, step.events) == ("forced_setup_end", 0, [], [])
+    assert step.untranslatable == "forced-setup-end" and step.after["state"] == T.START2A
+    assert s.tracker.setup_cancelled == [0] and s.tracker.ctx.turn == 0
+
+
+def test_a_setup_turn_passing_without_a_cancelled_settlement_is_no_desync():
+    s = Script(first=0, state=T.START1A, current=0)
+    s.send("all", "SOCGameState:game=x|state=5", changed=True)
+    s.send("all", "SOCTurn:game=x|playerNumber=0|gameState=5")  # the game's first turn: nothing was ended
+    assert [x.kind for x in s.flush()] in ([], ["noop"])
+    s.raw["current"] = 1
+    s.send("all", "SOCTurn:game=x|playerNumber=1|gameState=5", changed=True)  # a stalled first placement
+    [step] = s.flush()
+    assert step.untranslatable == "forced-setup-end" and s.tracker.setup_cancelled == []
+
+
 def test_forced_discards_for_two_players_in_one_stretch_are_both_read():
     s = Script(first=0, current=0)
     s.hand(1, [4, 4, 0, 0, 0])
@@ -3288,7 +3330,8 @@ come one player at a time in any order; their actions are released in our seat o
 last is in. A step our rules cannot replay carries an allowlist kind (`untranslatable`) instead.
 Our rules end the game the moment the player on turn reaches the target: when JSettlers plays on (a
 knight's Largest Army wins there only after the robber moves) the step carries the position as our
-rules leave it, and nothing after our game's end becomes a step."""
+rules leave it, and nothing after our game's end becomes a step. A setup turn the server ended (a stalled
+placement) is its own allowlisted step, `forced-setup-end`."""
 
 from __future__ import annotations
 
@@ -3358,6 +3401,7 @@ class Tracker:
         self.raw = start["s"]
         self.declined = [0] * 4
         self.bank_limit_hits = 0
+        self.setup_cancelled: list[int] = []  # our seats whose setup settlement a forced end of turn removed
         self.over = False
         self._open: list[Entry] | None = None
         self._before = self.raw
@@ -3457,6 +3501,11 @@ class Tracker:
             return self._trade(accept, after)
         if first("SOCTurn") is not None and before["state"] not in SETUP_STATES:
             return self._end_turn(before, after, requested=req is not None and req.name == "SOCEndTurn")
+        cancelled = first("SOCCancelBuildRequest", lambda e: e.aud == "all" and e.f.get("pieceType") == "1")
+        if before["state"] in SETUP_STATES and (cancelled is not None or (
+                first("SOCTurn") is not None and (after["current"] != before["current"]
+                                                  or after["state"] not in SETUP_STATES))):
+            return self._forced_setup_end(before, after, cancelled is not None)
         if (made := first("SOCMakeOffer")) is not None:
             return self._offer(made, after)
         if (rejected := first("SOCRejectOffer", lambda e: "reasonCode" not in e.f)) is not None:
@@ -3471,6 +3520,17 @@ class Tracker:
         if after["state"] in _HALF_DONE or after == before:
             return None
         return Step("noop", None, after=after)
+
+    def _forced_setup_end(self, before, after, cancelled: bool) -> Step:
+        """The server ended a stalled setup turn (SOCForceEndTurnThread): the settlement awaiting its road, if
+        any, is removed with the cards it produced, and the setup order moves on (JSettlers may move its first
+        player). Our engine has no such end, and no event removes a settlement, so our bot is shown nothing and
+        the replay re-imports. A stock robot whose own settlement is cancelled keeps it in its copy of the game
+        (`setup_cancelled`, the arena's `robot_desync`)."""
+        p = self.ctx.ours(before["current"])
+        if cancelled:
+            self.setup_cancelled.append(p)
+        return Step("forced_setup_end", p, [], [], after, untranslatable="forced-setup-end")
 
     def _forced_end(self, step: Step | None, before, after) -> Step:
         """The server ended the turn (SOCForceEndTurnThread) in a stretch whose first rule read another
@@ -3680,7 +3740,7 @@ class Tracker:
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `pgrep -fl 'arm.sh' || echo idle`, then `.venv/bin/pytest -q tests/python/test_jsettlers_translate.py tests/python/test_jsettlers_events.py`
-Expected: PASS, 47 tests (18 + 29). If `test_a_robots_game_translates_and_four_observers_keep_their_beliefs` raises inside `import_game` or a bot's `belief_resets` is not 0, the message the failing step came from is the last `m` read: add it to the error, find the rule of `_action` that misread it, and fix that rule (the scripted tests above must still pass).
+Expected: PASS, 49 tests (18 + 31). If `test_a_robots_game_translates_and_four_observers_keep_their_beliefs` raises inside `import_game` or a bot's `belief_resets` is not 0, the message the failing step came from is the last `m` read: add it to the error, find the rule of `_action` that misread it, and fix that rule (the scripted tests above must still pass).
 
 - [ ] **Step 7: Format, lint, the full suite**
 
@@ -3722,7 +3782,7 @@ import pytest
 
 import oracle.jsettlers.diff as diff
 import oracle.jsettlers.jvm as jvm_module
-from alphasettler import cli
+from alphasettler import Game, cli
 from jsettlers_harness import require
 from oracle.jsettlers import events
 from oracle.jsettlers import tables as T
@@ -3836,7 +3896,8 @@ def test_compare_names_the_fields_that_differ():
 
 
 def test_every_allowlist_entry_names_its_rule():
-    assert set(ENTRIES) == {"domestic-trade", "road-building-cancelled", "bank-trade", "forced-end-turn"}
+    assert set(ENTRIES) == {"domestic-trade", "road-building-cancelled", "bank-trade", "forced-end-turn",
+                            "forced-setup-end"}
     assert all(e.rule and e.why for e in ENTRIES.values())
 
 
@@ -3909,6 +3970,42 @@ def bank_trades(stream, *trades):
         stream.ev("all", f"SOCBankTrade:game=x|give={rset(give)}|get={rset(get)}|pn=0", changed=True)
 
 
+def last_setup_road():
+    """The start of our engine's last setup step on SEED's board (player 0's second road, first choices
+    everywhere), as a Stream position, with player 0's second settlement node and what it produced."""
+    g = Game(SEED)
+    while not (g.phase == "setup_settlement" and g.snapshot()["setup_step"] == 7):
+        g.apply(g.legal_actions()[0])
+    before = g.snapshot()["players"][0]["hand"]
+    g.apply(g.legal_actions()[0])
+    snap = g.snapshot()
+    node, ps = snap["setup_road_node"], snap["players"]
+    produced = [a - b for a, b in zip(ps[0]["hand"], before)]
+    start = dict(state=T.START2B, hands=[(i, p["hand"]) for i, p in enumerate(ps)],
+                 settlements=[(i, n) for i, p in enumerate(ps) for n in p["settlements"]],
+                 roads=[(i, e) for i, p in enumerate(ps) for e in p["roads"]])
+    return start, node, produced
+
+
+LAST_SETUP, SECOND_NODE, PRODUCED = last_setup_road()
+
+
+def stalled_setup_road(stream, removed=SECOND_NODE, takes_back=True, nxt=1):
+    """Player 0 asks for a road JSettlers refuses and stalls; the server ends its setup turn, removing the
+    settlement `removed` (and, with `takes_back`, the cards it produced), and JSettlers' play begins at `nxt`."""
+    stream.ev("f0", "SOCPutPiece:game=x|playerNumber=0|pieceType=0|coord=16")
+    stream.ev("p0", "SOCDeclinePlayerRequest:game=x|state=0|reason=4|detail1=0|detail2=22|text=no")
+    p = stream.raw["players"][0]
+    p["settlements"].remove(T.OUR_NODE_TO_JS_NODE[removed])
+    p["vp"] -= 1
+    if takes_back:
+        stream.hand(0, [h - x for h, x in zip(T.js5_to_ours(p["res"]), PRODUCED)])
+    stream.ev("all", "SOCCancelBuildRequest:game=x|pieceType=1", changed=True)
+    stream.raw["current"], stream.raw["state"] = nxt, T.ROLL_OR_CARD
+    stream.ev("all", "SOCClearOffer:game=x|playerNumber=-1", changed=True)
+    stream.ev("all", f"SOCTurn:game=x|playerNumber={nxt}|gameState=15")
+
+
 def one(r, n=1):
     return [n if i == r else 0 for i in range(5)]
 
@@ -3932,6 +4029,11 @@ ALLOWLISTED = {
         dict(state=T.ROLL_OR_CARD), roll_then_forced_end, (None, 2), "'current'"),
     "forced end leaving the player in main": (
         dict(state=T.ROLL_OR_CARD), roll_then_forced_end, (None, 0, T.PLAY1), "'phase'"),
+    "forced setup end": (LAST_SETUP, stalled_setup_road, (), None),
+    "forced setup end keeping the cards the settlement produced": (
+        LAST_SETUP, stalled_setup_road, (SECOND_NODE, False), "players[0].hand"),
+    "forced setup end removing the settlement that has its road": (
+        LAST_SETUP, stalled_setup_road, (LAST_SETUP["settlements"][0][1],), "players[0].settlements"),
     "road building ended": (ROAD_BUILDING, road_building_ended, (), None),
     "road building ended handing the turn to the wrong seat": (
         ROAD_BUILDING, road_building_ended, (2,), "'current'"),
@@ -4057,6 +4159,10 @@ ENTRIES = {
     "forced-end-turn": Entry(
         "the server ends a stalled player's turn itself, with no end-turn request (SOCForceEndTurnThread)",
         "our engine has no forced end of turn, so the position after it is re-imported"),
+    "forced-setup-end": Entry(
+        "the server ends a stalled setup turn itself, removing the settlement awaiting its road with the cards it "
+        "produced, and the setup order (and JSettlers' first player) moves on",
+        "our setup has no forced end and no event removes a settlement, so the position after it is re-imported"),
 }
 ```
 
@@ -4124,6 +4230,7 @@ from oracle.jsettlers.actions import decode
 from oracle.jsettlers.boards import game_command
 from oracle.jsettlers.events import Step, Tracker
 from oracle.jsettlers.jvm import Jvm
+from oracle.jsettlers.tables import RESOURCE_NAMES, TILE_NODES
 from oracle.jsettlers.translate import Untranslatable, import_game, snapshot
 
 CONFIG = {"max_offers_per_turn": 0, "bank_limit": False}
@@ -4172,8 +4279,10 @@ def excused(ours: dict, theirs: dict, st: Step) -> dict:
     """Our position `ours` (before the step, its translatable actions applied) with what the step's
     allowlist rule changes done as the rule does it: a domestic trade moves exactly the traded cards
     between the two traders, a bank trade exactly the cards traded with the bank, and a turn that ends
-    (forced, or inside Road Building) passes to the next player's roll as our end of turn does. `theirs`
-    is not read: compared with JSettlers' position, anything that differs is a mismatch."""
+    (forced, or inside Road Building) passes to the next player's roll as our end of turn does. A setup turn
+    the server ended loses the settlement awaiting its road and what that settlement produced; the setup
+    order after it (current player, phase, step, turn) is JSettlers' own, the one field set read from `theirs`.
+    Otherwise `theirs` is not read: compared with JSettlers' position, anything that differs is a mismatch."""
     exp = copy.deepcopy(ours)
     hands = [p["hand"] for p in exp["players"]]
 
@@ -4187,7 +4296,18 @@ def excused(ours: dict, theirs: dict, st: Step) -> dict:
     elif st.untranslatable == "bank-trade":
         gave, got = traded(st)
         move(st.player, got, gave)
-    if st.untranslatable in ("domestic-trade", "bank-trade"):
+    elif st.untranslatable == "forced-setup-end":
+        node = exp["setup_road_node"] if exp["phase"] == "setup_road" else None
+        if node is not None:
+            exp["players"][st.player]["settlements"].remove(node)
+            if exp["setup_step"] >= 4:  # a second settlement: what it produced goes back
+                res = exp["board"]["tile_resource"]
+                for t, nodes in enumerate(TILE_NODES):
+                    if node in nodes and res[t] is not None:
+                        hands[st.player][RESOURCE_NAMES.index(res[t])] -= 1
+        for k in ("current", "phase", "setup_road_node", "setup_step", "turn", "return_phase", "roads_left"):
+            exp[k] = theirs[k]
+    if st.untranslatable in ("domestic-trade", "bank-trade", "forced-setup-end"):
         exp["bank"] = [max(0, 19 - sum(h[r] for h in hands)) for r in range(5)]  # the bank with its limit off
     if any(e["type"] == "turn_ended" for e in st.events):
         exp.update(current=(exp["current"] + 1) % 4, phase="pre_roll", return_phase="pre_roll", roads_left=None,
@@ -4409,7 +4529,7 @@ def _jsettlers_diff(args) -> int:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pgrep -fl 'arm.sh' || echo idle`, then `.venv/bin/pytest -q tests/python/test_jsettlers_diff.py tests/python/test_oracle_diff.py tests/python/test_oracle_trades.py`
-Expected: PASS, 26 tests in the first file; the two oracle files pass unchanged (the move of `compare` changes nothing). A mismatch in `test_two_robots_games_replay_with_no_untriaged_mismatch` is the point of the gate: read the trace it prints, decide whether it is a translation bug (fix it in Task 4's code, with a scripted test in `test_jsettlers_events.py` that reproduces the sequence) or a rule difference (add an allowlist entry with its rule and reason, a classifying test, and a ruling line in the results file of Task 9); never loosen `compare`.
+Expected: PASS, 29 tests in the first file; the two oracle files pass unchanged (the move of `compare` changes nothing). A mismatch in `test_two_robots_games_replay_with_no_untriaged_mismatch` is the point of the gate: read the trace it prints, decide whether it is a translation bug (fix it in Task 4's code, with a scripted test in `test_jsettlers_events.py` that reproduces the sequence) or a rule difference (add an allowlist entry with its rule and reason, a classifying test, and a ruling line in the results file of Task 9); never loosen `compare`.
 
 - [ ] **Step 5: Format, lint, the full suite**
 
@@ -4430,13 +4550,13 @@ git -c user.email=sean.may101@gmail.com commit -m "oracle/jsettlers: differentia
 **Files:**
 - Create: `jsettlers/src/alphasettler/jsettlers/{BridgeClient,BridgeBrain,BridgeOpening,BridgeRobber,BridgeDM}.java`, `oracle/jsettlers/arena.py`
 - Modify: `jsettlers/src/alphasettler/jsettlers/ArenaMain.java` (start the bridge client), `jsettlers/api.txt` (seven brain fields and the opening's first settlement)
-- Test: `tests/python/test_jsettlers_seat.py`, `tests/python/test_jsettlers_arena.py` (new)
+- Test: `tests/python/test_jsettlers_seat.py`, `tests/python/test_jsettlers_arena.py` (new), `tests/python/data/jsettlers_seed78_k1.jsonl` (new: the harness's lines of the seed-78 bridge game, k = 1, recorded at fdd5a6d; see stall-debug.md); Modify: `oracle/jsettlers/events.py`, `oracle/jsettlers/allowlist.py`, `oracle/jsettlers/diff.py` and their tests (fix round 1: the forced setup end)
 
 **Interfaces:**
 - Consumes: Tasks 3-4 (`Jvm`, `game_command`, `Tracker`, `Untranslatable`, the RAW format), Task 1 (`actions`, `tables`, `missing`), `alphasettler.Bot`, `alphasettler.Game`, `alphasettler.arena.TRADES`; in Java the stock `SOCRobotBrain` turn machine and the members in `api.txt`.
 - Produces:
   - Asks (Java to Python): `{"t": "ask", "id", "g", "kind", "state", "extra"}` with kind `setup_settlement`, `setup_road`, `pre_roll`, `main`, `road_building`, `move_robber`, `discard` (`extra.n`), `answer` (Task 7). Replies: `{"t": "reply", "id", "fallback": REASON}` (the stock brain decides that hook) or, by kind, `{"node": JS_NODE}`, `{"edge": JS_EDGE}`, `{"do": "roll" | "knight"}`, `{"do": "end"}` / `{"do": "build", "piece": 0|1|2, "coord": JS}` / `{"do": "buy"}` / `{"do": "knight"}` / `{"do": "rb"}` / `{"do": "yop", "res": [js, js]}` / `{"do": "mono", "res": js}` / `{"do": "bank", "give": js5, "get": js5}` (Task 7 adds `{"do": "offer", ...}` and `{"accept": BOOL}`), `{"hex": JS_HEX, "victim": JS_SEAT | -1}`, `{"res": js5}`. Java's own fallbacks: `{"t": "fallback", "g", "reason": "java-timeout" | "victim"}`.
-  - `oracle.jsettlers.arena`: `BASELINES = ("smart",)`, `NO_TRADES`, `LATE = 4.5`, `SILENCE = 900.0`, `MAX_TURNS = 1000`, `FALLBACK_REASONS`, `AFTER_WIN`, `COUNTERS`, `RECORD_KEYS`, `Fallback(reason)`, `config(trades) -> dict`, `Seat(bot, seed, config, tracker, seat, max_turns=MAX_TURNS, clock=time.monotonic)` with `.observe(steps)`, `.decide(ask, received) -> dict`, `.fellback(reason)`, `.fallbacks` (Counter), `.counts` (Counter), `.capped`, `.last_build` (per seat of ours); `play_game(jvm, seed, k, candidate, nets_dir=None, trades=True, arm="native", native_boards=False, max_turns=MAX_TURNS) -> dict`; `check(candidate, baseline, seeds, seed_start=0, nets_dir=None)`; `run_match(candidate, baseline, seeds, seed_start=0, workers=None, nets_dir=None, trades=True, aligned=False, native_boards=False, max_turns=MAX_TURNS, log_dir=None) -> list[dict]` (native boards need trades).
+  - `oracle.jsettlers.arena`: `BASELINES = ("smart",)`, `NO_TRADES`, `LATE = 4.5`, `SILENCE = 900.0`, `MAX_TURNS = 1000`, `FALLBACK_REASONS`, `AFTER_WIN`, `COUNTERS`, `RECORD_KEYS`, `Fallback(reason)`, `config(trades) -> dict`, `Seat(bot, seed, config, tracker, seat, max_turns=MAX_TURNS, clock=time.monotonic)` with `.observe(steps)`, `.decide(ask, received) -> dict`, `.fellback(reason)`, `.fallbacks` (Counter), `.counts` (Counter), `.capped`, `.last_build` (per seat of ours); records add `robot_desync`; `play_game(jvm, seed, k, candidate, nets_dir=None, trades=True, arm="native", native_boards=False, max_turns=MAX_TURNS) -> dict`; `check(candidate, baseline, seeds, seed_start=0, nets_dir=None)`; `run_match(candidate, baseline, seeds, seed_start=0, workers=None, nets_dir=None, trades=True, aligned=False, native_boards=False, max_turns=MAX_TURNS, log_dir=None) -> list[dict]` (native boards need trades).
 
 - [ ] **Step 1: Write the failing Seat tests**
 
@@ -4558,6 +4678,25 @@ def test_unimportable_declined_or_failing_decisions_fall_back_by_reason():
     assert seat.decide(ask("main"), 0.0)["fallback"] == "turn-cap"
 
 
+@pytest.mark.parametrize("state,kind,extra", [
+    (T.PLACING_ROBBER, "move_robber", {}),
+    (T.PLACING_FREE_ROAD1, "road_building", {}),
+    (T.WAITING_FOR_DISCARDS, "discard", {"n": 4}),
+])
+def test_a_refusal_in_the_robber_free_road_or_discard_hook_falls_back_there(state, kind, extra):
+    s, seat, _ = seat_at(state=state, choose=never)
+    s.tracker.declined[0] += 1
+    assert seat.decide(ask(kind, **extra), 0.0)["fallback"] == "declined"
+    assert seat.fallbacks == Counter({"declined": 1})
+
+
+def test_a_decision_at_the_seats_turn_cap_falls_back():
+    s, _, _ = seat_at(choose=never)
+    seat = Seat(StubBot(never), 5, TRADES, s.tracker, 0, max_turns=3, clock=lambda: 0.0)
+    s.tracker.ctx.turn = 3
+    assert seat.decide(ask("main"), 0.0)["fallback"] == "turn-cap"
+
+
 def test_a_declined_setup_placement_falls_back_instead_of_being_asked_again():
     # JSettlers re-arms the placement after a refusal; answering the same node again would loop until the
     # robot client leaves the game.
@@ -4612,12 +4751,33 @@ def test_the_robber_move_asked_after_our_winning_knight_is_answered_but_not_a_fa
     assert seat.fallbacks == Counter()
 
 
-def test_discards_are_chosen_one_card_at_a_time_where_only_our_seat_owes():
-    s, seat, bot = seat_at(state=T.WAITING_FOR_DISCARDS, hands={0: [4, 4, 0, 0, 0], 1: [0, 0, 8, 0, 0]})
+def discard_at(choose=None):
+    """Our seat (4 wood, 4 brick) and seat 1 each owe 4 cards after a 7."""
+    s, seat, bot = seat_at(state=T.WAITING_FOR_DISCARDS, hands={0: [4, 4, 0, 0, 0], 1: [0, 0, 8, 0, 0]}, choose=choose)
     s.raw["players"][s.js(0)]["discard"], s.raw["players"][s.js(1)]["discard"] = 4, 4
     s.send("all", "SOCGameState:game=x|state=50", changed=True)
     s.tracker.flush()
-    bot.choose = lambda g: discard(WOOD) if discard(WOOD) in g.legal_actions() else discard(BRICK)
+    return s, seat, bot
+
+
+def stream_discard(s, seat, cards, hand, forced=False):
+    """The stream reports our seat's discard of `cards`: after our request, or forced by the server."""
+    js0 = s.js(0)
+    if not forced:
+        s.send(f"f{js0}", f"SOCDiscard:game=x|resources={js_rset(cards)}")
+    s.hand(0, hand)
+    s.raw["players"][js0]["discard"] = 0
+    s.send("all", f"SOCDiscard:game=x|playerNum={js0}|resources={js_rset(cards)}", changed=True)
+    seat.observe(s.flush())
+    s.steps = []
+
+
+def discarded(r, n=1):
+    return [{"type": "discarded", "player": 0, "resource": T.RESOURCE_NAMES[r]}] * n
+
+
+def test_discards_are_chosen_one_card_at_a_time_where_only_our_seat_owes():
+    s, seat, bot = discard_at(lambda g: discard(WOOD) if discard(WOOD) in g.legal_actions() else discard(BRICK))
     r = seat.decide(ask("discard", n=4), 0.0)
     assert r["res"] == T.ours_to_js5([4, 0, 0, 0, 0])
     assert all(actor == 0 for _, actor in bot.positions) and len(bot.positions) == 4
@@ -4625,13 +4785,49 @@ def test_discards_are_chosen_one_card_at_a_time_where_only_our_seat_owes():
     # and the stream's report of the same discards is not shown again.
     ours = {"type": "discarded", "player": 0, "resource": "wood"}
     assert bot.seen == [ours] * 4
-    js0 = s.js(0)
-    s.send(f"f{js0}", f"SOCDiscard:game=x|resources={js_rset([4, 0, 0, 0, 0])}")
-    s.hand(0, [0, 4, 0, 0, 0])
-    s.raw["players"][js0]["discard"] = 0
-    s.send("all", f"SOCDiscard:game=x|playerNum={js0}|resources={js_rset([4, 0, 0, 0, 0])}", changed=True)
-    seat.observe(s.flush())
-    assert bot.seen == [ours] * 4
+    stream_discard(s, seat, [4, 0, 0, 0, 0], [0, 4, 0, 0, 0])
+    assert bot.seen == [ours] * 4 and seat.fallbacks == Counter()
+
+
+def test_a_discard_cut_short_is_completed_with_the_first_discards_our_rules_allow():
+    # The cards already shown stand: the reply holds them and the rest, so the bot's view stays true.
+    def two_then_panic(g):
+        if len(bot.chosen) >= 2:
+            raise RuntimeError("engine panic")
+        return discard(BRICK)
+    s, seat, bot = discard_at(two_then_panic)
+    r = seat.decide(ask("discard", n=4), 0.0)
+    assert r["res"] == T.ours_to_js5([2, 2, 0, 0, 0]) and seat.fallbacks == Counter({"engine": 1})
+    assert bot.seen == discarded(BRICK, 2) + discarded(WOOD, 2)
+    stream_discard(s, seat, [2, 2, 0, 0, 0], [2, 2, 0, 0, 0])
+    assert bot.seen == discarded(BRICK, 2) + discarded(WOOD, 2)
+
+
+def test_a_discard_that_fails_at_its_first_card_is_the_stock_brains_and_shown_from_the_stream():
+    def panic(g):
+        raise RuntimeError("engine panic")
+    s, seat, bot = discard_at(panic)
+    assert seat.decide(ask("discard", n=4), 0.0)["fallback"] == "engine" and bot.seen == []
+    stream_discard(s, seat, [0, 4, 0, 0, 0], [4, 0, 0, 0, 0])
+    assert bot.seen == discarded(BRICK, 4) and seat.fallbacks == Counter({"engine": 1})
+
+
+def test_discards_the_server_forces_on_our_seat_are_counted_and_shown():
+    s, seat, bot = discard_at()
+    stream_discard(s, seat, [1, 3, 0, 0, 0], [3, 1, 0, 0, 0], forced=True)  # we were never asked
+    assert seat.fallbacks == Counter({"forced-discard": 1})
+    assert bot.seen == discarded(WOOD) + discarded(BRICK, 3)
+
+
+def test_a_discard_forced_before_our_reply_is_counted_and_leaves_nothing_to_swallow_later():
+    s, seat, bot = discard_at(lambda g: discard(WOOD))
+    seat.decide(ask("discard", n=4), 0.0)  # shown 4 wood while choosing
+    stream_discard(s, seat, [0, 4, 0, 0, 0], [4, 0, 0, 0, 0], forced=True)  # the server discarded first
+    assert seat.fallbacks == Counter({"forced-discard": 1})
+    assert bot.seen == discarded(WOOD, 4) + discarded(BRICK, 4)  # the bot's belief then resets, counted
+    s.raw["players"][s.js(0)]["discard"] = 2
+    stream_discard(s, seat, [2, 0, 0, 0, 0], [2, 0, 0, 0, 0], forced=True)  # a later forced discard of wood
+    assert bot.seen[-2:] == discarded(WOOD, 2) and seat.fallbacks["forced-discard"] == 2
 
 
 def robot_offer(frm, give, get, to=(True, False, False, False)):
@@ -4776,12 +4972,13 @@ NO_TRADES = {"max_offers_per_turn": 0}
 LATE = 4.5  # seconds: robots wait 5 s for answers in robots-only games
 SILENCE = 900.0  # seconds without a message before the run fails
 MAX_TURNS = 1000
-FALLBACK_REASONS = ("position", "declined", "engine", "choice", "preroll-card", "turn-cap", "java-timeout", "victim")
+FALLBACK_REASONS = ("position", "declined", "engine", "choice", "preroll-card", "turn-cap", "java-timeout", "victim",
+                    "forced-discard")
 AFTER_WIN = "after-win"  # a decision JSettlers asks once our rules have ended the game: answered, not counted
 COUNTERS = ("our_offers", "our_offers_accepted", "offers_to_us", "offers_to_us_accepted", "unrepresentable",
             "counters_rejected", "late", "robot_offers", "robot_offers_over_caps")
-RECORD_KEYS = ("seed", "candidate_seat", "winner", "vp", "turns", "rounds", "aborted", "last_build_turn", "fallbacks",
-               "fallback_reasons", "belief_resets", *COUNTERS, "bank_limit_hits", "arm")
+RECORD_KEYS = ("seed", "candidate_seat", "winner", "vp", "turns", "rounds", "aborted", "robot_desync", "last_build_turn",
+               "fallbacks", "fallback_reasons", "belief_resets", *COUNTERS, "bank_limit_hits", "arm")
 BUILD_STEPS = frozenset({"build", "road_building", "buy"})  # a piece built (setup aside) or a card bought
 
 
@@ -4809,7 +5006,9 @@ class Seat:
         self._declined_seen = 0
         self._virtual, self._virtual_turn = 0, 0  # offers declined inside our engine only, this turn
         self._robot_offers: Counter = Counter()  # (turn, seat) -> offers made
-        self._shown_discards: Counter = Counter()  # resource name -> our discards shown before the stream's
+        # Our seat's next discard as the stream should report it: None (none asked), "stock" (the stock brain
+        # decides it, unseen by our bot) or the resource names our bot was shown while it chose them.
+        self._discard_expect: Counter | str | None = None
 
     # --- the stream ---
 
@@ -4832,14 +5031,22 @@ class Seat:
                     self.counts["our_offers_accepted"] += 1
                 elif st.info["partner"] == self.seat:
                     self.counts["offers_to_us_accepted"] += 1
-            self.bot.observe(self.seat, [A.redact(e, self.seat) for e in st.events if not self._shown(e)])
+            self.bot.observe(self.seat, [A.redact(e, self.seat) for e in self._unseen(st.events)])
 
-    def _shown(self, e: dict) -> bool:
-        """One of our seat's discards the bot was already shown while it chose them (`_discard`)."""
-        if e["type"] != "discarded" or e["player"] != self.seat or not self._shown_discards[e["resource"]]:
-            return False
-        self._shown_discards[e["resource"]] -= 1
-        return True
+    def _unseen(self, events: list[dict]) -> list[dict]:
+        """`events` less our seat's discards the bot was shown while it chose them (`_discard`). A discard of
+        ours that no reply of ours asked for (the server force-discarded, before our reply or with none) is
+        counted (`forced-discard`) and shown; what our bot was shown instead then resets its belief, counted.
+        Either way the expectation ends with the step that reports our discard."""
+        ours = Counter(e["resource"] for e in events if e["type"] == "discarded" and e["player"] == self.seat)
+        if not ours:
+            return events
+        expect, self._discard_expect = self._discard_expect, None
+        if expect == ours:
+            return [e for e in events if not (e["type"] == "discarded" and e["player"] == self.seat)]
+        if expect != "stock":
+            self.fallbacks["forced-discard"] += 1
+        return events
 
     def fellback(self, reason: str) -> None:
         self.fallbacks[reason] += 1
@@ -4847,12 +5054,14 @@ class Seat:
     # --- decisions ---
 
     def decide(self, ask: dict, received: float) -> dict:
+        if ask["kind"] == "discard":
+            self._discard_expect = "stock"  # unless `_discard` replies with the cards it showed
         if self.tracker.over:
             # Our rules ended the game (a knight's Largest Army reached the target) while JSettlers plays on to
             # the robber move: no decision of ours is owed, so the stock brain moves it, uncounted.
             return {"t": "reply", "id": ask["id"], "fallback": AFTER_WIN}
         try:
-            if self.capped:
+            if self.capped or self.tracker.ctx.turn >= self.max_turns:
                 raise Fallback("turn-cap")
             reply = getattr(self, "_" + ask["kind"])(ask.get("extra") or {}, received)
         except Fallback as f:
@@ -4924,12 +5133,14 @@ class Seat:
         raise Fallback("preroll-card")  # the stock turn machine plays only knights before the roll
 
     def _road_building(self, extra, received) -> dict:
+        self._check_declined()
         kind, *v = A.decode(self._act(self._game("road_building")))
         if kind != "road":
             raise Fallback("choice")
         return {"edge": OUR_EDGE_TO_JS_EDGE[v[0]]}
 
     def _move_robber(self, extra, received) -> dict:
+        self._check_declined()
         g = self._game("move_robber")
         a = self._act(g)
         kind, *v = A.decode(a)
@@ -4946,6 +5157,11 @@ class Seat:
         return {"hex": OUR_TILE_TO_JS_HEX[v[0]], "victim": victim}
 
     def _discard(self, extra, received) -> dict:
+        """Our rules discard one card a decision: the bot sees each discard before it chooses the next (its belief
+        checks its hand), and the same discards in the stream are not shown to it again. A choice that fails after
+        the first card is shown completes with the first discards our rules allow (counted), so the reply is what
+        the bot was shown."""
+        self._check_declined()
         snap = self._snapshot()
         if snap["phase"] != "discard":
             raise Fallback("position")
@@ -4953,19 +5169,28 @@ class Seat:
         for i, p in enumerate(snap["players"]):
             p["discard_remaining"] = n if i == self.seat else 0
         g = self._import(snap, "discard")
-        cards = [0] * 5
-        for _ in range(n):
-            a = self._act(g)
-            kind, *v = A.decode(a)
-            if kind != "discard":
-                raise Fallback("choice")
-            cards[v[0]] += 1
+        cards, shown, filling = [0] * 5, Counter(), False
+        for i in range(n):
+            try:
+                if filling:
+                    raise Fallback("filling")
+                a = self._act(g)
+                if A.decode(a)[0] != "discard":
+                    raise Fallback("choice")
+            except Fallback as f:
+                if i == 0:
+                    raise
+                if not filling:
+                    self.fallbacks[f.reason] += 1
+                    filling = True
+                a = next(x for x in g.legal_actions() if A.decode(x)[0] == "discard")
+            r = A.decode(a)[1]
+            cards[r] += 1
             seen = len(g.log(self.seat))
             g.apply(a)
-            # Our rules discard one card a decision: the bot sees each discard before it chooses the next (its
-            # belief checks its hand), and the same discards in the stream are not shown to it again.
             self.bot.observe(self.seat, list(g.log(self.seat))[seen:])
-            self._shown_discards[RESOURCE_NAMES[v[0]]] += 1
+            shown[RESOURCE_NAMES[r]] += 1
+        self._discard_expect = shown
         return {"res": ours_to_js5(cards)}
 
     def _main(self, extra, received) -> dict:
@@ -5127,6 +5352,9 @@ def play_game(jvm: Jvm, seed: int, k: int, candidate: str, nets_dir: str | None 
                 "winner": None if m["winner"] < 0 else ctx.ours(m["winner"]),
                 "vp": [m["vp"][ctx.js(i)] for i in range(4)],
                 "turns": ctx.turn, "rounds": m["rounds"], "aborted": m["aborted"],
+                # A setup settlement the server cancelled by a forced end: a stock robot keeps it in its own copy of
+                # the game when the turn was its own, and plays the rest of the game on a board it does not have.
+                "robot_desync": bool(tracker.setup_cancelled),
                 "last_build_turn": list(seat.last_build),
                 "fallbacks": sum(seat.fallbacks.values()), "fallback_reasons": dict(seat.fallbacks),
                 "belief_resets": bot.diagnostics().get("belief_resets", 0),
@@ -5188,15 +5416,19 @@ def run_match(candidate: str, baseline: str, seeds: int, seed_start: int = 0, wo
 - [ ] **Step 3: Run the Seat tests to verify they pass**
 
 Run: `.venv/bin/pytest -q tests/python/test_jsettlers_seat.py`
-Expected: PASS, 15 tests.
+Expected: PASS, 23 tests.
 
 - [ ] **Step 4: Write the failing JVM tests**
 
 Create `tests/python/test_jsettlers_arena.py`:
 ```python
+import json
+from pathlib import Path
+
 import pytest
 
 from jsettlers_harness import require
+from oracle.jsettlers import diff
 from oracle.jsettlers import tables as T
 from oracle.jsettlers.arena import FALLBACK_REASONS, RECORD_KEYS, check, play_game, run_match
 from oracle.jsettlers.boards import first_player, js_layout, native_board
@@ -5220,7 +5452,7 @@ def test_a_no_trades_bridge_game_records_every_counter(jvm):
     assert set(r["fallback_reasons"]) <= set(FALLBACK_REASONS)
     assert r["fallbacks"] == sum(r["fallback_reasons"].values()) and r["fallbacks"] < 20
     assert r["our_offers"] == r["offers_to_us"] == r["robot_offers"] == 0
-    assert len(r["last_build_turn"]) == 4 and r["last_build_turn"][1] is not None
+    assert len(r["last_build_turn"]) == 4 and r["last_build_turn"][1] is not None and r["robot_desync"] is False
     assert all(t is None or 0 <= t <= r["turns"] for t in r["last_build_turn"])
 
 
@@ -5262,9 +5494,37 @@ def test_late_messages_of_an_earlier_aborted_game_are_answered_and_dropped():
     r = play_game(j, 52, 2, "random", trades=False, arm="no-trades")
     assert j.sent[0]["t"] == "game" and j.sent[1] == {"t": "reply", "id": 41, "fallback": "turn-cap"}
     assert r["fallbacks"] == 0 and r["aborted"] is True and r["last_build_turn"] == [None] * 4
+    assert r["robot_desync"] is False
     j = FakeJvm([{"t": "ev", "g": "elsewhere", "a": "all", "m": "SOCGameState:game=elsewhere|state=20"}])
     with pytest.raises(RuntimeError, match="a message from another game"):
         play_game(j, 52, 3, "random", trades=False, arm="no-trades")
+
+
+SEED78 = Path(__file__).parent / "data" / "jsettlers_seed78_k1.jsonl"  # the harness's lines, bridge game y-78-1
+
+
+def seed78(name=None):
+    msgs = [json.loads(line) for line in SEED78.read_text().splitlines()]
+    return msgs if name is None else [{**m, "g": name} for m in msgs if m["t"] in ("start", "ev", "over")]
+
+
+def test_a_robots_setup_settlement_cancelled_by_a_forced_end_is_a_desync_and_one_belief_reset():
+    # Seed 78, k=1 (stall-debug.md): robot 3's planInitRoad returns an edge off the board, the server ends its setup
+    # turn and cancels its settlement, and the robot keeps it in its own copy. Our bot is shown no event for the
+    # cancelled settlement (no engine event removes one), so its next searched decision resets its belief once.
+    r = play_game(FakeJvm(seed78()), 78, 1, "ismcts@20", trades=False, arm="y")
+    assert r["robot_desync"] is True and r["belief_resets"] == 1 and r["fallbacks"] == 0
+    assert r["last_build_turn"][0] is None  # the desynced robot (our seat 0 here) never builds again
+
+
+def test_the_seed_78_stream_replays_with_the_forced_setup_end_allowlisted():
+    res = diff.play_game(FakeJvm(seed78("diff-78-1")), 78, 1)
+    assert res.mismatch is None and res.allowlisted["forced-setup-end"] == 1 and res.steps > 30
+
+
+def test_seed_78_desyncs_a_robot_in_the_live_harness(jvm):
+    r = play_game(jvm, 78, 1, "ismcts@20", trades=False, arm="no-trades", max_turns=1)  # one forced end: about 60 s
+    assert r["robot_desync"] is True and r["aborted"] is True
 
 
 def test_run_match_rotates_the_seat_on_one_board(tmp_path):
@@ -5450,7 +5710,8 @@ import soc.util.SOCRobotParameters;
  * the stock code path it replaces sets, so the stock loop waits for the same server answers.
  */
 final class BridgeBrain extends SOCRobotBrain {
-    static final long ASK_SECONDS = 600;
+    /** Below the server's jsettlers.bots.timeout.turn (600 s), so a slow reply is our counted java-timeout first. */
+    static final long ASK_SECONDS = 540;
     static final int STOCK_ROBBER = -2;
     private final Pipe pipe;
     private volatile int victim = STOCK_ROBBER;
@@ -5653,13 +5914,18 @@ final class BridgeBrain extends SOCRobotBrain {
 }
 ```
 
+In `ArenaMain.run`, after `SOCServer.ROBOT_FORCE_ENDTURN_SECONDS = 60;`, add (a stubborn robot's turn, one force-ended before, gets the same 60 s, so our discards on it get the same window):
+```java
+        SOCServer.ROBOT_FORCE_ENDTURN_STUBBORN_SECONDS = 60;
+```
+
 In `ArenaMain.run`, after the loop that starts the four robots, add:
 ```java
         start(new BridgeClient(sci, pipe), srv);
         names.add(ArenaServer.BRIDGE);
 ```
 
-Add these lines to `jsettlers/api.txt` (the brain fields the bridge writes, and the stock opening's first settlement, so a stock second settlement plans around ours) and re-run `bash jsettlers/check-api.sh` (expected: `56 members present`):
+Add these lines to `jsettlers/api.txt` (the brain fields the bridge writes, the stock opening's first settlement, so a stock second settlement plans around ours, and the stubborn robots' force-end time) and re-run `bash jsettlers/check-api.sh` (expected: `57 members present`):
 ```
 soc.robot.SOCRobotBrain | protected boolean expectROLL_OR_CARD;
 soc.robot.SOCRobotBrain | protected boolean expectDISCARD;
@@ -5669,11 +5935,12 @@ soc.robot.SOCRobotBrain | protected int tradeResponseTimeoutSec;
 soc.robot.SOCRobotBrain | protected boolean[] offerRejections;
 soc.robot.SOCRobotBrain | protected boolean doneTrading;
 soc.robot.OpeningBuildStrategy | protected int firstSettlement;
+soc.server.SOCServer | public static int ROBOT_FORCE_ENDTURN_STUBBORN_SECONDS;
 ```
 - [ ] **Step 6: Build and run the tests to verify they pass**
 
 Run: `pgrep -fl 'arm.sh' || echo idle`, then `bash jsettlers/build.sh && .venv/bin/pytest -q tests/python/test_jsettlers_seat.py tests/python/test_jsettlers_arena.py`
-Expected: `built 15 sources`; PASS, 15 + 8 tests. If the bridge game stalls (a `TimeoutError` naming the log), the log's last brain lines say which flag the stock loop was waiting on: compare the reply's flags with the stock code path it replaces (Step 5's comments name each), fix the bridge, and keep the stall's reason in a comment.
+Expected: `built 15 sources`; PASS, 23 + 11 tests. If the bridge game stalls (a `TimeoutError` naming the log), the log's last brain lines say which flag the stock loop was waiting on: compare the reply's flags with the stock code path it replaces (Step 5's comments name each), fix the bridge, and keep the stall's reason in a comment.
 
 - [ ] **Step 7: Format, lint, the full suite**
 
@@ -5894,7 +6161,7 @@ and the robot construction line with
             start(mode.equals("aligned") ? new CappedClient(sci, name) : new SOCRobotClient(sci, name, "pw"), srv);
 ```
 
-Add to `jsettlers/api.txt` and re-run `bash jsettlers/check-api.sh` (expected: `61 members present`):
+Add to `jsettlers/api.txt` and re-run `bash jsettlers/check-api.sh` (expected: `62 members present`):
 ```
 soc.robot.SOCRobotNegotiator | public soc.game.SOCTradeOffer makeOffer(soc.robot.SOCBuildPlan);
 soc.robot.SOCRobotNegotiator | public void resetWantsAnotherOffer();
@@ -5906,7 +6173,7 @@ soc.game.SOCTradeOffer | public soc.game.SOCTradeOffer(java.lang.String, int, bo
 - [ ] **Step 4: Build and run the tests to verify they pass**
 
 Run: `pgrep -fl 'arm.sh' || echo idle`, then `bash jsettlers/build.sh && .venv/bin/pytest -q tests/python/test_jsettlers_seat.py tests/python/test_jsettlers_arena.py`
-Expected: `built 17 sources`; PASS, 15 + 10 tests.
+Expected: `built 17 sources`; PASS, 23 + 13 tests.
 
 - [ ] **Step 5: Format, lint, the full suite**
 

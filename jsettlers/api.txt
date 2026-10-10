@@ -24,6 +24,7 @@ soc.server.SOCServer | protected void startEmptyLog(soc.game.SOCGame, boolean)
 soc.server.SOCServer | public soc.game.SOCGame createGameAndBroadcast(soc.server.genericServer.Connection, java.lang.String, soc.game.SOCGameOptionSet, boolean);
 soc.server.SOCServer | protected java.util.Vector<soc.server.genericServer.Connection> robots;
 soc.server.SOCServer | public static int ROBOT_FORCE_ENDTURN_SECONDS;
+soc.server.SOCServer | public static int ROBOT_FORCE_ENDTURN_STUBBORN_SECONDS;
 soc.server.SOCBoardAtServer$BoardFactoryAtServer | public soc.game.SOCBoard createBoard(soc.game.SOCGameOptionSet, boolean, int)
 soc.robot.SOCRobotBrain | public static float BOTS_ONLY_FAST_PAUSE_FACTOR;
 soc.robot.SOCRobotBrain | protected void planAndDoActionForPLAY1();

@@ -29,4 +29,8 @@ ENTRIES = {
     "forced-end-turn": Entry(
         "the server ends a stalled player's turn itself, with no end-turn request (SOCForceEndTurnThread)",
         "our engine has no forced end of turn, so the position after it is re-imported"),
+    "forced-setup-end": Entry(
+        "the server ends a stalled setup turn itself, removing the settlement awaiting its road with the cards it "
+        "produced, and the setup order (and JSettlers' first player) moves on",
+        "our setup has no forced end and no event removes a settlement, so the position after it is re-imported"),
 }

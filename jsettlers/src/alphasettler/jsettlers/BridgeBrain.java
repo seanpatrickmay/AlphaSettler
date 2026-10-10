@@ -29,7 +29,8 @@ import soc.util.SOCRobotParameters;
  * the stock code path it replaces sets, so the stock loop waits for the same server answers.
  */
 final class BridgeBrain extends SOCRobotBrain {
-    static final long ASK_SECONDS = 600;
+    /** Below the server's jsettlers.bots.timeout.turn (600 s), so a slow reply is our counted java-timeout first. */
+    static final long ASK_SECONDS = 540;
     static final int STOCK_ROBBER = -2;
     private final Pipe pipe;
     private volatile int victim = STOCK_ROBBER;

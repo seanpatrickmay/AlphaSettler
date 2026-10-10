@@ -359,6 +359,47 @@ def test_a_card_left_unpicked_then_a_forced_end_of_turn_ends_the_turn():
     assert step.events == [{"type": "turn_ended", "player": 0}] and s.tracker.ctx.turn == 1
 
 
+def stalled_setup_road(s, nxt=1, state=T.START2A):
+    """Player 0 asks for a road JSettlers refuses, stalls, and the server ends its setup turn: the settlement
+    awaiting that road goes, with the cards it produced, and the turn passes to seat `nxt` in `state`."""
+    s.send("f0", "SOCPutPiece:game=x|playerNumber=0|pieceType=0|coord=16")
+    s.send("p0", "SOCDeclinePlayerRequest:game=x|state=0|reason=4|detail1=0|detail2=22|text=You can't build a road there.")
+    s.send("p0", "SOCCancelBuildRequest:game=x|pieceType=0")
+    s.raw["players"][0]["settlements"].pop()
+    s.hand(0, [0, 0, 0, 0, 0])
+    s.send("all", "SOCCancelBuildRequest:game=x|pieceType=1", changed=True)
+    s.raw["current"], s.raw["state"] = nxt, state
+    s.send("all", "SOCClearOffer:game=x|playerNumber=-1", changed=True)
+    s.send("all", f"SOCTurn:game=x|playerNumber={nxt}|gameState={state}")
+
+
+def test_a_setup_turn_the_server_ends_is_its_own_allowlisted_step_and_a_robot_desync():
+    # Stock robots: planInitRoad can return an edge off the board, and the robot whose own setup settlement the
+    # server then cancels keeps it in its copy of the game (stall-debug.md, seed 78).
+    s = Script(first=0, state=T.START2B, current=0)
+    s.raw["players"][0]["settlements"] = [T.OUR_NODE_TO_JS_NODE[n] for n in (10, 20)]
+    s.raw["players"][0]["roads"] = [T.OUR_EDGE_TO_JS_EDGE[min(e for e, (a, b) in enumerate(T.EDGE_NODES) if 10 in (a, b))]]
+    s.hand(0, [0, 0, 0, 1, 0])
+    s.send("all", "SOCGameState:game=x|state=11", changed=True)
+    s.tracker.flush()
+    stalled_setup_road(s)
+    [step] = s.flush()
+    assert (step.kind, step.player, step.actions, step.events) == ("forced_setup_end", 0, [], [])
+    assert step.untranslatable == "forced-setup-end" and step.after["state"] == T.START2A
+    assert s.tracker.setup_cancelled == [0] and s.tracker.ctx.turn == 0
+
+
+def test_a_setup_turn_passing_without_a_cancelled_settlement_is_no_desync():
+    s = Script(first=0, state=T.START1A, current=0)
+    s.send("all", "SOCGameState:game=x|state=5", changed=True)
+    s.send("all", "SOCTurn:game=x|playerNumber=0|gameState=5")  # the game's first turn: nothing was ended
+    assert [x.kind for x in s.flush()] in ([], ["noop"])
+    s.raw["current"] = 1
+    s.send("all", "SOCTurn:game=x|playerNumber=1|gameState=5", changed=True)  # a stalled first placement
+    [step] = s.flush()
+    assert step.untranslatable == "forced-setup-end" and s.tracker.setup_cancelled == []
+
+
 def test_forced_discards_for_two_players_in_one_stretch_are_both_read():
     s = Script(first=0, current=0)
     s.hand(1, [4, 4, 0, 0, 0])

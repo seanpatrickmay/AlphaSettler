@@ -5,7 +5,7 @@ import pytest
 
 import oracle.jsettlers.diff as diff
 import oracle.jsettlers.jvm as jvm_module
-from alphasettler import cli
+from alphasettler import Game, cli
 from jsettlers_harness import require
 from oracle.jsettlers import events
 from oracle.jsettlers import tables as T
@@ -119,7 +119,8 @@ def test_compare_names_the_fields_that_differ():
 
 
 def test_every_allowlist_entry_names_its_rule():
-    assert set(ENTRIES) == {"domestic-trade", "road-building-cancelled", "bank-trade", "forced-end-turn"}
+    assert set(ENTRIES) == {"domestic-trade", "road-building-cancelled", "bank-trade", "forced-end-turn",
+                            "forced-setup-end"}
     assert all(e.rule and e.why for e in ENTRIES.values())
 
 
@@ -192,6 +193,42 @@ def bank_trades(stream, *trades):
         stream.ev("all", f"SOCBankTrade:game=x|give={rset(give)}|get={rset(get)}|pn=0", changed=True)
 
 
+def last_setup_road():
+    """The start of our engine's last setup step on SEED's board (player 0's second road, first choices
+    everywhere), as a Stream position, with player 0's second settlement node and what it produced."""
+    g = Game(SEED)
+    while not (g.phase == "setup_settlement" and g.snapshot()["setup_step"] == 7):
+        g.apply(g.legal_actions()[0])
+    before = g.snapshot()["players"][0]["hand"]
+    g.apply(g.legal_actions()[0])
+    snap = g.snapshot()
+    node, ps = snap["setup_road_node"], snap["players"]
+    produced = [a - b for a, b in zip(ps[0]["hand"], before)]
+    start = dict(state=T.START2B, hands=[(i, p["hand"]) for i, p in enumerate(ps)],
+                 settlements=[(i, n) for i, p in enumerate(ps) for n in p["settlements"]],
+                 roads=[(i, e) for i, p in enumerate(ps) for e in p["roads"]])
+    return start, node, produced
+
+
+LAST_SETUP, SECOND_NODE, PRODUCED = last_setup_road()
+
+
+def stalled_setup_road(stream, removed=SECOND_NODE, takes_back=True, nxt=1):
+    """Player 0 asks for a road JSettlers refuses and stalls; the server ends its setup turn, removing the
+    settlement `removed` (and, with `takes_back`, the cards it produced), and JSettlers' play begins at `nxt`."""
+    stream.ev("f0", "SOCPutPiece:game=x|playerNumber=0|pieceType=0|coord=16")
+    stream.ev("p0", "SOCDeclinePlayerRequest:game=x|state=0|reason=4|detail1=0|detail2=22|text=no")
+    p = stream.raw["players"][0]
+    p["settlements"].remove(T.OUR_NODE_TO_JS_NODE[removed])
+    p["vp"] -= 1
+    if takes_back:
+        stream.hand(0, [h - x for h, x in zip(T.js5_to_ours(p["res"]), PRODUCED)])
+    stream.ev("all", "SOCCancelBuildRequest:game=x|pieceType=1", changed=True)
+    stream.raw["current"], stream.raw["state"] = nxt, T.ROLL_OR_CARD
+    stream.ev("all", "SOCClearOffer:game=x|playerNumber=-1", changed=True)
+    stream.ev("all", f"SOCTurn:game=x|playerNumber={nxt}|gameState=15")
+
+
 def one(r, n=1):
     return [n if i == r else 0 for i in range(5)]
 
@@ -215,6 +252,11 @@ ALLOWLISTED = {
         dict(state=T.ROLL_OR_CARD), roll_then_forced_end, (None, 2), "'current'"),
     "forced end leaving the player in main": (
         dict(state=T.ROLL_OR_CARD), roll_then_forced_end, (None, 0, T.PLAY1), "'phase'"),
+    "forced setup end": (LAST_SETUP, stalled_setup_road, (), None),
+    "forced setup end keeping the cards the settlement produced": (
+        LAST_SETUP, stalled_setup_road, (SECOND_NODE, False), "players[0].hand"),
+    "forced setup end removing the settlement that has its road": (
+        LAST_SETUP, stalled_setup_road, (LAST_SETUP["settlements"][0][1],), "players[0].settlements"),
     "road building ended": (ROAD_BUILDING, road_building_ended, (), None),
     "road building ended handing the turn to the wrong seat": (
         ROAD_BUILDING, road_building_ended, (2,), "'current'"),

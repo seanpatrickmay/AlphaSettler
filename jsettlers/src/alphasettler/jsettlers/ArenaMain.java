@@ -48,6 +48,8 @@ public final class ArenaMain {
         if (!mode.equals("stock")) throw new IllegalArgumentException("unknown mode " + mode + " (stock)");
         SOCRobotBrain.BOTS_ONLY_FAST_PAUSE_FACTOR = 0.01f;
         SOCServer.ROBOT_FORCE_ENDTURN_SECONDS = 60;
+        // A stubborn robot's turn (one force-ended before) as long, so our discards on it get the same window.
+        SOCServer.ROBOT_FORCE_ENDTURN_STUBBORN_SECONDS = 60;
         SOCGame.boardFactory = new ArenaBoardFactory();
         ArenaServer srv = new ArenaServer(pipe);
         srv.setPriority(5);

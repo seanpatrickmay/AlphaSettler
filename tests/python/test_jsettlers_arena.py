@@ -1,6 +1,10 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from jsettlers_harness import require
+from oracle.jsettlers import diff
 from oracle.jsettlers import tables as T
 from oracle.jsettlers.arena import FALLBACK_REASONS, RECORD_KEYS, check, play_game, run_match
 from oracle.jsettlers.boards import first_player, js_layout, native_board
@@ -24,7 +28,7 @@ def test_a_no_trades_bridge_game_records_every_counter(jvm):
     assert set(r["fallback_reasons"]) <= set(FALLBACK_REASONS)
     assert r["fallbacks"] == sum(r["fallback_reasons"].values()) and r["fallbacks"] < 20
     assert r["our_offers"] == r["offers_to_us"] == r["robot_offers"] == 0
-    assert len(r["last_build_turn"]) == 4 and r["last_build_turn"][1] is not None
+    assert len(r["last_build_turn"]) == 4 and r["last_build_turn"][1] is not None and r["robot_desync"] is False
     assert all(t is None or 0 <= t <= r["turns"] for t in r["last_build_turn"])
 
 
@@ -66,9 +70,37 @@ def test_late_messages_of_an_earlier_aborted_game_are_answered_and_dropped():
     r = play_game(j, 52, 2, "random", trades=False, arm="no-trades")
     assert j.sent[0]["t"] == "game" and j.sent[1] == {"t": "reply", "id": 41, "fallback": "turn-cap"}
     assert r["fallbacks"] == 0 and r["aborted"] is True and r["last_build_turn"] == [None] * 4
+    assert r["robot_desync"] is False
     j = FakeJvm([{"t": "ev", "g": "elsewhere", "a": "all", "m": "SOCGameState:game=elsewhere|state=20"}])
     with pytest.raises(RuntimeError, match="a message from another game"):
         play_game(j, 52, 3, "random", trades=False, arm="no-trades")
+
+
+SEED78 = Path(__file__).parent / "data" / "jsettlers_seed78_k1.jsonl"  # the harness's lines, bridge game y-78-1
+
+
+def seed78(name=None):
+    msgs = [json.loads(line) for line in SEED78.read_text().splitlines()]
+    return msgs if name is None else [{**m, "g": name} for m in msgs if m["t"] in ("start", "ev", "over")]
+
+
+def test_a_robots_setup_settlement_cancelled_by_a_forced_end_is_a_desync_and_one_belief_reset():
+    # Seed 78, k=1 (stall-debug.md): robot 3's planInitRoad returns an edge off the board, the server ends its setup
+    # turn and cancels its settlement, and the robot keeps it in its own copy. Our bot is shown no event for the
+    # cancelled settlement (no engine event removes one), so its next searched decision resets its belief once.
+    r = play_game(FakeJvm(seed78()), 78, 1, "ismcts@20", trades=False, arm="y")
+    assert r["robot_desync"] is True and r["belief_resets"] == 1 and r["fallbacks"] == 0
+    assert r["last_build_turn"][0] is None  # the desynced robot (our seat 0 here) never builds again
+
+
+def test_the_seed_78_stream_replays_with_the_forced_setup_end_allowlisted():
+    res = diff.play_game(FakeJvm(seed78("diff-78-1")), 78, 1)
+    assert res.mismatch is None and res.allowlisted["forced-setup-end"] == 1 and res.steps > 30
+
+
+def test_seed_78_desyncs_a_robot_in_the_live_harness(jvm):
+    r = play_game(jvm, 78, 1, "ismcts@20", trades=False, arm="no-trades", max_turns=1)  # one forced end: about 60 s
+    assert r["robot_desync"] is True and r["aborted"] is True
 
 
 def test_run_match_rotates_the_seat_on_one_board(tmp_path):

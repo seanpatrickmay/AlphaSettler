@@ -9,7 +9,8 @@ come one player at a time in any order; their actions are released in our seat o
 last is in. A step our rules cannot replay carries an allowlist kind (`untranslatable`) instead.
 Our rules end the game the moment the player on turn reaches the target: when JSettlers plays on (a
 knight's Largest Army wins there only after the robber moves) the step carries the position as our
-rules leave it, and nothing after our game's end becomes a step."""
+rules leave it, and nothing after our game's end becomes a step. A setup turn the server ended (a stalled
+placement) is its own allowlisted step, `forced-setup-end`."""
 
 from __future__ import annotations
 
@@ -79,6 +80,7 @@ class Tracker:
         self.raw = start["s"]
         self.declined = [0] * 4
         self.bank_limit_hits = 0
+        self.setup_cancelled: list[int] = []  # our seats whose setup settlement a forced end of turn removed
         self.over = False
         self._open: list[Entry] | None = None
         self._before = self.raw
@@ -178,6 +180,11 @@ class Tracker:
             return self._trade(accept, after)
         if first("SOCTurn") is not None and before["state"] not in SETUP_STATES:
             return self._end_turn(before, after, requested=req is not None and req.name == "SOCEndTurn")
+        cancelled = first("SOCCancelBuildRequest", lambda e: e.aud == "all" and e.f.get("pieceType") == "1")
+        if before["state"] in SETUP_STATES and (cancelled is not None or (
+                first("SOCTurn") is not None and (after["current"] != before["current"]
+                                                  or after["state"] not in SETUP_STATES))):
+            return self._forced_setup_end(before, after, cancelled is not None)
         if (made := first("SOCMakeOffer")) is not None:
             return self._offer(made, after)
         if (rejected := first("SOCRejectOffer", lambda e: "reasonCode" not in e.f)) is not None:
@@ -192,6 +199,17 @@ class Tracker:
         if after["state"] in _HALF_DONE or after == before:
             return None
         return Step("noop", None, after=after)
+
+    def _forced_setup_end(self, before, after, cancelled: bool) -> Step:
+        """The server ended a stalled setup turn (SOCForceEndTurnThread): the settlement awaiting its road, if
+        any, is removed with the cards it produced, and the setup order moves on (JSettlers may move its first
+        player). Our engine has no such end, and no event removes a settlement, so our bot is shown nothing and
+        the replay re-imports. A stock robot whose own settlement is cancelled keeps it in its copy of the game
+        (`setup_cancelled`, the arena's `robot_desync`)."""
+        p = self.ctx.ours(before["current"])
+        if cancelled:
+            self.setup_cancelled.append(p)
+        return Step("forced_setup_end", p, [], [], after, untranslatable="forced-setup-end")
 
     def _forced_end(self, step: Step | None, before, after) -> Step:
         """The server ended the turn (SOCForceEndTurnThread) in a stretch whose first rule read another

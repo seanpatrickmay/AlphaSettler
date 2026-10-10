@@ -34,12 +34,13 @@ NO_TRADES = {"max_offers_per_turn": 0}
 LATE = 4.5  # seconds: robots wait 5 s for answers in robots-only games
 SILENCE = 900.0  # seconds without a message before the run fails
 MAX_TURNS = 1000
-FALLBACK_REASONS = ("position", "declined", "engine", "choice", "preroll-card", "turn-cap", "java-timeout", "victim")
+FALLBACK_REASONS = ("position", "declined", "engine", "choice", "preroll-card", "turn-cap", "java-timeout", "victim",
+                    "forced-discard")
 AFTER_WIN = "after-win"  # a decision JSettlers asks once our rules have ended the game: answered, not counted
 COUNTERS = ("our_offers", "our_offers_accepted", "offers_to_us", "offers_to_us_accepted", "unrepresentable",
             "counters_rejected", "late", "robot_offers", "robot_offers_over_caps")
-RECORD_KEYS = ("seed", "candidate_seat", "winner", "vp", "turns", "rounds", "aborted", "last_build_turn", "fallbacks",
-               "fallback_reasons", "belief_resets", *COUNTERS, "bank_limit_hits", "arm")
+RECORD_KEYS = ("seed", "candidate_seat", "winner", "vp", "turns", "rounds", "aborted", "robot_desync", "last_build_turn",
+               "fallbacks", "fallback_reasons", "belief_resets", *COUNTERS, "bank_limit_hits", "arm")
 BUILD_STEPS = frozenset({"build", "road_building", "buy"})  # a piece built (setup aside) or a card bought
 
 
@@ -67,7 +68,9 @@ class Seat:
         self._declined_seen = 0
         self._virtual, self._virtual_turn = 0, 0  # offers declined inside our engine only, this turn
         self._robot_offers: Counter = Counter()  # (turn, seat) -> offers made
-        self._shown_discards: Counter = Counter()  # resource name -> our discards shown before the stream's
+        # Our seat's next discard as the stream should report it: None (none asked), "stock" (the stock brain
+        # decides it, unseen by our bot) or the resource names our bot was shown while it chose them.
+        self._discard_expect: Counter | str | None = None
 
     # --- the stream ---
 
@@ -90,14 +93,22 @@ class Seat:
                     self.counts["our_offers_accepted"] += 1
                 elif st.info["partner"] == self.seat:
                     self.counts["offers_to_us_accepted"] += 1
-            self.bot.observe(self.seat, [A.redact(e, self.seat) for e in st.events if not self._shown(e)])
+            self.bot.observe(self.seat, [A.redact(e, self.seat) for e in self._unseen(st.events)])
 
-    def _shown(self, e: dict) -> bool:
-        """One of our seat's discards the bot was already shown while it chose them (`_discard`)."""
-        if e["type"] != "discarded" or e["player"] != self.seat or not self._shown_discards[e["resource"]]:
-            return False
-        self._shown_discards[e["resource"]] -= 1
-        return True
+    def _unseen(self, events: list[dict]) -> list[dict]:
+        """`events` less our seat's discards the bot was shown while it chose them (`_discard`). A discard of
+        ours that no reply of ours asked for (the server force-discarded, before our reply or with none) is
+        counted (`forced-discard`) and shown; what our bot was shown instead then resets its belief, counted.
+        Either way the expectation ends with the step that reports our discard."""
+        ours = Counter(e["resource"] for e in events if e["type"] == "discarded" and e["player"] == self.seat)
+        if not ours:
+            return events
+        expect, self._discard_expect = self._discard_expect, None
+        if expect == ours:
+            return [e for e in events if not (e["type"] == "discarded" and e["player"] == self.seat)]
+        if expect != "stock":
+            self.fallbacks["forced-discard"] += 1
+        return events
 
     def fellback(self, reason: str) -> None:
         self.fallbacks[reason] += 1
@@ -105,12 +116,14 @@ class Seat:
     # --- decisions ---
 
     def decide(self, ask: dict, received: float) -> dict:
+        if ask["kind"] == "discard":
+            self._discard_expect = "stock"  # unless `_discard` replies with the cards it showed
         if self.tracker.over:
             # Our rules ended the game (a knight's Largest Army reached the target) while JSettlers plays on to
             # the robber move: no decision of ours is owed, so the stock brain moves it, uncounted.
             return {"t": "reply", "id": ask["id"], "fallback": AFTER_WIN}
         try:
-            if self.capped:
+            if self.capped or self.tracker.ctx.turn >= self.max_turns:
                 raise Fallback("turn-cap")
             reply = getattr(self, "_" + ask["kind"])(ask.get("extra") or {}, received)
         except Fallback as f:
@@ -182,12 +195,14 @@ class Seat:
         raise Fallback("preroll-card")  # the stock turn machine plays only knights before the roll
 
     def _road_building(self, extra, received) -> dict:
+        self._check_declined()
         kind, *v = A.decode(self._act(self._game("road_building")))
         if kind != "road":
             raise Fallback("choice")
         return {"edge": OUR_EDGE_TO_JS_EDGE[v[0]]}
 
     def _move_robber(self, extra, received) -> dict:
+        self._check_declined()
         g = self._game("move_robber")
         a = self._act(g)
         kind, *v = A.decode(a)
@@ -204,6 +219,11 @@ class Seat:
         return {"hex": OUR_TILE_TO_JS_HEX[v[0]], "victim": victim}
 
     def _discard(self, extra, received) -> dict:
+        """Our rules discard one card a decision: the bot sees each discard before it chooses the next (its belief
+        checks its hand), and the same discards in the stream are not shown to it again. A choice that fails after
+        the first card is shown completes with the first discards our rules allow (counted), so the reply is what
+        the bot was shown."""
+        self._check_declined()
         snap = self._snapshot()
         if snap["phase"] != "discard":
             raise Fallback("position")
@@ -211,19 +231,28 @@ class Seat:
         for i, p in enumerate(snap["players"]):
             p["discard_remaining"] = n if i == self.seat else 0
         g = self._import(snap, "discard")
-        cards = [0] * 5
-        for _ in range(n):
-            a = self._act(g)
-            kind, *v = A.decode(a)
-            if kind != "discard":
-                raise Fallback("choice")
-            cards[v[0]] += 1
+        cards, shown, filling = [0] * 5, Counter(), False
+        for i in range(n):
+            try:
+                if filling:
+                    raise Fallback("filling")
+                a = self._act(g)
+                if A.decode(a)[0] != "discard":
+                    raise Fallback("choice")
+            except Fallback as f:
+                if i == 0:
+                    raise
+                if not filling:
+                    self.fallbacks[f.reason] += 1
+                    filling = True
+                a = next(x for x in g.legal_actions() if A.decode(x)[0] == "discard")
+            r = A.decode(a)[1]
+            cards[r] += 1
             seen = len(g.log(self.seat))
             g.apply(a)
-            # Our rules discard one card a decision: the bot sees each discard before it chooses the next (its
-            # belief checks its hand), and the same discards in the stream are not shown to it again.
             self.bot.observe(self.seat, list(g.log(self.seat))[seen:])
-            self._shown_discards[RESOURCE_NAMES[v[0]]] += 1
+            shown[RESOURCE_NAMES[r]] += 1
+        self._discard_expect = shown
         return {"res": ours_to_js5(cards)}
 
     def _main(self, extra, received) -> dict:
@@ -385,6 +414,9 @@ def play_game(jvm: Jvm, seed: int, k: int, candidate: str, nets_dir: str | None 
                 "winner": None if m["winner"] < 0 else ctx.ours(m["winner"]),
                 "vp": [m["vp"][ctx.js(i)] for i in range(4)],
                 "turns": ctx.turn, "rounds": m["rounds"], "aborted": m["aborted"],
+                # A setup settlement the server cancelled by a forced end: a stock robot keeps it in its own copy of
+                # the game when the turn was its own, and plays the rest of the game on a board it does not have.
+                "robot_desync": bool(tracker.setup_cancelled),
                 "last_build_turn": list(seat.last_build),
                 "fallbacks": sum(seat.fallbacks.values()), "fallback_reasons": dict(seat.fallbacks),
                 "belief_resets": bot.diagnostics().get("belief_resets", 0),
