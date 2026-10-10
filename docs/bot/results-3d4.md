@@ -1,8 +1,11 @@
 # Sub-project 3d-4 (compound build moves in search): results
 
 Date: 2026-10-09. Machine: Apple M1 Pro, macOS (25.5.0).
-Commit: a324657 (Plan 12, Tasks 1–4 and the final-review fixes; the runs at f9e6096..4acbd28, which add
-only run scripts), plus the commit adding this file.
+Commit: arm F and criterion 2 ran at a324657 (Plan 12, Tasks 1–4 and the final-review fixes, which
+change no move, record or digest). Criterion 1 and the final review's 32-game log ran earlier, on the
+Task 3 extension build with the scripts at 9427fc1 (Task 4 is Python-only); the plain-speed check
+compared e2b8fb9 against 37406c6. Run scripts are at 9427fc1..4acbd28, plus the commit adding this
+file.
 
 Spec: [`docs/superpowers/specs/2026-10-08-compound-moves-design.md`](../superpowers/specs/2026-10-08-compound-moves-design.md).
 Plan: [`docs/superpowers/plans/2026-10-08-plan-12-compound-moves.md`](../superpowers/plans/2026-10-08-plan-12-compound-moves.md).
@@ -28,23 +31,29 @@ Belief resets: 240 games, belief resets 0.
 
 The `+c` seat trades with the bank less because compounds replace bare bank trades (the spec's first
 ruling): it never trades only to hold cards for a later turn. The Plan 12 final review logged 32
-further games of the same match (seeds 7,000,000,000 to 7,000,000,007, each seat; a reviewer's driver,
-not a run file here) and classified every bank trade by what the player did next:
+further games of the same pairing on criterion 1's first 8 seeds (7,000,000,000 to 7,000,000,007,
+with the `+c` seat in each position). They come from a reviewer's driver, not a run file here, and
+are not replays of criterion 1's games: on those seeds `runs/3d4/sprt-c1.jsonl` has the `+c` seat at
+3.66 bank trades a game. The review classified every bank trade by what the player did next:
 
 | | `+c` seat (32 games) | plain seats (96 seat-games) |
 |---|---|---|
 | bank trades a game | 4.38 | 5.59 |
 | followed at once by a build those trades enabled | 4.38 (all) | 3.25 |
 | followed by the end of the turn with no build | 0 | about 2.0 |
+| before a build already affordable / in chains of 3 | 0 | 0.16 / 0.03 |
 
-So the `+c` seat makes more build-enabling bank trades than a plain seat; what it gives up is the
-plain bot's trades that bring a hand of more than 7 cards down before the end of its turn (58% of
-those trades started above 7). It ended its turn holding more than 7 cards 12.5% of the time against
+So the `+c` seat makes more build-enabling bank trades than a plain seat. What it gives up is the
+plain bot's hold trades, the roughly 2.0 a game followed by the end of the turn with no build. Of
+those, 111 of 191 (58%) started from a hand of more than 7 cards, and 154 of 191 left the hand at 7
+or fewer: the plain bot uses them to keep its hand out of the 7-discard. The `+c` seat ended its turn holding more than 7 cards 12.5% of the time against
 6.6% and discarded about 12.3 cards a game against 10.3 (a small sample). That is the cost the
-spec's ruling named, and a candidate reason for criterion 1's H0. In the same games a searched Main
-decision cost about 2% more with `+c` (4.97 against 4.87 ms), offset by the searches plan steps skip
-(78.4 against 79.4 a game); plain searches did not slow (`runs/3d4/speed-plain.log`: 26,210 against
-26,266 simulations a second, 0.998, the same 596 decisions).
+spec's ruling named, and a candidate reason for criterion 1's H0. In the same games (4 driver
+processes in parallel, so indicative), a searched Main decision cost about 2% more with `+c` (4.97
+against 4.87 ms), offset by the searches plan steps skip (78.4 against 79.4 a game; 0.385 against
+0.387 s of search a game). Plain searches showed no detectable slowdown (`runs/3d4/speed-plain.log`:
+HEAD e2b8fb9 at 26,210 against base 37406c6 at 26,266 simulations a second, the mean of 3 runs each,
+0.998; single runs spread from 24,037 to 27,397; the same 596 decisions).
 
 ## Training at equal wall time (done criterion 2)
 
@@ -55,12 +64,18 @@ minutes and gate, the same self-play and gate seeds; set up untimed, then 10,800
 (F cut after 10,802 s). Its self-play and both gate sides searched compound moves (`+t+c` gates); the
 control's gates were `+t`, so the two gate columns measure different bots.
 
-**Not an idle machine.** At the user's request Plan 13 (the JSettlers2 arena) was built beside arm F,
-in its own worktree under `nice -n 19`: builds, JVM games and full test runs from F's start to about
-22:15, then only code writing, unit tests that start no JVM, and reviews until the cut. F's training windows made 10,919 to 12,981 steps against A's 13,175 to
-13,280, and its self-play took 18.9 to 26.9 minutes a generation against A's 16.9 to 18.1. Compound
-self-play also records more decisions a game (695,877 to 727,873 a generation against 651,593 to
-674,797). The run does not separate the two costs; F finished 4 generations to A's 6. An earlier
+**Not an idle machine.** With the user's permission, Plan 13 (the JSettlers2 arena) was built beside
+arm F, in its own worktree under `nice -n 19`: builds, JVM games and full test runs from F's start to
+about 22:15, then only code writing, unit tests that start no JVM, and reviews until the cut. Once,
+after gen-037, a Plan 13 implementer ran `pkill -f multiprocessing.spawn`; arm F was checked and was
+unaffected (its self-play is Rust-threaded). F's training windows made 10,919 to 12,981 steps
+against A's 13,175 to 13,280, and its self-play took 18.9 to 26.9 minutes a generation against A's
+16.9 to 18.1. Compound self-play also records more decisions a game (695,877 to 727,873 a generation
+against 651,593 to 674,797). The run does not separate the two costs, and contention is not all of
+it: F's gen-038 (self-play 22:11 to 22:38, training to 22:48), mostly after the heavy work stopped,
+was its slowest generation (26.9 minutes of self-play, 10,919 steps), and the voided run's gen-035,
+launched through the idle-machine check before any Plan 13 build or test, took 19.6 minutes of
+self-play against A's 16.9. F finished 4 generations to A's 6. An earlier
 arm F (`runs/p2/F-void-sleep*`) was voided when the Mac slept with the lid closed inside its budget.
 
 ### A: best net gen-040, 6 generations finished in the budget
@@ -121,11 +136,18 @@ Belief resets: 144 games, belief resets 0.
 
 ## Next
 
-Compound moves did not help at either stage. With no training, `+c` scored 0.237 against the same
-net without it, and the SPRT rules out a gain of 0.05; the bot made build-enabling trades as often
-as before but stopped trading down large hands, and discarded more. Trained with compound moves for
-three hours, F's best scored 0.215 against B (both `+c`), also H0, but F trained beside other work
-and finished 4 generations to A's 6, so this criterion is weaker evidence than the others. Loops
-without `--compound` stay the default. The cheapest follow-up the evidence points to is keeping the
-bare bank trades beside the compounds (the spec's first ruling reversed), so the bot can still trade
-a large hand down; that is a new measured change, not a fix.
+Compound moves did not help at play time, and the training test found no gain. With no training,
+`+c` won 0.237 of its games against three copies of the same net without it (0.25 is parity; 95% CI
+[0.192, 0.283]). The SPRT accepted H0 against p1 0.30 at alpha = beta = 0.05: a gain as large as 0.05
+is unlikely, but a smaller one is not excluded. The bot made more build-enabling bank trades than the
+plain seats (4.38 against 3.25 a game in 32 logged games) but none that bring a large hand down, and
+it discarded more (12.3 against 10.3 cards a game, a small sample). Trained with compound moves for
+10,800 s, F's best scored 0.215 against B (both `+c`), also H0. This is not the clean equal-wall-time
+test criterion 2 asks for: F trained beside other work (the ledger's ruling C1 asks for an idle
+machine, and contention biases this test toward H0) and finished 4 generations to A's 6, so its H0
+does not show that training with compound moves cannot help. Loops without `--compound` stay the
+default. The cheapest follow-up the evidence points to is keeping the bare bank trades beside the
+compounds (the spec's first ruling reversed), so the bot can still trade a large hand down; that is
+a new measured change, not a fix. The final review names a second candidate: a shared first trade's
+prior is split among its compounds (a dozen road compounds each get 1/12), which thins exploration at
+100 simulations.
