@@ -780,23 +780,29 @@ def _catanatron_arena(args, out: Path) -> int:
 def _jsettlers_arena(args, out: Path) -> int:
     """Our candidate as one seat against three JSettlers2 robots in JSettlers' own server. `--trades` plays
     the trading game with JSettlers' player trading on (`--aligned` caps the robots' offers to it);
-    otherwise JSettlers' no-trading option is on and the candidate offers nothing."""
+    otherwise JSettlers' no-trading option is on and the candidate offers nothing. Exits 2 for a bad request or a
+    missing harness, 3 when the JVM fails, 1 when every seed was dropped from the summary (see
+    `_print_jsettlers_summary`)."""
+    if args.aligned and not args.trades:
+        raise ValueError("--aligned needs --trades")
+    if args.native_boards and not args.trades:
+        raise ValueError("--native-boards needs --trades (it checks the native arm)")
     why = _jsettlers_missing()
     if why is not None:
         print(f"error: the JSettlers harness is not ready: {why}", file=sys.stderr)
         return 2
     import oracle.jsettlers.arena as js_arena
 
-    if args.aligned and not args.trades:
-        raise ValueError("--aligned needs --trades")
-    if args.native_boards and not args.trades:
-        raise ValueError("--native-boards needs --trades (it checks the native arm)")
     baseline = args.baseline.split(":", 1)[1]
     nets_dir = str(Path(args.nets_dir).resolve())
     js_arena.check(args.candidate, baseline, args.seeds, args.seed_start, nets_dir)
     with open_output(out) as f:
-        records = js_arena.run_match(args.candidate, baseline, args.seeds, args.seed_start, args.threads, nets_dir,
-                                     trades=args.trades, aligned=args.aligned, native_boards=args.native_boards)
+        try:
+            records = js_arena.run_match(args.candidate, baseline, args.seeds, args.seed_start, args.threads, nets_dir,
+                                         trades=args.trades, aligned=args.aligned, native_boards=args.native_boards)
+        except (OSError, EOFError, RuntimeError) as e:  # the JVM's error, exit or silence (TimeoutError is an OSError)
+            print(f"error: the JSettlers harness failed: {type(e).__name__}: {e}", file=sys.stderr)
+            return 3
         _write_records(f, args.candidate, args.baseline, records)
     code = _print_jsettlers_summary(args.candidate, args.baseline, records, js_arena.COUNTERS)
     print(f"wrote {out}")
@@ -805,9 +811,11 @@ def _jsettlers_arena(args, out: Path) -> int:
 
 def _print_jsettlers_summary(candidate: str, baseline: str, records: list[dict], counters) -> int:
     """The jsettlers arena's report. A game stopped for a robot desync in setup is a stock robot bug, not a result:
-    its whole seed (all four seat rotations, which the per-seed statistics need) is left out of the win rate and the
-    count of such games printed on its own line. Games that hit the turn cap stay in as no-winner losses, as in the
-    Catanatron arena. Returns 1 if no seed is left to summarize, else 0."""
+    its whole seed (all four seat rotations, which the per-seed statistics need) is left out of the summary, and the
+    games left out are printed on their own line, so summary games plus dropped games are the games played. Every
+    count printed beside the summary (fallbacks, belief resets, trades, bank limit hits, turn-cap games and the
+    stall) is over those same summarised games; the JSONL keeps all of them. Games that hit the turn cap stay in as
+    no-winner losses, as in the Catanatron arena. Returns 1 when every seed is dropped (no summary), else 0."""
     desynced = {r["seed"] for r in records if r["abort_reason"] == "robot-desync"}
     kept = [r for r in records if r["seed"] not in desynced]
     code = 0
@@ -816,21 +824,22 @@ def _print_jsettlers_summary(candidate: str, baseline: str, records: list[dict],
     else:
         print(f"{candidate} vs {baseline} ({records[0]['arm']}): no seed left to summarize")
         code = 1
-    print(f"dropped (robot desync in setup): {sum(r['abort_reason'] == 'robot-desync' for r in records)} games, "
+    print(f"dropped: {len(records) - len(kept)} games "
+          f"({sum(r['abort_reason'] == 'robot-desync' for r in records)} robot desync in setup), "
           f"{len(desynced)} seeds left out of the summary")
     reasons: dict = {}
-    for r in records:
+    for r in kept:
         for k, v in r["fallback_reasons"].items():
             reasons[k] = reasons.get(k, 0) + v
-    print(f"fallbacks: {sum(r['fallbacks'] for r in records)} {dict(sorted(reasons.items()))}")
-    print(_resets_line(records))
-    print("trades: " + ", ".join(f"{k} {sum(r[k] for r in records)}" for k in counters))
-    capped = [r for r in records if r["abort_reason"] == "turn-cap"]
+    print(f"fallbacks: {sum(r['fallbacks'] for r in kept)} {dict(sorted(reasons.items()))}")
+    print(_resets_line(kept))
+    print("trades: " + ", ".join(f"{k} {sum(r[k] for r in kept)}" for k in counters))
+    capped = [r for r in kept if r["abort_reason"] == "turn-cap"]
     # The stock Longest-Road stall: nobody builds for the last stretch of a game that then runs to the cap. A game's
     # last build is the latest of any seat's (None = never built); the gap is its turns minus that.
     gaps = [r["turns"] - max((t for t in r["last_build_turn"] if t is not None), default=0) for r in capped]
     stall = f"{sum(gaps) / len(gaps):.1f}" if gaps else "n/a"
-    print(f"bank limit hits: {sum(r['bank_limit_hits'] for r in records)}, "
+    print(f"bank limit hits: {sum(r['bank_limit_hits'] for r in kept)}, "
           f"aborted at the turn cap: {len(capped)} (mean turns since the last build: {stall})")
     return code
 

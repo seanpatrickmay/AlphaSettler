@@ -18,7 +18,7 @@ def test_arena_plays_four_games_a_seed_and_reports_the_counters(tmp_path, capsys
     assert [r["candidate_seat"] for r in rows] == [0, 1, 2, 3]
     assert all(r["candidate"] == "ismcts@20" and r["baseline"] == "jsettlers:smart" and r["arm"] == "no-trades"
                for r in rows)
-    for line in ("ismcts@20 vs jsettlers:smart (no-trades): win rate", "dropped (robot desync in setup):",
+    for line in ("ismcts@20 vs jsettlers:smart (no-trades): win rate", "dropped:",
                  "belief resets: 0", "fallbacks:", "trades: our_offers", "bank limit hits:",
                  "aborted at the turn cap:", f"wrote {out}"):
         assert line in text, line
@@ -68,8 +68,39 @@ def test_a_desync_seed_is_left_out_of_the_win_rate_and_counted(capsys):
     text = capsys.readouterr().out
     assert code == 0
     assert "win rate 0.375" in text and "over 2 seeds (8 games, 3 wins, 0 draws)" in text
-    assert "dropped (robot desync in setup): 1 games, 1 seeds left out of the summary" in text
+    assert "dropped: 4 games (1 robot desync in setup), 1 seeds left out of the summary" in text
     assert "aborted at the turn cap: 0 (mean turns since the last build: n/a)" in text
+
+
+def test_the_counters_beside_the_summary_are_over_the_summarised_games_only(capsys):
+    kept = [record(0, k, 0) for k in range(4)]
+    gone = [record(1, k, None, "robot-desync", turns=3, last_build=(None,) * 4) for k in range(4)]
+    for r in gone:
+        r.update(fallbacks=7, fallback_reasons={"engine": 7}, belief_resets=2, bank_limit_hits=5, late=9)
+    cli._print_jsettlers_summary("ismcts@20", "jsettlers:smart", kept + gone, COUNTERS)
+    text = capsys.readouterr().out
+    assert "fallbacks: 0 {}" in text and "belief resets: 0" in text and "bank limit hits: 0" in text
+    assert "late 0" in text and "dropped: 4 games (4 robot desync in setup), 1 seeds" in text
+
+
+def test_every_trade_counter_is_in_the_summary(capsys):
+    cli._print_jsettlers_summary("ismcts@20", "jsettlers:smart", [record(0, k, 0) for k in range(4)], COUNTERS)
+    text = capsys.readouterr().out
+    assert all(f"{name} 0" in text for name in COUNTERS), [n for n in COUNTERS if f"{n} 0" not in text]
+
+
+def test_a_jvm_failure_exits_3(monkeypatch, tmp_path, capsys):
+    import oracle.jsettlers.arena as js_arena
+
+    def boom(*a, **k):
+        raise RuntimeError("the JVM went away")
+
+    monkeypatch.setattr(js_arena, "run_match", boom)
+    monkeypatch.setattr(cli, "_jsettlers_missing", lambda: None)
+    monkeypatch.setattr(js_arena, "check", lambda *a, **k: None)
+    rc = cli.main(["arena", "--candidate", "ismcts@20", "--baseline", "jsettlers:smart", "--seeds", "1",
+                   "--out", str(tmp_path / "z.jsonl")])
+    assert rc == 3 and "error: the JSettlers harness failed: RuntimeError: the JVM went away" in capsys.readouterr().err
 
 
 def test_the_turn_cap_games_stay_in_as_losses_and_report_the_build_stall(capsys):
@@ -79,7 +110,7 @@ def test_the_turn_cap_games_stay_in_as_losses_and_report_the_build_stall(capsys)
     text = capsys.readouterr().out
     assert code == 0
     assert "over 1 seeds (4 games, 1 wins, 3 draws)" in text
-    assert "dropped (robot desync in setup): 0 games, 0 seeds" in text
+    assert "dropped: 0 games (0 robot desync in setup), 0 seeds" in text
     assert "aborted at the turn cap: 3 (mean turns since the last build: 200.0)" in text
 
 
@@ -87,4 +118,4 @@ def test_every_seed_desynced_is_no_summary_and_exit_1(capsys):
     games = [record(0, k, None, "robot-desync", turns=3, last_build=(None,) * 4) for k in range(4)]
     assert cli._print_jsettlers_summary("ismcts@20", "jsettlers:smart", games, COUNTERS) == 1
     text = capsys.readouterr().out
-    assert "no seed left to summarize" in text and "dropped (robot desync in setup): 4 games" in text
+    assert "no seed left to summarize" in text and "dropped: 4 games (4 robot desync in setup)" in text
