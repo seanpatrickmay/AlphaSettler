@@ -2732,7 +2732,7 @@ def import_game(seed: int, raw: dict, ctx: Context, config: dict) -> Game:
 - [ ] **Step 3: Run the translation tests to verify they pass**
 
 Run: `.venv/bin/pytest -q tests/python/test_jsettlers_translate.py`
-Expected: PASS, 17 tests.
+Expected: PASS, 18 tests.
 
 - [ ] **Step 4: Write the failing event tests**
 
@@ -3409,7 +3409,7 @@ class Tracker:
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `pgrep -fl 'arm.sh' || echo idle`, then `.venv/bin/pytest -q tests/python/test_jsettlers_translate.py tests/python/test_jsettlers_events.py`
-Expected: PASS, 37 tests (17 + 20). If `test_a_robots_game_translates_and_four_observers_keep_their_beliefs` raises inside `import_game` or a bot's `belief_resets` is not 0, the message the failing step came from is the last `m` read: add it to the error, find the rule of `_action` that misread it, and fix that rule (the scripted tests above must still pass).
+Expected: PASS, 43 tests (18 + 25). If `test_a_robots_game_translates_and_four_observers_keep_their_beliefs` raises inside `import_game` or a bot's `belief_resets` is not 0, the message the failing step came from is the last `m` read: add it to the error, find the rule of `_action` that misread it, and fix that rule (the scripted tests above must still pass).
 
 - [ ] **Step 7: Format, lint, the full suite**
 
@@ -3436,7 +3436,7 @@ git -c user.email=sean.may101@gmail.com commit -m "oracle/jsettlers: positions a
 **Interfaces:**
 - Consumes: Task 3's `Jvm`, `JvmError`, `game_command`; Task 4's `Tracker`, `Step`, `snapshot`, `Untranslatable`; Task 1's `actions.decode`, `missing`; `alphasettler.Game` (`from_snapshot`, `legal_actions`, `apply`, `apply_forced`, `snapshot`); `alphasettler.arena.open_output`, `SEED_LIMIT`.
 - Produces:
-  - `oracle.jsettlers.allowlist`: `Entry(rule, why)`, `ENTRIES` with keys `domestic-trade`, `road-building-cancelled`, `bank-trade`.
+  - `oracle.jsettlers.allowlist`: `Entry(rule, why)`, `ENTRIES` with keys `domestic-trade`, `road-building-cancelled`, `bank-trade`, `forced-end-turn`.
   - `oracle.jsettlers.diff`: `CONFIG = {"max_offers_per_turn": 0, "bank_limit": False}`, `MAX_TURNS = 1000`, `GameResult(seed, steps, allowlisted, mismatch, trace, winner, turns, capped)`, `compare(ours, theirs) -> list[str]`, `play_game(jvm, seed, k=None) -> GameResult`, `run(seeds, workers=None) -> list[GameResult]`, `Summary`, `summarize(results) -> Summary`, `format_summary(s) -> str`.
   - `alphasettler jsettlers-diff --games N [--seed-start S] [--workers W] [--out PATH]`: exit 0 with no mismatch, 1 with any (the first five printed with their traces), 2 when the harness is missing.
 
@@ -3494,7 +3494,7 @@ def test_compare_names_the_fields_that_differ():
 
 
 def test_every_allowlist_entry_names_its_rule():
-    assert set(ENTRIES) == {"domestic-trade", "road-building-cancelled", "bank-trade"}
+    assert set(ENTRIES) == {"domestic-trade", "road-building-cancelled", "bank-trade", "forced-end-turn"}
     assert all(e.rule and e.why for e in ENTRIES.values())
 
 
@@ -3557,6 +3557,9 @@ ENTRIES = {
     "bank-trade": Entry(
         "one bank trade may be any exchange the rates allow, including undoing an earlier one (1 for 2-4)",
         "only bank trades that are whole maritime trades of ours are replayed as such"),
+    "forced-end-turn": Entry(
+        "the server ends a stalled player's turn itself, with no end-turn request (SOCForceEndTurnThread)",
+        "our engine has no forced end of turn, so the position after it is re-imported"),
 }
 ```
 
