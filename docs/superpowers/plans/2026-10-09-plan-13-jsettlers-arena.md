@@ -26,7 +26,7 @@
 - Timed machine: a timed measurement (`runs/p2/arm.sh`, the 3d-4 arms) may be running on this machine. Before any `cargo`, `maturin`, `pytest`, `javac` or `jsettlers/build.sh` command, run `pgrep -fl 'arm.sh'`; if it prints anything, wait (poll every 5 minutes) until it prints nothing. Controller-run steps check it too.
 - Java: Java 20 is installed (`java -version`). Compile only through `jsettlers/build.sh` (plain `javac --release 17 -Xlint:all,-serial,-deprecation,-removal,-processing,-path -Werror -cp jsettlers/lib/jsettlers-2.6.10-server.jar`). No Gradle, no Maven, no other jar.
 - The JSettlers jar is downloaded by `scripts/fetch-jsettlers.sh`, which checks its sha256 (`9b26cb20ec943213600795d660fad2da32fc72629c348e180bd171cc26d6b4e2`), and is never committed: `jsettlers/lib/` and `jsettlers/build/` are in `.gitignore`, and `git status --porcelain` never lists them.
-- License: every `.java` file under `jsettlers/src/` starts with the five-line GPL-3.0-or-later header of Task 1 (its second line is `// SPDX-License-Identifier: GPL-3.0-or-later`), and `jsettlers/COPYING` is the notice. Only `jsettlers/` holds code that extends or links JSettlers; Python talks to it through JSON lines on the JVM's stdin and stdout (`oracle/jsettlers/jvm.py`), never by import. `oracle/jsettlers/` imports neither Catanatron nor `oracle.{translate,events,arena,diff,allowlist,play,tables}`.
+- License: every `.java` file under `jsettlers/src/` starts with the five-line GPL-3.0-or-later header of Task 1 (its second line is `// SPDX-License-Identifier: GPL-3.0-or-later`), and `jsettlers/COPYING` is the notice. Only `jsettlers/` holds code that extends or links JSettlers; Python talks to it through JSON lines on the JVM's stdin and stdout (`oracle/jsettlers/jvm.py`), never by import. `oracle/jsettlers/` imports neither Catanatron nor `oracle.{translate,events,arena,diff,allowlist,play,tables}` (it may import `oracle.compare`, which imports no other project's engine).
 - Never re-pin a digest. `bank_limit` (Task 2) defaults on, so every existing game, digest, record file and resolved config is unchanged: `engine/tests/golden_trace.rs` and these pins pass unchanged after every task: `the_generic_refactor_leaves_3a_ismcts_games_unchanged` and `bots_without_the_gumbel_suffix_play_the_games_they_played_before_p2` (`bots/tests/ismcts.rs`), `net_bots_without_the_gumbel_suffix_play_the_games_they_played_before_p2` (`bots/tests/netbot.rs`), `fixed_exploration_is_3a_self_play`, `standard_exploration_plays_the_games_it_played_before_p2`, `self_play_without_an_opening_model_plays_the_games_it_played_before_3d1b` and `self_play_without_a_league_plays_the_games_it_played_before_3d3` (`bots/tests/selfplay.rs`). `resolve_config` writes `bank_limit` only when it is off.
 - The trading game is exactly `{"max_offers_per_turn": 2, "max_trade_cards": 1}` (`TRADES` in `alphasettler/arena.py`); JSettlers positions import with `"bank_limit": False` added (and `"max_offers_per_turn": 0` in the no-trades arm and the differential replay).
 - The spec's fixed choices: three stock smart robots named `robot 1`..`robot 3` (`SOCServer.getRobotParameters` gives every `robot ` name `SMART_STRATEGY`), our seat JSettlers seat 0 named `robot bridge` (the `robot ` prefix gives its stock fallbacks the smart parameters); game options 4 players, 10 VP, the classic board, `BC` off on injected boards, `NT` on only in the no-trades arm, `PLAY_FO` off; `SOCRobotBrain.BOTS_ONLY_FAST_PAUSE_FACTOR = 0.01f`; `jsettlers.bots.timeout.turn` 600; robots wait 5 s for an answer, ours counts as late from 4.5 s.
@@ -3700,15 +3700,15 @@ git -c user.email=sean.may101@gmail.com commit -m "oracle/jsettlers: positions a
 ### Task 5: The differential replay of robots-only games (`jsettlers-diff`)
 
 **Files:**
-- Create: `oracle/jsettlers/diff.py`, `oracle/jsettlers/allowlist.py`
-- Modify: `alphasettler/cli.py` (module docstring, the `jsettlers-diff` parser, `_jsettlers_diff`, `main`)
+- Create: `oracle/jsettlers/diff.py`, `oracle/jsettlers/allowlist.py`, `oracle/compare.py`
+- Modify: `alphasettler/cli.py` (module docstring, the `jsettlers-diff` parser, `_jsettlers_missing`, `_jsettlers_diff`, `main`), `oracle/translate.py` (`compare` moves to `oracle/compare.py`)
 - Test: `tests/python/test_jsettlers_diff.py` (new)
 
 **Interfaces:**
 - Consumes: Task 3's `Jvm`, `JvmError`, `game_command`; Task 4's `Tracker`, `Step`, `snapshot`, `Untranslatable`; Task 1's `actions.decode`, `missing`; `alphasettler.Game` (`from_snapshot`, `legal_actions`, `apply`, `apply_forced`, `snapshot`); `alphasettler.arena.open_output`, `SEED_LIMIT`.
 - Produces:
   - `oracle.jsettlers.allowlist`: `Entry(rule, why)`, `ENTRIES` with keys `domestic-trade`, `road-building-cancelled`, `bank-trade`, `forced-end-turn`.
-  - `oracle.jsettlers.diff`: `CONFIG = {"max_offers_per_turn": 0, "bank_limit": False}`, `MAX_TURNS = 1000`, `GameResult(seed, steps, allowlisted, mismatch, trace, winner, turns, capped)`, `compare(ours, theirs) -> list[str]`, `play_game(jvm, seed, k=None) -> GameResult`, `run(seeds, workers=None) -> list[GameResult]`, `Summary`, `summarize(results) -> Summary`, `format_summary(s) -> str`.
+  - `oracle.jsettlers.diff`: `CONFIG = {"max_offers_per_turn": 0, "bank_limit": False}`, `MAX_TURNS = 1000`, `GameResult(seed, steps, allowlisted, mismatch, trace, winner, turns, capped)`, `compare(ours, theirs) -> list[str]` (re-exported from `oracle.compare`), `play_game(jvm, seed, k=None) -> GameResult`, `run(seeds, workers=None) -> list[GameResult]` (one worker runs in the calling process), `Summary`, `summarize(results) -> Summary`, `format_summary(s) -> str`.
   - `alphasettler jsettlers-diff --games N [--seed-start S] [--workers W] [--out PATH]`: exit 0 with no mismatch, 1 with any (the first five printed with their traces), 2 when the harness is missing.
 
 - [ ] **Step 1: Write the failing tests**
@@ -3719,6 +3719,7 @@ import json
 
 import pytest
 
+import oracle.jsettlers.jvm as jvm_module
 from alphasettler import cli
 from jsettlers_harness import require
 from oracle.jsettlers import events
@@ -3728,9 +3729,9 @@ from oracle.jsettlers.jvm import Jvm
 
 
 @pytest.fixture(scope="module")
-def jvm():
+def jvm(tmp_path_factory):
     require()
-    with Jvm() as j:
+    with Jvm(log=tmp_path_factory.mktemp("jvm") / "jvm.log") as j:  # suite runs leave no logs under runs/
         yield j
 
 
@@ -3769,14 +3770,16 @@ def test_every_allowlist_entry_names_its_rule():
     assert all(e.rule and e.why for e in ENTRIES.values())
 
 
-def test_the_command_replays_and_writes_one_line_a_game(tmp_path, capsys):
+def test_the_command_replays_and_writes_one_line_a_game(tmp_path, capsys, monkeypatch):
     require()
+    monkeypatch.setattr(jvm_module, "LOGS", tmp_path / "logs")  # one worker runs in this process: no logs under runs/
     out = tmp_path / "diff.jsonl"
     rc = cli.main(["jsettlers-diff", "--games", "1", "--seed-start", "44", "--workers", "1", "--out", str(out)])
     text = capsys.readouterr().out
     assert rc == 0 and "1 games" in text and "0 mismatches" in text
     [line] = out.read_text().splitlines()
     assert json.loads(line)["seed"] == 44 and json.loads(line)["mismatch"] is None
+    assert len(list((tmp_path / "logs").iterdir())) == 1
 
 
 def test_the_command_says_what_is_missing(monkeypatch, tmp_path, capsys):
@@ -3834,6 +3837,42 @@ ENTRIES = {
 }
 ```
 
+Create `oracle/compare.py`, moving `compare` out of `oracle/translate.py` unchanged (in `oracle/translate.py` the `def compare` block becomes `from oracle.compare import compare  # noqa: F401 (moved; oracle.diff imports it from here)` among its imports, and its now unused `Counter` import goes), so both differential replays share one comparison:
+```python
+"""Snapshot comparison shared by the Catanatron and JSettlers differential replays. Imports no engine of
+another project, so both oracles may use it."""
+
+from __future__ import annotations
+
+from collections import Counter
+
+
+def compare(ours: dict, theirs: dict) -> list[str]:
+    """Paths where two snapshots disagree. Fields the engines represent differently are compared
+    by meaning: the deck as a multiset (draw order beyond the next forced card is irrelevant)
+    and the return phase only where it is used."""
+    diffs = [k for k in ("board", "robber", "bank", "current", "phase", "turn", "setup_step",
+                         "longest_road_owner", "largest_army_owner", "dev_played_this_turn",
+                         "offers_this_turn")
+             if ours[k] != theirs[k]]
+    used = {"setup_road": "setup_road_node", "road_building": "roads_left", "game_over": "winner"}
+    if ours["phase"] == theirs["phase"] and ours["phase"] in used:
+        k = used[ours["phase"]]
+        if ours[k] != theirs[k]:
+            diffs.append(k)
+    if (ours["phase"] == theirs["phase"] and ours["phase"] in ("move_robber", "road_building", "steal")
+            and ours["return_phase"] != theirs["return_phase"]):
+        diffs.append("return_phase")
+    if Counter(ours["dev_deck"]) != Counter(theirs["dev_deck"]):
+        diffs.append("dev_deck")
+    for i, (a, b) in enumerate(zip(ours["players"], theirs["players"])):
+        for k in ("hand", "dev_hand", "dev_new", "dev_played", "knights_played", "settlements", "cities",
+                  "roads", "discard_remaining"):
+            if a[k] != b[k]:
+                diffs.append(f"players[{i}].{k}")
+    return diffs
+```
+
 Create `oracle/jsettlers/diff.py`:
 ```python
 """Differential replay of robots-only JSettlers games through our engine (spec done criterion 2).
@@ -3853,6 +3892,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from alphasettler import Game
+from oracle.compare import compare
 from oracle.jsettlers import allowlist
 from oracle.jsettlers.actions import decode
 from oracle.jsettlers.boards import game_command
@@ -3876,26 +3916,6 @@ class GameResult:
     winner: int | None = None
     turns: int = 0
     capped: bool = False
-
-
-def compare(ours: dict, theirs: dict) -> list[str]:
-    """Paths where two snapshots disagree; the deck as a multiset, phase-specific fields only in their phase."""
-    diffs = [k for k in ("board", "robber", "bank", "current", "phase", "turn", "setup_step", "longest_road_owner",
-                         "largest_army_owner", "dev_played_this_turn", "offers_this_turn") if ours[k] != theirs[k]]
-    used = {"setup_road": "setup_road_node", "road_building": "roads_left", "game_over": "winner"}
-    if ours["phase"] == theirs["phase"] and ours["phase"] in used and ours[used[ours["phase"]]] != theirs[used[ours["phase"]]]:
-        diffs.append(used[ours["phase"]])
-    if (ours["phase"] == theirs["phase"] and ours["phase"] in ("move_robber", "road_building", "steal")
-            and ours["return_phase"] != theirs["return_phase"]):
-        diffs.append("return_phase")
-    if Counter(ours["dev_deck"]) != Counter(theirs["dev_deck"]):
-        diffs.append("dev_deck")
-    for i, (a, b) in enumerate(zip(ours["players"], theirs["players"])):
-        for k in ("hand", "dev_hand", "dev_new", "dev_played", "knights_played", "settlements", "cities", "roads",
-                  "discard_remaining"):
-            if a[k] != b[k]:
-                diffs.append(f"players[{i}].{k}")
-    return diffs
 
 
 def _replay(res: GameResult, seed: int, tracker: Tracker, ours: Game | None, st: Step) -> Game | None:
@@ -3981,9 +4001,12 @@ def _chunk(seeds: list[int]) -> list[GameResult]:
 
 
 def run(seeds, workers: int | None = None) -> list[GameResult]:
-    """Each worker process runs one JVM and plays its share of the seeds in turn."""
+    """Each worker process runs one JVM and plays its share of the seeds in turn; one worker runs in
+    this process."""
     seeds = list(seeds)
     n = max(1, min(workers or os.cpu_count() or 1, len(seeds)))
+    if n == 1:
+        return sorted(_chunk(seeds), key=lambda r: r.seed)
     chunks = [seeds[i::n] for i in range(n)]
     with mp.get_context("spawn").Pool(n) as pool:
         results = [r for chunk in pool.map(_chunk, chunks) for r in chunk]
@@ -4072,8 +4095,8 @@ def _jsettlers_diff(args) -> int:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `pgrep -fl 'arm.sh' || echo idle`, then `.venv/bin/pytest -q tests/python/test_jsettlers_diff.py`
-Expected: PASS, 7 tests. A mismatch in `test_two_robots_games_replay_with_no_untriaged_mismatch` is the point of the gate: read the trace it prints, decide whether it is a translation bug (fix it in Task 4's code, with a scripted test in `test_jsettlers_events.py` that reproduces the sequence) or a rule difference (add an allowlist entry with its rule and reason, a classifying test, and a ruling line in the results file of Task 9); never loosen `compare`.
+Run: `pgrep -fl 'arm.sh' || echo idle`, then `.venv/bin/pytest -q tests/python/test_jsettlers_diff.py tests/python/test_oracle_diff.py tests/python/test_oracle_trades.py`
+Expected: PASS, 7 tests in the first file; the two oracle files pass unchanged (the move of `compare` changes nothing). A mismatch in `test_two_robots_games_replay_with_no_untriaged_mismatch` is the point of the gate: read the trace it prints, decide whether it is a translation bug (fix it in Task 4's code, with a scripted test in `test_jsettlers_events.py` that reproduces the sequence) or a rule difference (add an allowlist entry with its rule and reason, a classifying test, and a ruling line in the results file of Task 9); never loosen `compare`.
 
 - [ ] **Step 5: Format, lint, the full suite**
 
@@ -4082,7 +4105,7 @@ Run the Global Constraints sequence. Expected: all pass, nothing skipped.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add oracle/jsettlers/diff.py oracle/jsettlers/allowlist.py alphasettler/cli.py tests/python/test_jsettlers_diff.py
+git add oracle/jsettlers/diff.py oracle/jsettlers/allowlist.py oracle/compare.py oracle/translate.py alphasettler/cli.py tests/python/test_jsettlers_diff.py docs/superpowers/plans/2026-10-09-plan-13-jsettlers-arena.md
 git diff --cached | grep -nE 'sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|password=[^[:space:]]+'
 git -c user.email=sean.may101@gmail.com commit -m "oracle/jsettlers: differential replay of robots-only JSettlers games (jsettlers-diff)"
 ```

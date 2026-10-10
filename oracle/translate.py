@@ -3,12 +3,11 @@ included), legal sets and full positions. Catanatron seat i (index in ``state.co
 
 from __future__ import annotations
 
-from collections import Counter
-
 import catanatron.game as catan_game
 from catanatron.models.enums import CITY, RESOURCES, SETTLEMENT, Action, ActionPrompt, ActionType
 
 from alphasettler import Game
+from oracle.compare import compare  # noqa: F401 (moved; oracle.diff imports it from here)
 from oracle.tables import (
     CAT_EDGE_TO_OUR_EDGE, CAT_NODE_TO_OUR_NODE, CAT_PORT_ID_TO_OUR_EDGE, OUR_EDGE_TO_CAT_EDGE,
     OUR_TILE_TO_CAT_CUBE,
@@ -333,29 +332,3 @@ def our_game(seed: int, game, config: dict) -> Game:
     for k in range(1, 4):
         ours.apply(ACCEPT_TRADE if st.acceptees[(offerer + k) % 4] else REJECT_TRADE)
     return ours
-
-
-def compare(ours: dict, theirs: dict) -> list[str]:
-    """Paths where two snapshots disagree. Fields the engines represent differently are compared
-    by meaning: the deck as a multiset (draw order beyond the next forced card is irrelevant)
-    and the return phase only where it is used."""
-    diffs = [k for k in ("board", "robber", "bank", "current", "phase", "turn", "setup_step",
-                         "longest_road_owner", "largest_army_owner", "dev_played_this_turn",
-                         "offers_this_turn")
-             if ours[k] != theirs[k]]
-    used = {"setup_road": "setup_road_node", "road_building": "roads_left", "game_over": "winner"}
-    if ours["phase"] == theirs["phase"] and ours["phase"] in used:
-        k = used[ours["phase"]]
-        if ours[k] != theirs[k]:
-            diffs.append(k)
-    if (ours["phase"] == theirs["phase"] and ours["phase"] in ("move_robber", "road_building", "steal")
-            and ours["return_phase"] != theirs["return_phase"]):
-        diffs.append("return_phase")
-    if Counter(ours["dev_deck"]) != Counter(theirs["dev_deck"]):
-        diffs.append("dev_deck")
-    for i, (a, b) in enumerate(zip(ours["players"], theirs["players"])):
-        for k in ("hand", "dev_hand", "dev_new", "dev_played", "knights_played", "settlements", "cities",
-                  "roads", "discard_remaining"):
-            if a[k] != b[k]:
-                diffs.append(f"players[{i}].{k}")
-    return diffs

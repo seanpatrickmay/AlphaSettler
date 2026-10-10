@@ -1,4 +1,4 @@
-"""Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic`, `train`,
+"""Command line: `alphasettler arena`, `compare`, `oracle-diff`, `jsettlers-diff`, `selfplay`, `fit-heuristic`, `train`,
 `sprt`, `fast-train`, `fast-score`, `fast-loop`, `train-loop`, `net-upgrade`, `opening-train` and `opening-diagnose`;
 `net-upgrade` rewrites an older net (encoder v2 or v3) for this build's encoder v4. `selfplay --simulations S`
 writes 3a records; `selfplay --pcr` and `selfplay --net NAME` write 3b exploration records; `train` (the train extra)
@@ -6,7 +6,8 @@ trains a network on them; `train-loop` (the train extra) runs the resumable self
 gate generations; `fast-train` and `fast-score` (the train extra) train and score candidate nets on
 a fixed pool of generations, and `fast-loop` runs small generations trained that way. `opening-train`
 (the train extra) fits the opening model of spec 3d-1 on recorded games' setups. `opening-diagnose` prints spec 3d-1's
-opening diagnosis (D1-D3 and the verdict on record directories, or D4 for a bot)."""
+opening diagnosis (D1-D3 and the verdict on record directories, or D4 for a bot). `jsettlers-diff` replays
+robots-only JSettlers2 games through our engine (needs the harness: scripts/fetch-jsettlers.sh, jsettlers/build.sh)."""
 
 from __future__ import annotations
 
@@ -94,6 +95,12 @@ def _parser() -> argparse.ArgumentParser:
     o.add_argument("--seed-start", type=int, default=0)
     o.add_argument("--workers", type=_positive_int, default=None)
     o.add_argument("--out", default=None, help="JSONL path, one line per game")
+
+    jd = sub.add_parser("jsettlers-diff", help="differential replay of robots-only JSettlers2 games (needs the harness)")
+    jd.add_argument("--games", type=_positive_int, required=True)
+    jd.add_argument("--seed-start", type=int, default=9_000_000_000)
+    jd.add_argument("--workers", type=_positive_int, default=None, help="worker processes, one JVM each")
+    jd.add_argument("--out", default=None, help="JSONL path, one line per game")
 
     s = sub.add_parser("selfplay", help="IsmctsBot self-play records for training and weight fits")
     s.add_argument("--games", type=_positive_int, required=True)
@@ -697,6 +704,39 @@ def _oracle_diff(args) -> int:
     return 1 if s.mismatches else 0
 
 
+def _jsettlers_missing() -> str | None:
+    from oracle.jsettlers import missing
+
+    return missing()
+
+
+def _jsettlers_diff(args) -> int:
+    why = _jsettlers_missing()
+    if why is not None:
+        print(f"error: the JSettlers harness is not ready: {why}", file=sys.stderr)
+        return 2
+    from oracle.jsettlers.diff import format_summary, run, summarize
+
+    if args.seed_start < 0 or args.seed_start + args.games > SEED_LIMIT:
+        raise ValueError(f"seeds {args.seed_start}..{args.seed_start + args.games} are outside the u64 seed range")
+    with ExitStack() as stack:
+        f = stack.enter_context(open_output(args.out)) if args.out else None
+        results = run(range(args.seed_start, args.seed_start + args.games), args.workers)
+        s = summarize(results)
+        print(format_summary(s))
+        if f is not None:
+            for r in results:
+                f.write(json.dumps({"seed": r.seed, "steps": r.steps, "allowlisted": dict(r.allowlisted),
+                                    "mismatch": r.mismatch, "winner": r.winner, "turns": r.turns,
+                                    "capped": r.capped}) + "\n")
+            print(f"wrote {args.out}")
+    for r in s.mismatches[:5]:
+        print(f"mismatch seed {r.seed}: {r.mismatch}", file=sys.stderr)
+        for line in r.trace[-5:]:
+            print(f"    {line}", file=sys.stderr)
+    return 1 if s.mismatches else 0
+
+
 def _catanatron_arena(args, out: Path) -> int:
     """Our candidate inside Catanatron against three of its bots. `--trades` plays the trading game
     (a `+t` candidate offers, Catanatron's bots answer); otherwise ours plays with offers off, and
@@ -747,6 +787,8 @@ def main(argv: list[str] | None = None) -> int:
             return _sprt(args, config)
         elif args.command == "oracle-diff":
             return _oracle_diff(args)
+        elif args.command == "jsettlers-diff":
+            return _jsettlers_diff(args)
         elif args.command == "selfplay":
             return _selfplay(args)
         elif args.command == "fit-heuristic":
