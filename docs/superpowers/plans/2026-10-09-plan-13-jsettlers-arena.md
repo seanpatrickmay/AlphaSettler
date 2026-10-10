@@ -3708,24 +3708,86 @@ git -c user.email=sean.may101@gmail.com commit -m "oracle/jsettlers: positions a
 - Consumes: Task 3's `Jvm`, `JvmError`, `game_command`; Task 4's `Tracker`, `Step`, `snapshot`, `Untranslatable`; Task 1's `actions.decode`, `missing`; `alphasettler.Game` (`from_snapshot`, `legal_actions`, `apply`, `apply_forced`, `snapshot`); `alphasettler.arena.open_output`, `SEED_LIMIT`.
 - Produces:
   - `oracle.jsettlers.allowlist`: `Entry(rule, why)`, `ENTRIES` with keys `domestic-trade`, `road-building-cancelled`, `bank-trade`, `forced-end-turn`.
-  - `oracle.jsettlers.diff`: `CONFIG = {"max_offers_per_turn": 0, "bank_limit": False}`, `MAX_TURNS = 1000`, `GameResult(seed, steps, allowlisted, mismatch, trace, winner, turns, capped)`, `compare(ours, theirs) -> list[str]` (re-exported from `oracle.compare`), `play_game(jvm, seed, k=None) -> GameResult`, `run(seeds, workers=None) -> list[GameResult]` (one worker runs in the calling process), `Summary`, `summarize(results) -> Summary`, `format_summary(s) -> str`.
-  - `alphasettler jsettlers-diff --games N [--seed-start S] [--workers W] [--out PATH]`: exit 0 with no mismatch, 1 with any (the first five printed with their traces), 2 when the harness is missing.
+  - `oracle.jsettlers.diff`: `CONFIG = {"max_offers_per_turn": 0, "bank_limit": False}`, `MAX_TURNS = 1000`, `GameResult(seed, steps, allowlisted, mismatch, trace, winner, turns, capped)`, `compare(ours, theirs) -> list[str]` (re-exported from `oracle.compare`), `excused(ours, theirs, step) -> dict`, `play_game(jvm, seed, k=None) -> GameResult` (a failure of the Tracker, a translation or the start import is that game's mismatch; the trace stops at the mismatch), `run(seeds, workers=None) -> list[GameResult]` (one worker runs in the calling process), `Summary`, `summarize(results) -> Summary`, `format_summary(s) -> str`.
+  - `alphasettler jsettlers-diff --games N [--seed-start S] [--workers W] [--out PATH]`: exit 0 with no mismatch, 1 with any (the first five printed with their traces; each mismatched game's JSONL line keeps its trace), 2 when the harness is missing, 3 when it fails (the JVM's error, exit or silence).
 
 - [ ] **Step 1: Write the failing tests**
 
 Create `tests/python/test_jsettlers_diff.py`:
 ```python
+import copy
 import json
 
 import pytest
 
+import oracle.jsettlers.diff as diff
 import oracle.jsettlers.jvm as jvm_module
 from alphasettler import cli
 from jsettlers_harness import require
 from oracle.jsettlers import events
+from oracle.jsettlers import tables as T
 from oracle.jsettlers.allowlist import ENTRIES
+from oracle.jsettlers.boards import js_layout, native_board
 from oracle.jsettlers.diff import GameResult, compare, format_summary, play_game, summarize
 from oracle.jsettlers.jvm import Jvm
+
+SEED = 3  # the scripted games' seed: the board of their start message is native_board(SEED)
+NAME = f"diff-{SEED}-0"
+
+
+def rset(ours=(0, 0, 0, 0, 0)):
+    return "clay={}|ore={}|sheep={}|wheat={}|wood={}|unknown=0".format(*T.ours_to_js5(list(ours)))
+
+
+def board_raw(board):
+    lay = js_layout(board)
+    hexes = [[h, lay["hexes"][T.HEX_NUM[h]], max(0, lay["numbers"][T.HEX_NUM[h]])] for h in T.OUR_TILE_TO_JS_HEX]
+    ports = [[e, T.MISC_PORT if kind == "generic" else T.OUR_RES_TO_JS[T.RESOURCE_NAMES.index(kind)]]
+             for e, (_, kind) in zip(T.PORT_EDGES, board["ports"])]
+    return {"hexes": hexes, "ports": ports, "robber": lay["robber"]}
+
+
+class FakeJvm:
+    """The harness's side of one scripted game: `recv` hands out its messages in turn; `sent` keeps
+    what the driver sent."""
+
+    def __init__(self, msgs):
+        self.msgs, self.sent = list(msgs), []
+
+    def send(self, msg):
+        self.sent.append(msg)
+
+    def recv(self, timeout):
+        return self.msgs.pop(0)
+
+
+class Stream:
+    """One game's harness messages written by hand. JSettlers' first player is seat 0, so our seat i is
+    its seat i; `raw` is the server-side position, and `ev(..., changed=True)` attaches it."""
+
+    def __init__(self, state=T.PLAY1, hands=()):
+        board = native_board(SEED)
+        players = [{"res": [0] * 5, "dev": [0] * 10, "played": [0] * 4, "settlements": [], "cities": [], "roads": [],
+                    "discard": 0, "played_dev": False, "vp": 0} for _ in range(4)]
+        self.raw = {"state": state, "current": 0, "robber": js_layout(board)["robber"],
+                    "deck": [9] * 14 + [1, 1, 2, 2, 3, 3, 4, 5, 6, 7, 8], "players": players,
+                    "longest": -1, "largest": -1, "winner": -1}
+        for seat, h in hands:
+            self.hand(seat, h)
+        self.msgs = [{"t": "start", "g": NAME, "first": 0, "board": board_raw(board), "s": copy.deepcopy(self.raw)}]
+
+    def hand(self, seat, h):
+        self.raw["players"][seat]["res"] = T.ours_to_js5(list(h))
+
+    def ev(self, aud, text, changed=False):
+        msg = {"t": "ev", "g": NAME, "a": aud, "m": text}
+        if changed:
+            msg["s"] = copy.deepcopy(self.raw)
+        self.msgs.append(msg)
+
+    def play(self):
+        jvm = FakeJvm(self.msgs + [{"t": "over", "g": NAME, "winner": -1}])
+        return play_game(jvm, SEED, 0), jvm
 
 
 @pytest.fixture(scope="module")
@@ -3747,7 +3809,10 @@ def test_two_robots_games_replay_with_no_untriaged_mismatch(jvm):
 def test_corrupted_dice_are_caught(jvm, monkeypatch):
     monkeypatch.setattr(events, "dice_pair", lambda total: [1, 1] if total != 2 else [1, 2])
     r = play_game(jvm, 43)
-    assert r.mismatch is not None and r.mismatch.startswith("step ")
+    # Every roll is replayed as a 2: the first roll that pays out (or a 7) differs in hands or phase.
+    assert r.mismatch is not None and " after roll by " in r.mismatch, r.mismatch
+    assert "hand'" in r.mismatch or "'phase'" in r.mismatch, r.mismatch
+    assert r.trace[-1].startswith("f"), r.trace  # the trace ends at the request that closed the mismatching stretch
 
 
 def test_compare_names_the_fields_that_differ():
@@ -3795,6 +3860,122 @@ def test_a_result_summary_counts_allowlisted_kinds():
     rs[1].allowlisted["bank-trade"] += 2
     s = summarize(rs)
     assert (s.games, s.steps, s.clean_games, s.allowlisted["bank-trade"]) == (2, 15, 1, 2)
+
+
+def roll_then_forced_end(stream, gain=None):
+    """Player 0 rolls a 9 (nobody has a building on it) and the server then ends its stalled turn."""
+    stream.ev("f0", "SOCRollDice:game=x")
+    stream.ev("all", "SOCDiceResult:game=x|param=9")
+    if gain is not None:
+        stream.hand(*gain)
+    stream.raw["state"] = T.PLAY1
+    stream.ev("all", "SOCGameState:game=x|state=20", changed=True)
+    stream.raw["current"], stream.raw["state"] = 1, T.ROLL_OR_CARD
+    stream.ev("all", "SOCTurn:game=x|playerNumber=1|gameState=15", changed=True)  # SOCForceEndTurnThread
+    stream.ev("all", "SOCRollDicePrompt:game=x|playerNumber=1")
+
+
+def domestic_trade(stream, partner_gets):
+    """Player 0 gives one wood for player 2's wheat; JSettlers' position shows player 2 holding `partner_gets`."""
+    give, get = rset([1, 0, 0, 0, 0]), rset([0, 0, 0, 1, 0])
+    stream.ev("f0", f"SOCMakeOffer:game=x|from=0|to=false,true,true,true|give={give}|get={get}")
+    stream.ev("all", f"SOCMakeOffer:game=x|from=0|to=false,true,true,true|give={give}|get={get}")
+    stream.ev("f2", "SOCAcceptOffer:game=x|accepting=0|offering=0")
+    stream.hand(0, [0, 0, 0, 1, 0])
+    stream.hand(2, partner_gets)
+    stream.ev("all", f"SOCAcceptOffer:game=x|accepting=2|offering=0|toAccepting={give}|toOffering={get}",
+              changed=True)
+    stream.ev("all", "SOCClearOffer:game=x|playerNumber=-1")
+
+
+def undone_bank_trade(stream, got):
+    """Player 0 trades one wheat for four ore (undoing an earlier 4:1); JSettlers' position shows it holding `got`."""
+    give, get = rset([0, 0, 0, 1, 0]), rset([0, 0, 0, 0, 4])
+    stream.ev("f0", f"SOCBankTrade:game=x|give={give}|get={get}")
+    stream.hand(0, got)
+    stream.ev("all", f"SOCBankTrade:game=x|give={give}|get={get}|pn=0", changed=True)
+
+
+EXCUSED = {
+    "forced-end-turn": (dict(state=T.ROLL_OR_CARD), roll_then_forced_end, (), ((2, [1, 0, 0, 0, 0]),),
+                        "players[2].hand"),
+    "domestic-trade": (dict(hands=((0, [1, 0, 0, 0, 0]), (2, [0, 0, 0, 1, 0]))), domestic_trade,
+                       ([1, 0, 0, 0, 0],), ([2, 0, 0, 0, 0],), "players[2].hand"),
+    "bank-trade": (dict(hands=((0, [0, 0, 0, 1, 0]),)), undone_bank_trade, ([0, 0, 0, 0, 4],), ([0, 0, 0, 0, 3],),
+                   "players[0].hand"),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(EXCUSED))
+def test_an_allowlisted_step_is_compared_but_for_what_its_rule_changes(kind):
+    start, script, right, _, _ = EXCUSED[kind]
+    s = Stream(**start)
+    script(s, *right)
+    r, _ = s.play()
+    assert r.mismatch is None and dict(r.allowlisted) == {kind: 1}
+
+
+@pytest.mark.parametrize("kind", sorted(EXCUSED))
+def test_a_translation_error_on_an_allowlisted_step_is_a_mismatch(kind):
+    start, script, _, wrong, field = EXCUSED[kind]
+    s = Stream(**start)
+    script(s, *wrong)
+    r, _ = s.play()
+    assert r.mismatch is not None and f"({kind}): beyond what its rule changes" in r.mismatch, r.mismatch
+    assert field in r.mismatch
+
+
+def test_an_untranslatable_kind_off_the_allowlist_is_a_mismatch():
+    s = Stream(state=T.ROLL_OR_CARD, hands=((2, [1, 0, 0, 0, 0]),))
+    s.ev("f0", "SOCRollDice:game=x")
+    s.ev("all", "SOCDiceResult:game=x|param=9")
+    s.hand(2, [0, 0, 0, 0, 0])  # a roll that takes a card: no production of ours does that
+    s.raw["state"] = T.PLAY1
+    s.ev("all", "SOCGameState:game=x|state=20", changed=True)
+    r, _ = s.play()
+    assert "production" not in ENTRIES
+    assert r.mismatch == "step 0 (roll): our rules cannot replay it (production)" and not r.allowlisted
+
+
+def test_a_tracker_failure_is_the_games_mismatch_and_the_trace_stops_there():
+    s = Stream(state=T.ROLL_OR_CARD)
+    s.ev("f0", "SOCRollDice:game=x")
+    s.ev("all", "SOCDiceResult:game=x|param=nine")  # a message the Tracker cannot read
+    s.ev("f0", "SOCEndTurn:game=x")  # closes the stretch: the Tracker raises here
+    s.raw["current"] = 1
+    s.ev("all", "SOCTurn:game=x|playerNumber=1|gameState=15", changed=True)
+    r, jvm = s.play()
+    assert r.mismatch.startswith("step 0 (ev message): ValueError:"), r.mismatch
+    assert r.trace[-1] == "f0:SOCEndTurn:game=x" and not any("SOCTurn" in t for t in r.trace)
+    assert jvm.sent[-1] == {"t": "abort", "g": NAME} and jvm.msgs == []
+
+
+def test_a_start_position_that_does_not_import_is_the_games_mismatch():
+    s = Stream(state=T.PLACING_ROAD)  # a state with no phase of ours
+    r, jvm = s.play()
+    assert r.mismatch.startswith("step 0 (start message): Untranslatable:"), r.mismatch
+    assert (r.winner, r.turns) == (None, 0) and jvm.sent[-1] == {"t": "abort", "g": NAME}
+
+
+def test_a_failing_harness_exits_3_not_the_missing_harness_code(monkeypatch, capsys):
+    def silent(seeds, workers=None):
+        raise TimeoutError("the JSettlers JVM sent nothing for 900.0 s; see x.log")
+
+    monkeypatch.setattr(cli, "_jsettlers_missing", lambda: None)
+    monkeypatch.setattr(diff, "run", silent)
+    assert cli.main(["jsettlers-diff", "--games", "1"]) == 3
+    assert "harness failed: TimeoutError: the JSettlers JVM sent nothing" in capsys.readouterr().err
+
+
+def test_a_mismatched_games_line_keeps_its_trace(monkeypatch, tmp_path, capsys):
+    bad = GameResult(5, steps=3, mismatch="step 3 after roll by 0: ['phase']", trace=["f0:SOCRollDice:game=x"])
+    monkeypatch.setattr(cli, "_jsettlers_missing", lambda: None)
+    monkeypatch.setattr(diff, "run", lambda seeds, workers=None: [GameResult(4, steps=9), bad])
+    out = tmp_path / "diff.jsonl"
+    assert cli.main(["jsettlers-diff", "--games", "2", "--seed-start", "4", "--out", str(out)]) == 1
+    clean, mismatched = (json.loads(line) for line in out.read_text().splitlines())
+    assert "trace" not in clean and mismatched["trace"] == ["f0:SOCRollDice:game=x"]
+    assert "mismatch seed 5: step 3 after roll by 0" in capsys.readouterr().err
 ```
 
 Run: `.venv/bin/pytest -q tests/python/test_jsettlers_diff.py`
@@ -3805,8 +3986,9 @@ Expected: FAIL at collection: `No module named 'oracle.jsettlers.allowlist'`.
 Create `oracle/jsettlers/allowlist.py`:
 ```python
 """The rule differences between JSettlers2 2.6.10 and our engine that the differential replay
-allows (spec Section 3). Each re-imports JSettlers' position after the step; anything else that
-our engine cannot replay is a mismatch to triage."""
+allows (spec Sections 3 and 5 and the plan's rulings on trades and the end of a turn). On such a
+step only what its rule changes may differ (oracle.jsettlers.diff.excused), and our engine then
+re-imports JSettlers' position; anything else our engine cannot replay is a mismatch to triage."""
 
 from __future__ import annotations
 
@@ -3880,12 +4062,15 @@ Create `oracle/jsettlers/diff.py`:
 Four stock smart robots play in the harness on the seed's board and dice. Every step of the stream
 (oracle/jsettlers/events.py) is replayed in our engine with its chance outcomes forced (the roll,
 the steal, the card drawn), and the position after it is compared with JSettlers'. A step our rules
-cannot express carries an allowlist kind and our engine re-imports JSettlers' position; anything
-else is a mismatch, which ends that game's comparison. Positions import with the bank limit off and
-no offers (robots' trades are replayed by re-import). A game that reaches our turn cap is stopped."""
+cannot express carries an allowlist kind: its translatable actions replay, the position is compared
+with what that kind's rule changes done as the rule does it (`excused`), and our engine re-imports
+JSettlers' position. Anything else is a mismatch, which ends that game's comparison; so does a
+failure of the Tracker or of an import. Positions import with the bank limit off and no offers
+(robots' trades are replayed by re-import). A game that reaches our turn cap is stopped."""
 
 from __future__ import annotations
 
+import copy
 import multiprocessing as mp
 import os
 from collections import Counter
@@ -3918,17 +4103,54 @@ class GameResult:
     capped: bool = False
 
 
-def _replay(res: GameResult, seed: int, tracker: Tracker, ours: Game | None, st: Step) -> Game | None:
+# What a turn's end changes (turn bookkeeping, and the phase fields that only hold inside a turn).
+TURN_FIELDS = ("current", "phase", "turn", "return_phase", "dev_played_this_turn", "offers_this_turn", "roads_left",
+               "setup_road_node")
+TURN_PLAYER_FIELDS = ("dev_new", "discard_remaining")
+
+
+def excused(ours: dict, theirs: dict, st: Step) -> dict:
+    """Our position `ours` (before the step, its translatable actions applied) with what the step's
+    allowlist rule changes done as the rule does it: a domestic trade moves exactly the traded cards
+    between the two traders, a bank trade exactly the cards traded with the bank, and a turn that ends
+    (forced, or inside Road Building) takes JSettlers' turn fields. Compared with JSettlers' position,
+    anything else that differs is a mismatch."""
+    exp = copy.deepcopy(ours)
+    hands = [p["hand"] for p in exp["players"]]
+
+    def move(player: int, gain, loss) -> None:
+        hands[player][:] = [h + g - x for h, g, x in zip(hands[player], gain, loss)]
+
+    if st.untranslatable == "domestic-trade":
+        i = st.info
+        move(i["offerer"], i["get"], i["give"])
+        move(i["partner"], i["give"], i["get"])
+    elif st.untranslatable == "bank-trade":
+        for e in st.events:
+            if e["type"] == "maritime_traded":
+                move(e["player"], e["got"], e["gave"])
+    if st.untranslatable in ("domestic-trade", "bank-trade"):
+        exp["bank"] = [max(0, 19 - sum(h[r] for h in hands)) for r in range(5)]  # the bank with its limit off
+    if any(e["type"] == "turn_ended" for e in st.events):
+        for k in TURN_FIELDS:
+            exp[k] = theirs[k]
+        for a, b in zip(exp["players"], theirs["players"]):
+            for k in TURN_PLAYER_FIELDS:
+                a[k] = b[k]
+    return exp
+
+
+def _replay(res: GameResult, seed: int, tracker: Tracker, ours: Game, st: Step) -> Game:
+    """Replay one step on `ours` and compare; returns the game to go on with (JSettlers' position,
+    re-imported, after an allowlisted step)."""
     if st.kind == "end_turn" and tracker.ctx.turn >= MAX_TURNS:
         res.capped = True  # our engine ends the game here; JSettlers would play on
         return ours
-    if st.untranslatable is not None:
-        if st.untranslatable not in allowlist.ENTRIES:
-            res.mismatch = f"step {res.steps} ({st.kind}): our rules cannot replay it ({st.untranslatable})"
-            return ours
-        res.allowlisted[st.untranslatable] += 1
-        ours = None
-    elif st.actions:
+    kind = st.untranslatable
+    if kind is not None and kind not in allowlist.ENTRIES:
+        res.mismatch = f"step {res.steps} ({st.kind}): our rules cannot replay it ({kind})"
+        return ours
+    if st.actions:  # an allowlisted step's translatable actions (a roll before a forced end) replay too
         try:
             for a, chance in st.actions:
                 if a not in ours.legal_actions():
@@ -3943,28 +4165,52 @@ def _replay(res: GameResult, seed: int, tracker: Tracker, ours: Game | None, st:
                 raise
             res.mismatch = f"step {res.steps} ({st.kind}): {type(e).__name__}: {e}"
             return ours
-        res.steps += 1
+        if kind is None:
+            res.steps += 1
     if st.after is None:
+        if kind is not None:
+            res.mismatch = f"step {res.steps} ({st.kind}): an allowlisted step ({kind}) without JSettlers' position"
         return ours
     try:
         theirs = snapshot(st.after, tracker.ctx, 0)
     except Untranslatable as e:
         res.mismatch = f"step {res.steps} ({st.kind}): JSettlers' position after it does not translate: {e}"
         return ours
-    if ours is None:
-        try:
-            return Game.from_snapshot(seed, theirs, CONFIG)
-        except ValueError as e:
-            res.mismatch = f"step {res.steps} ({st.kind}): JSettlers' position does not import: {e}"
-            return None
-    diffs = compare(ours.snapshot(), theirs)
+    if kind is None:
+        diffs = compare(ours.snapshot(), theirs)
+        if diffs:
+            res.mismatch = f"step {res.steps} after {st.kind} by {st.player}: {diffs}"
+        return ours
+    res.allowlisted[kind] += 1
+    diffs = compare(excused(ours.snapshot(), theirs, st), theirs)
     if diffs:
-        res.mismatch = f"step {res.steps} after {st.kind} by {st.player}: {diffs}"
-    return ours
+        res.mismatch = f"step {res.steps} after {st.kind} by {st.player} ({kind}): beyond what its rule changes: {diffs}"
+        return ours
+    try:
+        imported = Game.from_snapshot(seed, theirs, CONFIG)
+    except ValueError as e:
+        res.mismatch = f"step {res.steps} ({st.kind}): JSettlers' position does not import: {e}"
+        return ours
+    diffs = compare(imported.snapshot(), theirs)
+    if diffs:
+        res.mismatch = f"step {res.steps} ({st.kind}): JSettlers' position does not import as itself: {diffs}"
+    return imported
+
+
+def _advance(res: GameResult, seed: int, tracker: Tracker | None, ours: Game | None, m: dict):
+    if m["t"] == "start":
+        tracker = Tracker(m)
+        return tracker, import_game(seed, tracker.raw, tracker.ctx, CONFIG)
+    for st in tracker.feed(m) if m["t"] == "ev" else tracker.flush():
+        if res.mismatch is None and not res.capped:
+            ours = _replay(res, seed, tracker, ours, st)
+    return tracker, ours
 
 
 def play_game(jvm: Jvm, seed: int, k: int | None = None) -> GameResult:
-    """One robots-only game on `jvm`, replayed step by step. A broken harness raises."""
+    """One robots-only game on `jvm`, replayed step by step. A broken harness (the JVM's error, exit
+    or silence) raises; a failure of ours (the Tracker, a translation, the start position's import)
+    is this game's mismatch. The trace holds the stream up to the mismatch or the turn cap."""
     k = seed % 4 if k is None else k
     name = f"diff-{seed}-{k}"
     res = GameResult(seed)
@@ -3974,21 +4220,18 @@ def play_game(jvm: Jvm, seed: int, k: int | None = None) -> GameResult:
         m = jvm.recv(GAME_TIMEOUT)
         if m.get("g") != name:
             raise RuntimeError(f"a message from another game while replaying {name}: {m}")
-        if m["t"] == "start":
-            tracker = Tracker(m)
-            ours = import_game(seed, tracker.raw, tracker.ctx, CONFIG)
-            continue
-        if m["t"] == "ev":
-            res.trace = (res.trace + [f"{m['a']}:{m['m']}"])[-TRACE_LEN:]
-            steps = tracker.feed(m)
-        else:
-            steps = tracker.flush()
-        for st in steps:
-            if res.mismatch is None and not res.capped:
-                ours = _replay(res, seed, tracker, ours, st)
+        if res.mismatch is None and not res.capped:
+            if m["t"] == "ev":
+                res.trace = (res.trace + [f"{m['a']}:{m['m']}"])[-TRACE_LEN:]
+            try:
+                tracker, ours = _advance(res, seed, tracker, ours, m)
+            except BaseException as e:  # noqa: BLE001 - a panic (PyO3 PanicException) is a finding too
+                if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                    raise
+                res.mismatch = f"step {res.steps} ({m['t']} message): {type(e).__name__}: {e}"
         if m["t"] == "over":
-            res.winner = None if m["winner"] < 0 else tracker.ctx.ours(m["winner"])
-            res.turns = tracker.ctx.turn
+            res.winner = None if m["winner"] < 0 or tracker is None else tracker.ctx.ours(m["winner"])
+            res.turns = 0 if tracker is None else tracker.ctx.turn
             return res
         if (res.mismatch is not None or res.capped) and not aborted:
             jvm.send({"t": "abort", "g": name})
@@ -4048,7 +4291,7 @@ def format_summary(s: Summary) -> str:
 - [ ] **Step 3: The command**
 
 In `alphasettler/cli.py`:
-1. In the module docstring's first line, after `` `oracle-diff`, `` insert `` `jsettlers-diff`, ``, and add one sentence at the end of the docstring: ``` `jsettlers-diff` replays robots-only JSettlers2 games through our engine (needs the harness: scripts/fetch-jsettlers.sh, jsettlers/build.sh).```
+1. In the module docstring's first line, after `` `oracle-diff`, `` insert `` `jsettlers-diff`, ``, and add one sentence at the end of the docstring: ``` `jsettlers-diff` replays robots-only JSettlers2 games through our engine (needs the harness: scripts/fetch-jsettlers.sh, jsettlers/build.sh; exit 0 with no mismatch, 1 with any, 2 when the harness is missing, 3 when it fails).```
 2. In `_parser`, after the `oracle-diff` block:
 ```python
     jd = sub.add_parser("jsettlers-diff", help="differential replay of robots-only JSettlers2 games (needs the harness)")
@@ -4076,14 +4319,20 @@ def _jsettlers_diff(args) -> int:
         raise ValueError(f"seeds {args.seed_start}..{args.seed_start + args.games} are outside the u64 seed range")
     with ExitStack() as stack:
         f = stack.enter_context(open_output(args.out)) if args.out else None
-        results = run(range(args.seed_start, args.seed_start + args.games), args.workers)
+        try:
+            results = run(range(args.seed_start, args.seed_start + args.games), args.workers)
+        except (OSError, EOFError, RuntimeError) as e:  # the JVM's error, exit or silence (TimeoutError is an OSError)
+            print(f"error: the JSettlers harness failed: {type(e).__name__}: {e}", file=sys.stderr)
+            return 3
         s = summarize(results)
         print(format_summary(s))
         if f is not None:
             for r in results:
-                f.write(json.dumps({"seed": r.seed, "steps": r.steps, "allowlisted": dict(r.allowlisted),
-                                    "mismatch": r.mismatch, "winner": r.winner, "turns": r.turns,
-                                    "capped": r.capped}) + "\n")
+                rec = {"seed": r.seed, "steps": r.steps, "allowlisted": dict(r.allowlisted), "mismatch": r.mismatch,
+                       "winner": r.winner, "turns": r.turns, "capped": r.capped}
+                if r.mismatch is not None:
+                    rec["trace"] = r.trace  # the stream up to the mismatch
+                f.write(json.dumps(rec) + "\n")
             print(f"wrote {args.out}")
     for r in s.mismatches[:5]:
         print(f"mismatch seed {r.seed}: {r.mismatch}", file=sys.stderr)
@@ -4096,7 +4345,7 @@ def _jsettlers_diff(args) -> int:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pgrep -fl 'arm.sh' || echo idle`, then `.venv/bin/pytest -q tests/python/test_jsettlers_diff.py tests/python/test_oracle_diff.py tests/python/test_oracle_trades.py`
-Expected: PASS, 7 tests in the first file; the two oracle files pass unchanged (the move of `compare` changes nothing). A mismatch in `test_two_robots_games_replay_with_no_untriaged_mismatch` is the point of the gate: read the trace it prints, decide whether it is a translation bug (fix it in Task 4's code, with a scripted test in `test_jsettlers_events.py` that reproduces the sequence) or a rule difference (add an allowlist entry with its rule and reason, a classifying test, and a ruling line in the results file of Task 9); never loosen `compare`.
+Expected: PASS, 18 tests in the first file; the two oracle files pass unchanged (the move of `compare` changes nothing). A mismatch in `test_two_robots_games_replay_with_no_untriaged_mismatch` is the point of the gate: read the trace it prints, decide whether it is a translation bug (fix it in Task 4's code, with a scripted test in `test_jsettlers_events.py` that reproduces the sequence) or a rule difference (add an allowlist entry with its rule and reason, a classifying test, and a ruling line in the results file of Task 9); never loosen `compare`.
 
 - [ ] **Step 5: Format, lint, the full suite**
 

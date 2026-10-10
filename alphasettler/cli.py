@@ -7,7 +7,8 @@ gate generations; `fast-train` and `fast-score` (the train extra) train and scor
 a fixed pool of generations, and `fast-loop` runs small generations trained that way. `opening-train`
 (the train extra) fits the opening model of spec 3d-1 on recorded games' setups. `opening-diagnose` prints spec 3d-1's
 opening diagnosis (D1-D3 and the verdict on record directories, or D4 for a bot). `jsettlers-diff` replays
-robots-only JSettlers2 games through our engine (needs the harness: scripts/fetch-jsettlers.sh, jsettlers/build.sh)."""
+robots-only JSettlers2 games through our engine (needs the harness: scripts/fetch-jsettlers.sh, jsettlers/build.sh;
+exit 0 with no mismatch, 1 with any, 2 when the harness is missing, 3 when it fails)."""
 
 from __future__ import annotations
 
@@ -721,14 +722,20 @@ def _jsettlers_diff(args) -> int:
         raise ValueError(f"seeds {args.seed_start}..{args.seed_start + args.games} are outside the u64 seed range")
     with ExitStack() as stack:
         f = stack.enter_context(open_output(args.out)) if args.out else None
-        results = run(range(args.seed_start, args.seed_start + args.games), args.workers)
+        try:
+            results = run(range(args.seed_start, args.seed_start + args.games), args.workers)
+        except (OSError, EOFError, RuntimeError) as e:  # the JVM's error, exit or silence (TimeoutError is an OSError)
+            print(f"error: the JSettlers harness failed: {type(e).__name__}: {e}", file=sys.stderr)
+            return 3
         s = summarize(results)
         print(format_summary(s))
         if f is not None:
             for r in results:
-                f.write(json.dumps({"seed": r.seed, "steps": r.steps, "allowlisted": dict(r.allowlisted),
-                                    "mismatch": r.mismatch, "winner": r.winner, "turns": r.turns,
-                                    "capped": r.capped}) + "\n")
+                rec = {"seed": r.seed, "steps": r.steps, "allowlisted": dict(r.allowlisted), "mismatch": r.mismatch,
+                       "winner": r.winner, "turns": r.turns, "capped": r.capped}
+                if r.mismatch is not None:
+                    rec["trace"] = r.trace  # the stream up to the mismatch
+                f.write(json.dumps(rec) + "\n")
             print(f"wrote {args.out}")
     for r in s.mismatches[:5]:
         print(f"mismatch seed {r.seed}: {r.mismatch}", file=sys.stderr)

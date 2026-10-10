@@ -1,6 +1,7 @@
 """The rule differences between JSettlers2 2.6.10 and our engine that the differential replay
-allows (spec Section 3). Each re-imports JSettlers' position after the step; anything else that
-our engine cannot replay is a mismatch to triage."""
+allows (spec Sections 3 and 5 and the plan's rulings on trades and the end of a turn). On such a
+step only what its rule changes may differ (oracle.jsettlers.diff.excused), and our engine then
+re-imports JSettlers' position; anything else our engine cannot replay is a mismatch to triage."""
 
 from __future__ import annotations
 
