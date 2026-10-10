@@ -124,6 +124,9 @@ class Tracker:
                 self.bank_limit_hits += 1
                 break
         step = self._action(req, server, before, after)
+        if (before["state"] not in SETUP_STATES and any(e.name == "SOCTurn" for e in server)
+                and (step is None or step.kind != "end_turn")):
+            step = self._forced_end(step, before, after)
         if (step is not None and step.after is not None and step.after["state"] in _HALF_DONE
                 and not step.actions and step.untranslatable is None):
             # Events only (an offer or an answer to one) inside another player's build or card pick: the
@@ -166,8 +169,9 @@ class Tracker:
             return self._plenty(pick, after)
         if (mono := first("SOCSimpleAction", lambda e: e.f.get("actType") == "3")) is not None:
             return self._monopoly(mono, before, after)
-        if (disc := first("SOCDiscard", lambda e: "playerNum" in e.f and e.f["resources"]["unknown"] == 0)) is not None:
-            return self._discard(disc, after)
+        if discs := [e for e in server
+                     if e.name == "SOCDiscard" and "playerNum" in e.f and e.f["resources"]["unknown"] == 0]:
+            return self._discard(discs, after)
         if (bank := first("SOCBankTrade", lambda e: "pn" in e.f)) is not None:
             return self._bank(bank, before, after)
         if (accept := first("SOCAcceptOffer", lambda e: "toAccepting" in e.f)) is not None:
@@ -189,6 +193,19 @@ class Tracker:
             return None
         return Step("noop", None, after=after)
 
+    def _forced_end(self, step: Step | None, before, after) -> Step:
+        """The server ended the turn (SOCForceEndTurnThread) in a stretch whose first rule read another
+        action (a roll, a bank trade, a forced discard, a card left unpicked): the turn ends after it."""
+        if step is None:
+            return self._end_turn(before, after, requested=False)
+        c = self.ctx
+        c.turn, c.rolled, c.drawn, c.offers = c.turn + 1, False, [0] * 5, 0
+        step.events.append({"type": "turn_ended", "player": c.ours(before["current"])})
+        step.after = after
+        if step.untranslatable is None:  # our replay re-imports the position after it
+            step.untranslatable = "forced-end-turn"
+        return step
+
     def _cut_short(self, req: Entry, before, after) -> Step | None:
         """The winning action when the stream ends before the server reports it: the harness stops at the
         first message recorded once the game is over, and JSettlers announces a winning placement or card
@@ -198,8 +215,8 @@ class Tracker:
         js = req.sender
         if req.name == "SOCPutPiece" and int(req.f["playerNumber"]) == js:
             kind, coord = int(req.f["pieceType"]), req.num("coord")
-            held = after["players"][js]
-            if coord in {ROAD: held["roads"], SETTLEMENT: held["settlements"], CITY: held["cities"]}.get(kind, ()):
+            key = {ROAD: "roads", SETTLEMENT: "settlements", CITY: "cities"}.get(kind)
+            if key is not None and coord in after["players"][js][key] and coord not in before["players"][js][key]:
                 return self._piece(Entry("all", req.name, req.f), before, after)
         if req.name == "SOCBuyDevCardRequest":
             new = [c for c in range(10) if after["players"][js]["dev"][c] > before["players"][js]["dev"][c]]
@@ -302,12 +319,16 @@ class Tracker:
                     [_played(p, "monopoly"),
                      {"type": "monopoly_taken", "player": p, "resource": RESOURCE_NAMES[r], "from": taken}], after)
 
-    def _discard(self, e, after) -> Step:
-        q = self.ctx.ours(int(e.f["playerNum"]))
-        cards = ours5(e.f["resources"])
-        self._discards[q] = [a + b for a, b in zip(self._discards.get(q, [0] * 5), cards)]
-        events = [{"type": "discarded", "player": q, "resource": RESOURCE_NAMES[r]}
-                  for r in range(5) for _ in range(cards[r])]
+    def _discard(self, discs: list[Entry], after) -> Step:
+        """Every discard of the stretch (the server force-discards for each stalled player at once)."""
+        events = []
+        for e in discs:
+            q = self.ctx.ours(int(e.f["playerNum"]))
+            cards = ours5(e.f["resources"])
+            self._discards[q] = [a + b for a, b in zip(self._discards.get(q, [0] * 5), cards)]
+            events += [{"type": "discarded", "player": q, "resource": RESOURCE_NAMES[r]}
+                       for r in range(5) for _ in range(cards[r])]
+        q = self.ctx.ours(int(discs[0].f["playerNum"]))
         if after["state"] == WAITING_FOR_DISCARDS:
             return Step("discard", q, [], events, None)
         actions = [(A.discard(r), None) for s in sorted(self._discards) for r in range(5)

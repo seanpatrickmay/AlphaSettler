@@ -73,6 +73,7 @@ Each is a **Ruling** (with its reason) the results file repeats, so it can be ov
 - **The stream, not a request, holds the positions.** The harness streams every recorded message as GameEventLog writes it (`all:`, `pN:`, `!pN:`, `fN:` for a client request, then `toString()`), and on the line where the server-side game changed it attaches that game in JSettlers' own coordinates and codes (`Snapshots.raw`); Python translates. A decision imports the latest position in the stream before the request, the one matching the events our bot has seen, never a separate read.
 - **Monitor.** `ArenaServer.record` serializes recording with its own lock, because the server's treater thread and `SOCForceEndTurnThread` (holding the game's monitor) can both change the game and record its events: the start line, `Snapshots.raw`, its comparison with the last position and the queued lines are one step per event, and `abort` queues `over` under the same lock, so no event follows it. The game's monitor is not taken (it is not reentrant, and most callers hold it); the game is looked up outside the lock and `destroyGameAndBroadcast` runs after it, so nothing under the lock waits on a JSettlers lock.
 - **Stretches.** A client request line starts a stretch; the server's messages up to the next request are what it did (one `Step`). Python closes the open stretch before every decision and at the end of the game. Two stretches are one action of ours when the first leaves a position we have no phase for: a build request and its placement, a Year of Plenty or Monopoly and its pick. A robber move with one victim and JSettlers' automatic robbery are one stretch, so one step of two actions.
+- **The end of a game.** The stream ends at the first message recorded once the game is over, which can come before the server reports the winning action (JSettlers announces a winning placement in text first): the winning action is read from its request and checked against the final position. Our rules end the game the moment the player on turn reaches the target; where JSettlers plays on (a knight's Largest Army wins there only after the robber moves), the step carries the position as our rules leave it and nothing after it is a step. A forced end of turn (`SOCTurn` with no end-turn request, in any stretch) ends the turn of ours as well and carries `forced-end-turn`.
 - **Seats.** The bridge is JSettlers seat 0 (seated by `readyGameAskRobotsJoin`'s `robotSeats`, reached by reflection); the first player is scripted to `(4 - k) % 4` so our seat has turn position k. Our player i is JSettlers seat `(first + i) % 4`, so our player 0 moves first as in our engine; records use our numbering and `candidate_seat` is k.
 - **Boards.** A seed's board is the native arena's (`Game(seed).snapshot()["board"]`): its tiles and numbers as they are, its nine port kinds in our port order moved onto JSettlers' nine port edges (`SOCBoard4p.PORTS_EDGE_V1`) in their order. The native-boards check arm leaves board generation to JSettlers (`BC` on, no common random numbers for the board).
 - **Random streams.** `SOCGame.rand` is replaced by `RoutedRandom`, which routes `nextInt()` by its caller's method name: `startGame` returns the scripted first player, `rollDice` draws from the seed's dice stream, `startGame_setupDevCards` from its deck stream, anything else (steals) from its misc stream. JSettlers reports only a roll's total; our forced roll and our event use the pair `(min(n - 1, 6), n - min(n - 1, 6))`.
@@ -2543,6 +2544,12 @@ def test_discards_owed_appear_only_in_the_discard_phase():
     assert s["phase"] == "discard" and s["players"][0]["discard_remaining"] == 4
     g = import_game(3, raw(T.WAITING_FOR_DISCARDS, players=players), ctx, UNLIMITED)
     assert g.phase == "discard" and g.current_actor == 0
+
+
+def test_an_imported_position_compares_equal_to_its_own_translation():
+    ctx = Context(native_board(3), first=1)
+    theirs = snapshot(raw(T.START1A, current=1), ctx)
+    assert import_game(3, raw(T.START1A, current=1), ctx, UNLIMITED).snapshot() == theirs
 ```
 
 Run: `.venv/bin/pytest -q tests/python/test_jsettlers_translate.py`
@@ -2748,7 +2755,7 @@ from alphasettler import Bot
 from jsettlers_harness import require
 from oracle.jsettlers import tables as T
 from oracle.jsettlers.actions import (
-    BUY_DEV, END_TURN, ROLL, discard, maritime, monopoly, move_robber, redact, road, settlement, steal_from,
+    BUY_DEV, END_TURN, KNIGHT, ROLL, city, discard, maritime, monopoly, move_robber, redact, road, settlement, steal_from,
     year_of_plenty,
 )
 from oracle.jsettlers.boards import game_command, js_layout, native_board
@@ -2851,6 +2858,30 @@ def test_a_build_request_and_its_placement_are_one_step():
     [step] = [x for x in s.flush() if x.actions]
     assert step.kind == "build" and step.actions == [(road(4), None)]
     assert step.events == [{"type": "built_road", "player": 0, "edge": 4}]
+
+
+def test_a_trade_answer_inside_a_build_carries_no_position():
+    s = Script()
+    s.hand(0, [0, 0, 0, 2, 3])
+    s.raw["players"][0]["settlements"] = [T.OUR_NODE_TO_JS_NODE[20]]
+    s.send("all", "SOCGameState:game=x|state=20", changed=True)
+    s.send("f0", "SOCBuildRequest:game=x|pieceType=2")
+    s.hand(0, [0, 0, 0, 0, 0])
+    s.raw["state"] = T.PLACING_CITY
+    s.send("all", "SOCPlayerElements:game=x|playerNum=0|actionType=LOSE|e2=3,e4=2", changed=True)
+    s.send("all", "SOCGameState:game=x|state=32")
+    s.send("f2", "SOCRejectOffer:game=x|playerNumber=0")  # a late answer to an earlier offer
+    s.send("all", "SOCRejectOffer:game=x|playerNumber=2")
+    node = T.OUR_NODE_TO_JS_NODE[20]
+    s.send("f0", f"SOCPutPiece:game=x|playerNumber=0|pieceType=2|coord={node:x}")
+    s.raw["players"][0]["settlements"], s.raw["players"][0]["cities"] = [], [node]
+    s.raw["state"] = T.PLAY1
+    s.send("all", f"SOCPutPiece:game=x|playerNumber=0|pieceType=2|coord={node:x}", changed=True)
+    s.send("all", "SOCGameState:game=x|state=20")
+    reject, build = [x for x in s.flush() if x.kind in ("reject", "build")]
+    assert reject.kind == "reject" and reject.after is None
+    assert reject.events == [{"type": "trade_responded", "player": 2, "accepted": False}]
+    assert build.kind == "build" and build.actions == [(city(20), None)] and build.after["state"] == T.PLAY1
 
 
 def test_a_second_setup_settlement_produces():
@@ -3011,6 +3042,107 @@ def test_ending_a_turn_counts_it_and_ending_inside_road_building_is_allowlisted(
     assert step.untranslatable == "road-building-cancelled"
 
 
+def test_a_turn_the_server_ends_itself_is_counted_and_allowlisted():
+    s = Script(first=0, current=0)
+    c = s.tracker.ctx
+    c.rolled, c.drawn, c.offers = True, [0, 1, 0, 0, 0], 1
+    s.send("f0", "SOCBuildRequest:game=x|pieceType=0")  # a request the player never completes
+    s.raw["current"], s.raw["state"] = 1, T.ROLL_OR_CARD
+    s.send("all", "SOCTurn:game=x|playerNumber=1|gameState=15", changed=True)  # SOCForceEndTurnThread
+    s.send("all", "SOCRollDicePrompt:game=x|playerNumber=1")
+    [step] = s.flush()
+    assert (step.kind, step.player, step.actions) == ("end_turn", 0, [])
+    assert step.untranslatable == "forced-end-turn" and step.events == [{"type": "turn_ended", "player": 0}]
+    assert (c.turn, c.rolled, c.drawn, c.offers) == (1, False, [0] * 5, 0)
+
+
+def forced_end(s, nxt=1):
+    """The server ends the current player's stalled turn (SOCForceEndTurnThread) inside the open stretch."""
+    s.raw["current"], s.raw["state"] = nxt, T.ROLL_OR_CARD
+    s.send("all", f"SOCTurn:game=x|playerNumber={nxt}|gameState=15", changed=True)
+    s.send("all", f"SOCRollDicePrompt:game=x|playerNumber={nxt}")
+
+
+def test_a_roll_then_a_forced_end_of_turn_in_one_stretch_ends_the_turn():
+    s = Script(first=0, current=0)
+    s.tracker.ctx.drawn = [0, 1, 0, 0, 0]
+    s.send("f0", "SOCRollDice:game=x")
+    s.send("all", "SOCDiceResult:game=x|param=9")
+    s.hand(2, [1, 0, 0, 0, 0])
+    s.raw["state"] = T.PLAY1
+    s.send("all", "SOCGameState:game=x|state=20", changed=True)
+    forced_end(s)
+    [step] = s.flush()
+    assert step.kind == "roll" and step.untranslatable == "forced-end-turn"
+    assert step.events[0]["type"] == "rolled" and step.events[-1] == {"type": "turn_ended", "player": 0}
+    c = s.tracker.ctx
+    assert (c.turn, c.rolled, c.drawn, c.offers) == (1, False, [0] * 5, 0)
+    assert s.tracker.snapshot()["return_phase"] == "pre_roll" and s.tracker.snapshot()["turn"] == 1
+
+
+def test_a_bank_trade_then_a_forced_end_of_turn_in_one_stretch_ends_the_turn():
+    s = Script(first=0, current=0)
+    s.tracker.ctx.rolled, s.tracker.ctx.offers = True, 2
+    s.hand(0, [4, 0, 0, 0, 0])
+    s.send("all", "SOCGameState:game=x|state=20", changed=True)
+    s.send("f0", f"SOCBankTrade:game=x|give={rset([4, 0, 0, 0, 0])}|get={rset([0, 0, 0, 0, 1])}")
+    s.hand(0, [0, 0, 0, 0, 1])
+    s.send("all", f"SOCBankTrade:game=x|give={rset([4, 0, 0, 0, 0])}|get={rset([0, 0, 0, 0, 1])}|pn=0", changed=True)
+    forced_end(s)
+    [step] = [x for x in s.flush() if x.kind == "maritime"]
+    assert step.actions == [(maritime(WOOD, ORE), None)] and step.untranslatable == "forced-end-turn"
+    assert step.events[-1] == {"type": "turn_ended", "player": 0} and step.after["current"] == 1
+    c = s.tracker.ctx
+    assert (c.turn, c.rolled, c.offers) == (1, False, 0)
+
+
+def test_a_card_left_unpicked_then_a_forced_end_of_turn_ends_the_turn():
+    s = Script(first=0, current=0)
+    s.tracker.ctx.rolled = True
+    s.send("f0", "SOCPlayDevCardRequest:game=x|devCard=2")
+    s.raw["state"] = T.WAITING_FOR_DISCOVERY
+    s.send("all", "SOCDevCardAction:game=x|playerNum=0|actionType=PLAY|cardType=2", changed=True)
+    forced_end(s)
+    [step] = s.flush()
+    assert (step.kind, step.actions, step.untranslatable) == ("end_turn", [], "forced-end-turn")
+    assert step.events == [{"type": "turn_ended", "player": 0}] and s.tracker.ctx.turn == 1
+
+
+def test_forced_discards_for_two_players_in_one_stretch_are_both_read():
+    s = Script(first=0, current=0)
+    s.hand(1, [4, 4, 0, 0, 0])
+    s.hand(3, [0, 0, 8, 0, 0])
+    s.raw["players"][1]["discard"], s.raw["players"][3]["discard"] = 4, 4
+    s.raw["state"] = T.WAITING_FOR_DISCARDS
+    s.send("all", "SOCGameState:game=x|state=50", changed=True)
+    s.send("f0", "SOCMoveRobber:game=x|playerNumber=0|coord=0")  # any request: the stretch below is the server's
+    s.hand(1, [2, 2, 0, 0, 0])
+    s.hand(3, [0, 0, 4, 0, 0])
+    s.raw["players"][1]["discard"], s.raw["players"][3]["discard"] = 0, 0
+    s.raw["state"] = T.PLACING_ROBBER
+    s.send("p1", f"SOCDiscard:game=x|playerNum=1|resources={rset([2, 2, 0, 0, 0])}", changed=True)
+    s.send("!p1", f"SOCDiscard:game=x|playerNum=1|resources={rset(unknown=4)}")
+    s.send("p3", f"SOCDiscard:game=x|playerNum=3|resources={rset([0, 0, 4, 0, 0])}")
+    s.send("!p3", f"SOCDiscard:game=x|playerNum=3|resources={rset(unknown=4)}")
+    [step] = [x for x in s.flush() if x.kind == "discard"]
+    assert step.actions == [(discard(WOOD), None)] * 2 + [(discard(BRICK), None)] * 2 + [(discard(SHEEP), None)] * 4
+    assert [e["player"] for e in step.events] == [1] * 4 + [3] * 4 and step.after is not None
+
+
+def test_a_roll_that_takes_cards_produces_nothing_negative():
+    s = Script(first=0, current=0)
+    s.hand(1, [2, 0, 0, 0, 0])
+    s.send("all", "SOCGameState:game=x|state=20", changed=True)
+    s.send("f0", "SOCRollDice:game=x")
+    s.send("all", "SOCDiceResult:game=x|param=8")
+    s.hand(0, [0, 1, 0, 0, 0])
+    s.hand(1, [1, 0, 0, 0, 0])  # a hand that shrank on a roll: no production of ours explains it
+    s.send("all", "SOCGameState:game=x|state=20", changed=True)
+    [step] = [x for x in s.flush() if x.kind == "roll"]
+    assert step.untranslatable == "production"
+    assert step.events[1:] == [{"type": "produced", "player": 0, "resources": [0, 1, 0, 0, 0]}]
+
+
 def test_declines_and_bank_limit_payouts_are_counted():
     s = Script()
     s.send("f0", "SOCBuildRequest:game=x|pieceType=2")
@@ -3039,11 +3171,81 @@ def test_a_winning_placement_ends_with_game_over():
     assert step.events[-1] == {"type": "game_over", "winner": 0}
 
 
-def test_a_robots_game_translates_and_four_observers_keep_their_beliefs():
+def test_a_winning_action_cut_short_by_the_end_of_the_stream_is_read_from_its_request():
+    # The harness stops at the first message recorded once the game is over, and JSettlers announces a winning
+    # placement (or card) in text before it reports the action itself.
+    s = Script()
+    node = T.OUR_NODE_TO_JS_NODE[20]
+    s.raw["players"][0]["settlements"] = [node]
+    s.send("all", "SOCGameState:game=x|state=20", changed=True)
+    s.send("f0", f"SOCPutPiece:game=x|playerNumber=0|pieceType=2|coord={node:x}")
+    s.raw["players"][0]["settlements"], s.raw["players"][0]["cities"] = [], [node]
+    s.raw["state"], s.raw["winner"] = T.OVER, 0
+    s.send("all", "SOCGameServerText:game=x|text=robot 1 built a city.", changed=True)
+    [step] = [x for x in s.flush() if x.kind != "noop"]
+    assert step.kind == "build" and step.actions == [(city(20), None)]
+    assert step.events == [{"type": "built_city", "player": 0, "node": 20}, {"type": "game_over", "winner": 0}]
+    r = Script()
+    edge = T.OUR_EDGE_TO_JS_EDGE[7]
+    r.raw["players"][0]["roads"] = [edge]
+    r.send("all", "SOCGameState:game=x|state=20", changed=True)
+    r.send("f0", f"SOCPutPiece:game=x|playerNumber=0|pieceType=0|coord={edge:x}")  # a road it already has
+    r.raw["state"], r.raw["winner"] = T.OVER, 0
+    r.send("all", "SOCGameServerText:game=x|text=robot 1 won.", changed=True)
+    last = r.flush()[-1]
+    assert (last.kind, last.actions, last.events) == ("noop", [], [{"type": "game_over", "winner": 0}])
+    b = Script(first=1, current=1)
+    b.send("f1", "SOCBuyDevCardRequest:game=x")
+    b.raw["players"][1]["dev"][5] = 1
+    b.raw["deck"] = b.raw["deck"][:15] + b.raw["deck"][16:]  # a victory point card left the deck
+    b.raw["state"], b.raw["winner"] = T.OVER, 1
+    b.send("all", "SOCPlayerElements:game=x|playerNum=1|actionType=LOSE|e2=1,e3=1,e4=1", changed=True)
+    [step] = b.flush()
+    assert step.kind == "buy" and step.player == 0 and step.actions == [(BUY_DEV, {"dev": "victory_point"})]
+    assert step.events[-1] == {"type": "game_over", "winner": 0}
+    e = Script(first=0, current=0)
+    e.tracker.ctx.rolled = True
+    e.send("f0", "SOCEndTurn:game=x")
+    e.raw["current"], e.raw["state"], e.raw["winner"] = 1, T.OVER, 1  # the next player starts its turn with 10
+    e.send("all", "SOCClearOffer:game=x|playerNumber=-1", changed=True)
+    [step] = e.flush()
+    assert step.kind == "end_turn" and step.actions == [(END_TURN, None)]
+    assert step.events == [{"type": "turn_ended", "player": 0}, {"type": "game_over", "winner": 1}]
+
+
+def test_a_knight_that_reaches_the_target_ends_our_game_before_the_robber_moves():
+    s = Script()
+    s.raw["players"][0]["vp"], s.raw["players"][0]["dev"][9] = 8, 1
+    s.raw["players"][0]["settlements"] = [T.OUR_NODE_TO_JS_NODE[n] for n in (0, 10, 20, 30)]
+    s.raw["players"][0]["cities"] = [T.OUR_NODE_TO_JS_NODE[n] for n in (40, 50)]
+    s.raw["players"][0]["played"] = [2, 0, 0, 0]
+    s.raw["deck"] = s.raw["deck"][3:]  # the three knights it held or played
+    s.send("all", "SOCGameState:game=x|state=20", changed=True)
+    s.send("f0", "SOCPlayDevCardRequest:game=x|devCard=9")
+    p = s.raw["players"][0]
+    p["dev"][9], p["played"], p["played_dev"], p["vp"] = 0, [3, 0, 0, 0], True, 10
+    s.raw["state"], s.raw["largest"] = T.PLACING_ROBBER, 0  # JSettlers awards the win only after the robber moves
+    s.send("all", "SOCDevCardAction:game=x|playerNum=0|actionType=PLAY|cardType=9", changed=True)
+    s.send("all", "SOCGameState:game=x|state=33")
+    hexes = T.OUR_TILE_TO_JS_HEX
+    s.send("f0", f"SOCMoveRobber:game=x|playerNumber=0|coord={hexes[5]:x}")
+    s.raw["robber"], s.raw["state"], s.raw["winner"] = hexes[5], T.OVER, 0
+    s.send("all", f"SOCMoveRobber:game=x|playerNumber=0|coord={hexes[5]:x}", changed=True)
+    s.send("all", "SOCGameState:game=x|state=1000")
+    steps = [x for x in s.flush() if x.kind != "noop"]
+    assert [x.kind for x in steps] == ["knight"] and steps[0].actions == [(KNIGHT, None)]
+    assert steps[0].events == [{"type": "played_dev", "player": 0, "card": "knight"},
+                               {"type": "game_over", "winner": 0}]
+    g = import_game(3, steps[0].after, s.tracker.ctx, UNLIMITED)
+    assert g.phase == "game_over" and g.snapshot()["robber"] == BOARD["tile_resource"].index(None)
+    assert s.tracker.over
+
+
+def test_a_robots_game_translates_and_four_observers_keep_their_beliefs(tmp_path):
     require()
     seed = 31
     bots = [Bot("ismcts@20", seed * 4 + i, None) for i in range(4)]
-    with Jvm() as jvm:
+    with Jvm(log=tmp_path / "jvm.log") as jvm:  # suite runs leave no logs under runs/
         jvm.send(game_command("e-full", seed, 2, bridge=False))
         tracker, kinds, imported = None, set(), 0
         while True:
@@ -3083,7 +3285,10 @@ did. Each closed stretch becomes at most one `Step`: our actions with their forc
 after it. Two stretches make one action of ours when the first leaves a position we have no phase
 for (a build request and its placement, a Year of Plenty or Monopoly card and its pick). Discards
 come one player at a time in any order; their actions are released in our seat order once the
-last is in. A step our rules cannot replay carries an allowlist kind (`untranslatable`) instead."""
+last is in. A step our rules cannot replay carries an allowlist kind (`untranslatable`) instead.
+Our rules end the game the moment the player on turn reaches the target: when JSettlers plays on (a
+knight's Largest Army wins there only after the robber moves) the step carries the position as our
+rules leave it, and nothing after our game's end becomes a step."""
 
 from __future__ import annotations
 
@@ -3101,6 +3306,7 @@ from oracle.jsettlers.tables import (
 from oracle.jsettlers.translate import Context, snapshot
 
 _HALF_DONE = frozenset({PLACING_ROAD, PLACING_SETTLEMENT, PLACING_CITY, WAITING_FOR_DISCOVERY, WAITING_FOR_MONOPOLY})
+VP_TO_WIN = 10  # the arena's game option VP, and our vp_to_win
 
 
 def dice_pair(total: int) -> list[int]:
@@ -3133,6 +3339,16 @@ def _declined(e: Entry) -> bool:
     return (e.name == "SOCDeclinePlayerRequest"
             or (e.name == "SOCDevCardAction" and e.f.get("actionType") == "CANNOT_PLAY")
             or (e.name == "SOCRejectOffer" and "reasonCode" in e.f))
+
+
+def _won(raw: dict) -> dict | None:
+    """The position as our rules leave it when the player on turn has reached the target but JSettlers
+    plays on (a knight's Largest Army wins only after the robber moves there): our game is over, won by
+    that player. None when JSettlers agrees (or nobody is there)."""
+    cur = raw["current"]
+    if raw["state"] == OVER or raw["state"] in SETUP_STATES or cur < 0 or raw["players"][cur]["vp"] < VP_TO_WIN:
+        return None
+    return {**raw, "state": OVER, "winner": cur}
 
 
 class Tracker:
@@ -3174,7 +3390,7 @@ class Tracker:
     def _close(self) -> list[Step]:
         entries, before, after = self._open, self._before, self.raw
         self._open, self._before = None, self.raw
-        if not entries:
+        if not entries or self.over:  # after the game is over in ours, nothing more replays
             return []
         req = entries[0] if entries[0].from_client else None
         server = [e for e in entries if not e.from_client]
@@ -3187,14 +3403,26 @@ class Tracker:
                 self.bank_limit_hits += 1
                 break
         step = self._action(req, server, before, after)
+        if (before["state"] not in SETUP_STATES and any(e.name == "SOCTurn" for e in server)
+                and (step is None or step.kind != "end_turn")):
+            step = self._forced_end(step, before, after)
+        if (step is not None and step.after is not None and step.after["state"] in _HALF_DONE
+                and not step.actions and step.untranslatable is None):
+            # Events only (an offer or an answer to one) inside another player's build or card pick: the
+            # position after it has no phase of ours, and the step that completes the action carries it.
+            step.after = None
         steps = [] if step is None else [step]
-        if after["state"] == OVER and not self.over:
+        won = _won(after)
+        if won is not None and steps:
+            steps[-1].after = won
+        end = won or after
+        if end["state"] == OVER:
             self.over = True
-            ev = {"type": "game_over", "winner": None if after["winner"] < 0 else self.ctx.ours(after["winner"])}
+            ev = {"type": "game_over", "winner": None if end["winner"] < 0 else self.ctx.ours(end["winner"])}
             if steps:
                 steps[-1].events.append(ev)
             else:
-                steps.append(Step("game_over", None, events=[ev], after=after))
+                steps.append(Step("game_over", None, events=[ev], after=end))
         return steps
 
     def _action(self, req, server, before, after) -> Step | None:
@@ -3220,14 +3448,15 @@ class Tracker:
             return self._plenty(pick, after)
         if (mono := first("SOCSimpleAction", lambda e: e.f.get("actType") == "3")) is not None:
             return self._monopoly(mono, before, after)
-        if (disc := first("SOCDiscard", lambda e: "playerNum" in e.f and e.f["resources"]["unknown"] == 0)) is not None:
-            return self._discard(disc, after)
+        if discs := [e for e in server
+                     if e.name == "SOCDiscard" and "playerNum" in e.f and e.f["resources"]["unknown"] == 0]:
+            return self._discard(discs, after)
         if (bank := first("SOCBankTrade", lambda e: "pn" in e.f)) is not None:
             return self._bank(bank, before, after)
         if (accept := first("SOCAcceptOffer", lambda e: "toAccepting" in e.f)) is not None:
             return self._trade(accept, after)
-        if req is not None and req.name == "SOCEndTurn" and first("SOCTurn") is not None:
-            return self._end_turn(before, after)
+        if first("SOCTurn") is not None and before["state"] not in SETUP_STATES:
+            return self._end_turn(before, after, requested=req is not None and req.name == "SOCEndTurn")
         if (made := first("SOCMakeOffer")) is not None:
             return self._offer(made, after)
         if (rejected := first("SOCRejectOffer", lambda e: "reasonCode" not in e.f)) is not None:
@@ -3237,9 +3466,45 @@ class Tracker:
         if (cleared := first("SOCClearOffer", lambda e: int(e.f["playerNumber"]) >= 0)) is not None:
             q = self.ctx.ours(int(cleared.f["playerNumber"]))
             return Step("clear", q, [], [{"type": "trade_cancelled", "player": q}], after)
+        if after["state"] == OVER and req is not None and (step := self._cut_short(req, before, after)) is not None:
+            return step
         if after["state"] in _HALF_DONE or after == before:
             return None
         return Step("noop", None, after=after)
+
+    def _forced_end(self, step: Step | None, before, after) -> Step:
+        """The server ended the turn (SOCForceEndTurnThread) in a stretch whose first rule read another
+        action (a roll, a bank trade, a forced discard, a card left unpicked): the turn ends after it."""
+        if step is None:
+            return self._end_turn(before, after, requested=False)
+        c = self.ctx
+        c.turn, c.rolled, c.drawn, c.offers = c.turn + 1, False, [0] * 5, 0
+        step.events.append({"type": "turn_ended", "player": c.ours(before["current"])})
+        step.after = after
+        if step.untranslatable is None:  # our replay re-imports the position after it
+            step.untranslatable = "forced-end-turn"
+        return step
+
+    def _cut_short(self, req: Entry, before, after) -> Step | None:
+        """The winning action when the stream ends before the server reports it: the harness stops at the
+        first message recorded once the game is over, and JSettlers announces a winning placement or card
+        in text first. The request says what was asked; the position after it says what was done."""
+        if req.sender is None:
+            return None
+        js = req.sender
+        if req.name == "SOCPutPiece" and int(req.f["playerNumber"]) == js:
+            kind, coord = int(req.f["pieceType"]), req.num("coord")
+            key = {ROAD: "roads", SETTLEMENT: "settlements", CITY: "cities"}.get(kind)
+            if key is not None and coord in after["players"][js][key] and coord not in before["players"][js][key]:
+                return self._piece(Entry("all", req.name, req.f), before, after)
+        if req.name == "SOCBuyDevCardRequest":
+            new = [c for c in range(10) if after["players"][js]["dev"][c] > before["players"][js]["dev"][c]]
+            if len(new) == 1:
+                return self._buy(Entry("all", "SOCDevCardAction", {"playerNum": str(js), "cardType": str(new[0])}),
+                                 after)
+        if req.name == "SOCEndTurn" and before["current"] == js and after["current"] != js:
+            return self._end_turn(before, after)
+        return None
 
     def _gain(self, before, after, q) -> list[int]:
         return [a - b for a, b in zip(self.hand(after, q), self.hand(before, q))]
@@ -3253,7 +3518,7 @@ class Tracker:
                 g = self._gain(before, after, q)
                 if any(x < 0 for x in g):
                     bad = "production"
-                if any(g):
+                elif any(g):
                     events.append({"type": "produced", "player": q, "resources": g})
         self.ctx.rolled = True
         return Step("roll", p, [(A.ROLL, {"roll": dice_pair(total)})], events, after, untranslatable=bad)
@@ -3333,12 +3598,16 @@ class Tracker:
                     [_played(p, "monopoly"),
                      {"type": "monopoly_taken", "player": p, "resource": RESOURCE_NAMES[r], "from": taken}], after)
 
-    def _discard(self, e, after) -> Step:
-        q = self.ctx.ours(int(e.f["playerNum"]))
-        cards = ours5(e.f["resources"])
-        self._discards[q] = [a + b for a, b in zip(self._discards.get(q, [0] * 5), cards)]
-        events = [{"type": "discarded", "player": q, "resource": RESOURCE_NAMES[r]}
-                  for r in range(5) for _ in range(cards[r])]
+    def _discard(self, discs: list[Entry], after) -> Step:
+        """Every discard of the stretch (the server force-discards for each stalled player at once)."""
+        events = []
+        for e in discs:
+            q = self.ctx.ours(int(e.f["playerNum"]))
+            cards = ours5(e.f["resources"])
+            self._discards[q] = [a + b for a, b in zip(self._discards.get(q, [0] * 5), cards)]
+            events += [{"type": "discarded", "player": q, "resource": RESOURCE_NAMES[r]}
+                       for r in range(5) for _ in range(cards[r])]
+        q = self.ctx.ours(int(discs[0].f["playerNum"]))
         if after["state"] == WAITING_FOR_DISCARDS:
             return Step("discard", q, [], events, None)
         actions = [(A.discard(r), None) for s in sorted(self._discards) for r in range(5)
@@ -3389,11 +3658,13 @@ class Tracker:
         return Step("trade", o, [], events, after, untranslatable="domestic-trade",
                     info={"offerer": o, "partner": a, "give": give, "get": get})
 
-    def _end_turn(self, before, after) -> Step:
+    def _end_turn(self, before, after, requested: bool = True) -> Step:
         p = self.ctx.ours(before["current"])
         cancelled = before["state"] in (PLACING_FREE_ROAD1, PLACING_FREE_ROAD2)
         c = self.ctx
         c.turn, c.rolled, c.drawn, c.offers = c.turn + 1, False, [0] * 5, 0
+        if not requested:  # the server ended a stalled turn (SOCForceEndTurnThread): no action of ours replays it
+            return Step("end_turn", p, [], [{"type": "turn_ended", "player": p}], after, untranslatable="forced-end-turn")
         return Step("end_turn", p, [] if cancelled else [(A.END_TURN, None)], [{"type": "turn_ended", "player": p}],
                     after, untranslatable="road-building-cancelled" if cancelled else None)
 
@@ -3409,7 +3680,7 @@ class Tracker:
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `pgrep -fl 'arm.sh' || echo idle`, then `.venv/bin/pytest -q tests/python/test_jsettlers_translate.py tests/python/test_jsettlers_events.py`
-Expected: PASS, 43 tests (18 + 25). If `test_a_robots_game_translates_and_four_observers_keep_their_beliefs` raises inside `import_game` or a bot's `belief_resets` is not 0, the message the failing step came from is the last `m` read: add it to the error, find the rule of `_action` that misread it, and fix that rule (the scripted tests above must still pass).
+Expected: PASS, 47 tests (18 + 29). If `test_a_robots_game_translates_and_four_observers_keep_their_beliefs` raises inside `import_game` or a bot's `belief_resets` is not 0, the message the failing step came from is the last `m` read: add it to the error, find the rule of `_action` that misread it, and fix that rule (the scripted tests above must still pass).
 
 - [ ] **Step 7: Format, lint, the full suite**
 

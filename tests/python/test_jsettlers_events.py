@@ -307,6 +307,79 @@ def test_a_turn_the_server_ends_itself_is_counted_and_allowlisted():
     assert (c.turn, c.rolled, c.drawn, c.offers) == (1, False, [0] * 5, 0)
 
 
+def forced_end(s, nxt=1):
+    """The server ends the current player's stalled turn (SOCForceEndTurnThread) inside the open stretch."""
+    s.raw["current"], s.raw["state"] = nxt, T.ROLL_OR_CARD
+    s.send("all", f"SOCTurn:game=x|playerNumber={nxt}|gameState=15", changed=True)
+    s.send("all", f"SOCRollDicePrompt:game=x|playerNumber={nxt}")
+
+
+def test_a_roll_then_a_forced_end_of_turn_in_one_stretch_ends_the_turn():
+    s = Script(first=0, current=0)
+    s.tracker.ctx.drawn = [0, 1, 0, 0, 0]
+    s.send("f0", "SOCRollDice:game=x")
+    s.send("all", "SOCDiceResult:game=x|param=9")
+    s.hand(2, [1, 0, 0, 0, 0])
+    s.raw["state"] = T.PLAY1
+    s.send("all", "SOCGameState:game=x|state=20", changed=True)
+    forced_end(s)
+    [step] = s.flush()
+    assert step.kind == "roll" and step.untranslatable == "forced-end-turn"
+    assert step.events[0]["type"] == "rolled" and step.events[-1] == {"type": "turn_ended", "player": 0}
+    c = s.tracker.ctx
+    assert (c.turn, c.rolled, c.drawn, c.offers) == (1, False, [0] * 5, 0)
+    assert s.tracker.snapshot()["return_phase"] == "pre_roll" and s.tracker.snapshot()["turn"] == 1
+
+
+def test_a_bank_trade_then_a_forced_end_of_turn_in_one_stretch_ends_the_turn():
+    s = Script(first=0, current=0)
+    s.tracker.ctx.rolled, s.tracker.ctx.offers = True, 2
+    s.hand(0, [4, 0, 0, 0, 0])
+    s.send("all", "SOCGameState:game=x|state=20", changed=True)
+    s.send("f0", f"SOCBankTrade:game=x|give={rset([4, 0, 0, 0, 0])}|get={rset([0, 0, 0, 0, 1])}")
+    s.hand(0, [0, 0, 0, 0, 1])
+    s.send("all", f"SOCBankTrade:game=x|give={rset([4, 0, 0, 0, 0])}|get={rset([0, 0, 0, 0, 1])}|pn=0", changed=True)
+    forced_end(s)
+    [step] = [x for x in s.flush() if x.kind == "maritime"]
+    assert step.actions == [(maritime(WOOD, ORE), None)] and step.untranslatable == "forced-end-turn"
+    assert step.events[-1] == {"type": "turn_ended", "player": 0} and step.after["current"] == 1
+    c = s.tracker.ctx
+    assert (c.turn, c.rolled, c.offers) == (1, False, 0)
+
+
+def test_a_card_left_unpicked_then_a_forced_end_of_turn_ends_the_turn():
+    s = Script(first=0, current=0)
+    s.tracker.ctx.rolled = True
+    s.send("f0", "SOCPlayDevCardRequest:game=x|devCard=2")
+    s.raw["state"] = T.WAITING_FOR_DISCOVERY
+    s.send("all", "SOCDevCardAction:game=x|playerNum=0|actionType=PLAY|cardType=2", changed=True)
+    forced_end(s)
+    [step] = s.flush()
+    assert (step.kind, step.actions, step.untranslatable) == ("end_turn", [], "forced-end-turn")
+    assert step.events == [{"type": "turn_ended", "player": 0}] and s.tracker.ctx.turn == 1
+
+
+def test_forced_discards_for_two_players_in_one_stretch_are_both_read():
+    s = Script(first=0, current=0)
+    s.hand(1, [4, 4, 0, 0, 0])
+    s.hand(3, [0, 0, 8, 0, 0])
+    s.raw["players"][1]["discard"], s.raw["players"][3]["discard"] = 4, 4
+    s.raw["state"] = T.WAITING_FOR_DISCARDS
+    s.send("all", "SOCGameState:game=x|state=50", changed=True)
+    s.send("f0", "SOCMoveRobber:game=x|playerNumber=0|coord=0")  # any request: the stretch below is the server's
+    s.hand(1, [2, 2, 0, 0, 0])
+    s.hand(3, [0, 0, 4, 0, 0])
+    s.raw["players"][1]["discard"], s.raw["players"][3]["discard"] = 0, 0
+    s.raw["state"] = T.PLACING_ROBBER
+    s.send("p1", f"SOCDiscard:game=x|playerNum=1|resources={rset([2, 2, 0, 0, 0])}", changed=True)
+    s.send("!p1", f"SOCDiscard:game=x|playerNum=1|resources={rset(unknown=4)}")
+    s.send("p3", f"SOCDiscard:game=x|playerNum=3|resources={rset([0, 0, 4, 0, 0])}")
+    s.send("!p3", f"SOCDiscard:game=x|playerNum=3|resources={rset(unknown=4)}")
+    [step] = [x for x in s.flush() if x.kind == "discard"]
+    assert step.actions == [(discard(WOOD), None)] * 2 + [(discard(BRICK), None)] * 2 + [(discard(SHEEP), None)] * 4
+    assert [e["player"] for e in step.events] == [1] * 4 + [3] * 4 and step.after is not None
+
+
 def test_a_roll_that_takes_cards_produces_nothing_negative():
     s = Script(first=0, current=0)
     s.hand(1, [2, 0, 0, 0, 0])
@@ -363,6 +436,15 @@ def test_a_winning_action_cut_short_by_the_end_of_the_stream_is_read_from_its_re
     [step] = [x for x in s.flush() if x.kind != "noop"]
     assert step.kind == "build" and step.actions == [(city(20), None)]
     assert step.events == [{"type": "built_city", "player": 0, "node": 20}, {"type": "game_over", "winner": 0}]
+    r = Script()
+    edge = T.OUR_EDGE_TO_JS_EDGE[7]
+    r.raw["players"][0]["roads"] = [edge]
+    r.send("all", "SOCGameState:game=x|state=20", changed=True)
+    r.send("f0", f"SOCPutPiece:game=x|playerNumber=0|pieceType=0|coord={edge:x}")  # a road it already has
+    r.raw["state"], r.raw["winner"] = T.OVER, 0
+    r.send("all", "SOCGameServerText:game=x|text=robot 1 won.", changed=True)
+    last = r.flush()[-1]
+    assert (last.kind, last.actions, last.events) == ("noop", [], [{"type": "game_over", "winner": 0}])
     b = Script(first=1, current=1)
     b.send("f1", "SOCBuyDevCardRequest:game=x")
     b.raw["players"][1]["dev"][5] = 1
