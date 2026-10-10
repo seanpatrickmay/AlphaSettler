@@ -6,12 +6,13 @@ that hook, counted by reason. Our bot is shown every step's events, redacted for
 
 Seeds: a seed fixes the board, dice and deck (common random numbers); the candidate takes turn
 position k in the seed's k-th game, with bot seed `seed * 4 + k`. Each worker process runs one JVM
-and plays its games in turn."""
+and plays its games in turn; one worker's failure stops them all at once."""
 
 from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import queue
 import time
 from collections import Counter
 from pathlib import Path
@@ -20,7 +21,7 @@ from alphasettler import Bot, Game
 from alphasettler.arena import TRADES
 from oracle.jsettlers import actions as A
 from oracle.jsettlers import missing
-from oracle.jsettlers.boards import game_command
+from oracle.jsettlers.boards import game_command, normalized
 from oracle.jsettlers.events import Tracker
 from oracle.jsettlers.jvm import Jvm
 from oracle.jsettlers.tables import (
@@ -42,7 +43,10 @@ ABORT_REASONS = ("turn-cap", ROBOT_DESYNC)
 COUNTERS = ("our_offers", "our_offers_accepted", "offers_to_us", "offers_to_us_accepted", "unrepresentable",
             "counters_rejected", "late", "beaten", "robot_offers", "robot_offers_over_caps")
 RECORD_KEYS = ("seed", "candidate_seat", "winner", "vp", "turns", "rounds", "aborted", "abort_reason", "robot_desync",
-               "last_build_turn", "fallbacks", "fallback_reasons", "belief_resets", *COUNTERS, "bank_limit_hits", "arm")
+               "last_build_turn", "fallbacks", "fallback_reasons", "belief_resets", "forced_end_turns", *COUNTERS,
+               "bank_limit_hits", "arm", "board")
+FORCED_END_TURN = "forced-end-turn"  # the allowlist kind of a turn the server ended (SOCForceEndTurnThread)
+POLL = 1.0  # seconds: how often `run_match` checks that its workers are alive
 BUILD_STEPS = frozenset({"build", "road_building", "buy"})  # a piece built (setup aside) or a card bought
 
 
@@ -70,6 +74,9 @@ class Seat:
         self.fork_resets = 0  # belief resets in the forks, added to the record's `belief_resets`
         self.fallbacks: Counter = Counter()
         self.counts: Counter = Counter({k: 0 for k in COUNTERS})
+        # Turns of ours the server ended (600 s without our move, e.g. after an exception in the bridge brain,
+        # which SOCRobotBrain.run prints as " caught an exception" and survives): not a fallback, counted apart.
+        self.forced_end_turns = 0
         self.capped = False
         self.stopped: str | None = None  # the driver stopped the game for this reason (not the turn cap): uncounted
         # Per seat of ours, the last turn it built a piece or bought a card (None if never): stock robots can stop
@@ -94,6 +101,8 @@ class Seat:
         for st in steps:
             if st.kind in BUILD_STEPS and st.player is not None and st.actions:
                 self.last_build[st.player] = self.tracker.ctx.turn
+            if st.untranslatable == FORCED_END_TURN and st.player == self.seat:
+                self.forced_end_turns += 1
             if st.kind == "offer" and st.player != self.seat:
                 self.counts["robot_offers"] += 1
                 key = (self.tracker.ctx.turn, st.player)
@@ -476,9 +485,11 @@ def play_game(jvm: Jvm, seed: int, k: int, candidate: str, nets_dir: str | None 
                 "robot_desync": bool(tracker.setup_cancelled),
                 "last_build_turn": list(seat.last_build),
                 "fallbacks": sum(seat.fallbacks.values()), "fallback_reasons": dict(seat.fallbacks),
-                "belief_resets": seat.belief_resets(),
+                "belief_resets": seat.belief_resets(), "forced_end_turns": seat.forced_end_turns,
                 **{c: seat.counts[c] for c in COUNTERS},
                 "bank_limit_hits": tracker.bank_limit_hits, "arm": arm,
+                # JSettlers' own boards are unseeded (a rotation's board is not its seed's): each is recorded.
+                "board": normalized(tracker.board) if native_boards else None,
             }
         else:
             raise RuntimeError(f"{name}: unexpected message {m}")
@@ -502,6 +513,15 @@ def check(candidate: str, baseline: str, seeds: int, seed_start: int = 0, nets_d
         raise ValueError(f"the JSettlers harness is not ready: {why}")
 
 
+def kept(records: list[dict]) -> tuple[list[dict], list[int]]:
+    """The records a summary counts, and the seeds left out. A game stopped for a robot desync in setup is a stock
+    robot bug, not a result: its whole seed (all four rotations, which the per-seed statistics need) is left out.
+    Turn-cap games stay in (no-winner losses, as in the Catanatron arena)."""
+    dropped = sorted({r["seed"] for r in records if r["abort_reason"] == ROBOT_DESYNC})
+    gone = set(dropped)
+    return [r for r in records if r["seed"] not in gone], dropped
+
+
 def arm_name(trades: bool, aligned: bool, native_boards: bool) -> str:
     if native_boards:
         return "native-boards"
@@ -510,18 +530,88 @@ def arm_name(trades: bool, aligned: bool, native_boards: bool) -> str:
     return "aligned" if aligned else "native"
 
 
-def _chunk(jobs, candidate, nets_dir, trades, aligned, native_boards, max_turns, log_dir) -> list[dict]:
+def _games(jobs, candidate, nets_dir, trades, aligned, native_boards, max_turns, log_dir):
+    """One worker's games on its own JVM, each record yielded as its game ends."""
     arm = arm_name(trades, aligned, native_boards)
     log = None if log_dir is None else Path(log_dir) / f"{arm}-{os.getpid()}.log"
     with Jvm("aligned" if aligned else "stock", log=log) as jvm:
-        return [play_game(jvm, s, k, candidate, nets_dir, trades, arm, native_boards, max_turns) for s, k in jobs]
+        for s, k in jobs:
+            yield play_game(jvm, s, k, candidate, nets_dir, trades, arm, native_boards, max_turns)
+
+
+def _worker(i: int, q, work, args) -> None:
+    """A worker process: each record of `work(*args)` goes to `q` as it is made, then ("done", i); a failure
+    goes as ("error", i, its text) and the process exits 1."""
+    try:
+        for r in work(*args):
+            q.put(("record", i, r))
+    except BaseException as e:  # noqa: BLE001 - reported to the parent, which stops every worker
+        q.put(("error", i, f"{type(e).__name__}: {e}"))
+        raise SystemExit(1) from None  # the queue is flushed as the process exits
+    q.put(("done", i, None))
+
+
+def run_workers(work, arglists: list[tuple], on_record=None, poll: float = POLL) -> list[dict]:
+    """`work(*args)` for each of `arglists` in its own spawned process, its records gathered (and passed to
+    `on_record` as each arrives). A worker that raises, or exits without finishing, stops every worker at once
+    and raises RuntimeError naming it (multiprocessing.Pool would wait for the other workers, or forever for a
+    dead one)."""
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    procs = [ctx.Process(target=_worker, args=(i, q, work, a), daemon=True) for i, a in enumerate(arglists)]
+    finished, records = [False] * len(procs), []
+
+    def take(m) -> None:
+        kind, i, x = m
+        if kind == "error":
+            raise RuntimeError(f"worker {i} (pid {procs[i].pid}) failed: {x}")
+        if kind == "done":
+            finished[i] = True
+        else:
+            records.append(x)
+            if on_record is not None:
+                on_record(x)
+
+    try:
+        for p in procs:
+            p.start()
+        while not all(finished):
+            try:
+                take(q.get(timeout=poll))
+                continue
+            except queue.Empty:
+                pass
+            exited = [i for i, p in enumerate(procs) if not finished[i] and p.exitcode is not None]
+            if exited:
+                while True:  # what an exited worker sent before it went is in the queue by now
+                    try:
+                        take(q.get(timeout=poll))
+                    except queue.Empty:
+                        break
+                dead = [i for i in exited if not finished[i]]
+                if dead:
+                    i = dead[0]
+                    raise RuntimeError(f"worker {i} (pid {procs[i].pid}) exited with code {procs[i].exitcode} "
+                                       f"before its games were done")
+    finally:
+        for p in procs:
+            if p.is_alive():
+                p.terminate()  # its JVM exits when its stdin closes
+        for p in procs:
+            p.join(10)
+            if p.is_alive():
+                p.kill()
+                p.join()
+        q.close()
+    return records
 
 
 def run_match(candidate: str, baseline: str, seeds: int, seed_start: int = 0, workers: int | None = None,
               nets_dir: str | None = None, trades: bool = True, aligned: bool = False, native_boards: bool = False,
-              max_turns: int = MAX_TURNS, log_dir: str | Path | None = None) -> list[dict]:
+              max_turns: int = MAX_TURNS, log_dir: str | Path | None = None, on_record=None) -> list[dict]:
     """Four games a seed (the candidate in each turn position), one JVM per worker process. Each JVM's log
-    goes under `log_dir` when given (else runs/jsettlers/logs/)."""
+    goes under `log_dir` when given (else runs/jsettlers/logs/). `on_record(record)` is called in this process
+    as each game ends; a worker's failure stops the match at once (RuntimeError, see `run_workers`)."""
     if native_boards and not trades:
         raise ValueError("native boards need trades (that check is the native arm on JSettlers' own boards)")
     check(candidate, baseline, seeds, seed_start, nets_dir)
@@ -529,6 +619,5 @@ def run_match(candidate: str, baseline: str, seeds: int, seed_start: int = 0, wo
     n = max(1, min(workers or os.cpu_count() or 1, len(jobs)))
     chunks = [jobs[i::n] for i in range(n)]
     args = [(c, candidate, nets_dir, trades, aligned, native_boards, max_turns, log_dir) for c in chunks]
-    with mp.get_context("spawn").Pool(n) as pool:
-        out = pool.starmap(_chunk, args)
-    return sorted((r for chunk in out for r in chunk), key=lambda r: (r["seed"], r["candidate_seat"]))
+    records = run_workers(_games, args, on_record)
+    return sorted(records, key=lambda r: (r["seed"], r["candidate_seat"]))

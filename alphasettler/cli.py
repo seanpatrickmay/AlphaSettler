@@ -782,7 +782,8 @@ def _jsettlers_arena(args, out: Path) -> int:
     the trading game with JSettlers' player trading on (`--aligned` caps the robots' offers to it);
     otherwise JSettlers' no-trading option is on and the candidate offers nothing. Exits 2 for a bad request or a
     missing harness, 3 when the JVM fails, 1 when every seed was dropped from the summary (see
-    `_print_jsettlers_summary`)."""
+    `_print_jsettlers_summary`). Each game's record is appended to `<out>.partial` as it ends; the file is removed
+    once `out` is written, and kept (with every game finished before the failure) when the harness fails."""
     if args.aligned and not args.trades:
         raise ValueError("--aligned needs --trades")
     if args.native_boards and not args.trades:
@@ -796,28 +797,35 @@ def _jsettlers_arena(args, out: Path) -> int:
     baseline = args.baseline.split(":", 1)[1]
     nets_dir = str(Path(args.nets_dir).resolve())
     js_arena.check(args.candidate, baseline, args.seeds, args.seed_start, nets_dir)
-    with open_output(out) as f:
+    partial = out.with_name(out.name + ".partial")
+    if partial.exists():
+        raise ValueError(f"{partial} exists (a failed run's games): move it aside first")
+    with open_output(out) as f, open_output(partial) as pf:
         try:
             records = js_arena.run_match(args.candidate, baseline, args.seeds, args.seed_start, args.threads, nets_dir,
-                                         trades=args.trades, aligned=args.aligned, native_boards=args.native_boards)
-        except (OSError, EOFError, RuntimeError) as e:  # the JVM's error, exit or silence (TimeoutError is an OSError)
+                                         trades=args.trades, aligned=args.aligned, native_boards=args.native_boards,
+                                         on_record=lambda r: _write_records(pf, args.candidate, args.baseline, [r]))
+        except (OSError, EOFError, RuntimeError) as e:  # a worker's error, exit or silence (TimeoutError is an OSError)
             print(f"error: the JSettlers harness failed: {type(e).__name__}: {e}", file=sys.stderr)
+            print(f"the games finished before it are in {partial}", file=sys.stderr)
             return 3
         _write_records(f, args.candidate, args.baseline, records)
+    partial.unlink()
     code = _print_jsettlers_summary(args.candidate, args.baseline, records, js_arena.COUNTERS)
     print(f"wrote {out}")
     return code
 
 
 def _print_jsettlers_summary(candidate: str, baseline: str, records: list[dict], counters) -> int:
-    """The jsettlers arena's report. A game stopped for a robot desync in setup is a stock robot bug, not a result:
-    its whole seed (all four seat rotations, which the per-seed statistics need) is left out of the summary, and the
-    games left out are printed on their own line, so summary games plus dropped games are the games played. Every
-    count printed beside the summary (fallbacks, belief resets, trades, bank limit hits, turn-cap games and the
-    stall) is over those same summarised games; the JSONL keeps all of them. Games that hit the turn cap stay in as
-    no-winner losses, as in the Catanatron arena. Returns 1 when every seed is dropped (no summary), else 0."""
-    desynced = {r["seed"] for r in records if r["abort_reason"] == "robot-desync"}
-    kept = [r for r in records if r["seed"] not in desynced]
+    """The jsettlers arena's report. The summary is over `oracle.jsettlers.arena.kept(records)` (a seed with a game
+    stopped for a robot desync in setup is left out whole), and the games left out are printed on their own line, so
+    summary games plus dropped games are the games played. Every count printed beside the summary (fallbacks,
+    belief resets, forced ends of our turn, trades, bank limit hits, turn-cap games and the stall) is over those
+    same summarised games; the JSONL keeps all of them. Games that hit the turn cap stay in as no-winner losses, as
+    in the Catanatron arena. Returns 1 when every seed is dropped (no summary), else 0."""
+    from oracle.jsettlers.arena import kept as kept_records
+
+    kept, desynced = kept_records(records)
     code = 0
     if kept:
         print(format_summary(f"{candidate} vs {baseline} ({records[0]['arm']})", summarize(kept)))
@@ -833,6 +841,7 @@ def _print_jsettlers_summary(candidate: str, baseline: str, records: list[dict],
             reasons[k] = reasons.get(k, 0) + v
     print(f"fallbacks: {sum(r['fallbacks'] for r in kept)} {dict(sorted(reasons.items()))}")
     print(_resets_line(kept))
+    print(f"forced ends of our turn: {sum(r['forced_end_turns'] for r in kept)}")
     print("trades: " + ", ".join(f"{k} {sum(r[k] for r in kept)}" for k in counters))
     capped = [r for r in kept if r["abort_reason"] == "turn-cap"]
     # The stock Longest-Road stall: nobody builds for the last stretch of a game that then runs to the cap. A game's

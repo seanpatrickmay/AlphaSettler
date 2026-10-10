@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from pathlib import Path
 
@@ -10,8 +11,8 @@ from jsettlers_harness import require
 from oracle.jsettlers import actions as A
 from oracle.jsettlers import diff
 from oracle.jsettlers import tables as T
-from oracle.jsettlers.arena import FALLBACK_REASONS, RECORD_KEYS, check, play_game, run_match
-from oracle.jsettlers.boards import first_player, js_layout, native_board
+from oracle.jsettlers.arena import FALLBACK_REASONS, RECORD_KEYS, check, kept, play_game, run_match, run_workers
+from oracle.jsettlers.boards import first_player, js_layout, native_board, normalized
 from oracle.jsettlers.jvm import Jvm
 from test_jsettlers_events import Script
 
@@ -193,3 +194,79 @@ def test_our_offers_cross_the_bridge_and_are_answered(mode, arm, tmp_path, monke
         r = play_game(j, 63, 1, "ismcts@20+t", trades=True, arm=arm)
     assert len(sent) > 0 and r["our_offers"] >= len(sent) and r["our_offers_accepted"] <= r["our_offers"]
     assert r["belief_resets"] == 0 and set(r["fallback_reasons"]) <= set(FALLBACK_REASONS)
+
+
+@pytest.mark.parametrize("native_boards,arm", [(True, "native-boards"), (False, "native")])
+def test_a_native_board_game_records_its_board(native_boards, arm):
+    # JSettlers' own boards are unseeded, so a native-boards record names the board it was played on.
+    name = f"{arm}-52-2"
+    over = {"t": "over", "g": name, "winner": -1, "vp": [2, 2, 2, 2], "rounds": 0, "aborted": True}
+    r = play_game(FakeJvm([start_message(name, 52, 2), over]), 52, 2, "random", arm=arm, native_boards=native_boards)
+    assert tuple(r) == RECORD_KEYS
+    assert r["board"] == (normalized(native_board(52)) if native_boards else None)
+    assert json.loads(json.dumps(r["board"])) == r["board"]
+
+
+def game(seed, seat, abort_reason=None):
+    return {"seed": seed, "candidate_seat": seat, "abort_reason": abort_reason}
+
+
+def test_kept_drops_every_seed_with_a_desync_game_and_keeps_turn_cap_games():
+    rs = ([game(0, k) for k in range(4)] + [game(1, 0), game(1, 1, "robot-desync"), game(1, 2), game(1, 3)]
+          + [game(2, 0, "turn-cap")] + [game(2, k) for k in (1, 2, 3)] + [game(3, k, "robot-desync") for k in range(4)])
+    ks, dropped = kept(rs)
+    assert dropped == [1, 3]
+    assert ks == [r for r in rs if r["seed"] in (0, 2)]
+    assert kept([]) == ([], [])
+
+
+# Fake workers for `run_workers` (module level, so a spawned process can import them).
+
+def finishes(n, pause):
+    for i in range(n):
+        time.sleep(pause)
+        yield {"seed": i, "pid": os.getpid()}
+
+
+def fails_after(n):
+    yield from finishes(n, 0.0)
+    raise TimeoutError("the JSettlers JVM sent nothing for 900.0 s; see x.log")
+
+
+def dies_after(n):
+    yield from finishes(n, 0.0)
+    time.sleep(0.5)  # let the records reach the queue, then die as a killed process would
+    os._exit(9)
+
+
+def test_workers_records_arrive_as_each_finishes():
+    got = []
+    rs = run_workers(finishes, [(3, 0.0), (2, 0.0)], on_record=got.append, poll=0.1)
+    assert len(rs) == 5 and got == rs and len({r["pid"] for r in rs}) == 2
+
+
+@pytest.mark.parametrize("broken,match", [
+    ((fails_after, (2,)), r"worker 1 \(pid \d+\) failed: TimeoutError: the JSettlers JVM sent nothing"),
+    ((dies_after, (2,)), r"worker 1 \(pid \d+\) exited with code 9 before its games were done"),
+])
+def test_one_broken_worker_stops_every_worker_at_once(broken, match):
+    # The healthy worker would take 60 s; the broken one fails within its first seconds. The match raises as soon
+    # as the failure is seen, with the healthy worker terminated (not waited for: `run_workers` joins every worker
+    # before it returns, and would take 10 s more to kill one that ignored the terminate) and the broken worker's
+    # finished records already passed on.
+    got = []
+    work, args = broken
+    t = time.monotonic()
+    with pytest.raises(RuntimeError, match=match):
+        run_workers(dispatch, [("slow",), (work.__name__, *args)], on_record=got.append, poll=0.1)
+    assert time.monotonic() - t < 8
+    assert len([r for r in got if not r.get("slow")]) == 2
+
+
+def dispatch(name, *args):
+    """One fake worker by name: "slow" is a healthy worker of 60 one-second games."""
+    if name == "slow":
+        for r in finishes(60, 1.0):
+            yield {**r, "slow": True}
+        return
+    yield from globals()[name](*args)

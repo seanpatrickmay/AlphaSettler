@@ -38,7 +38,7 @@
 
 ## Review Focus
 
-1. A harness JVM that errors, dies or goes silent mid-game (an exception in a server or robot thread, a stalled robot, a command it cannot parse). Expected: the run stops with an error that names the JVM's log under `runs/jsettlers/logs/`, no partial or invented record is written, and the JVM never outlives the Python process that started it. Pinned by Task 3's `test_errors_and_silence_fail_loudly_naming_the_log` and `test_the_jvm_exits_when_its_stdin_closes`.
+1. A harness JVM that errors, dies or goes silent mid-game (an exception in a server or robot thread, a stalled robot, a command it cannot parse). Expected: the run stops with an error that names the JVM's log under `runs/jsettlers/logs/`, no partial or invented record is written to the output (the games finished before the failure are only in `<out>.partial`), and the JVM never outlives the Python process that started it; one worker's error or death stops every worker at once (exit 3). Pinned by Task 3's `test_errors_and_silence_fail_loudly_naming_the_log` and `test_the_jvm_exits_when_its_stdin_closes`, and by the final fix wave's `test_one_broken_worker_stops_every_worker_at_once` and `test_each_finished_game_is_in_the_partial_file_until_the_match_is_written`.
 2. A decision whose position does not import (an intermediate server state, a rule difference) or whose request JSettlers declines (`SOCDeclinePlayerRequest`). Expected: the stock brain decides that hook, the fallback is counted by reason, and the same declined request is not asked again in a loop. Pinned by Task 6's `test_unimportable_declined_or_failing_decisions_fall_back_by_reason` and the fallback-reason checks of `test_a_no_trades_bridge_game_records_every_counter`.
 3. Robot offers our trading game cannot hold (two cards for one, a shared resource, trades off), arriving while we are on turn (counter-offers), or answered too slowly. Expected: rejected without asking the bot (or rejected when late), each counted in `unrepresentable`, `counters_rejected` or `late`, never accepted by accident. Pinned by Task 6's `test_answers_reject_counter_offers_and_unrepresentable_offers_without_asking`, `test_answers_import_the_offerers_main_position_with_earlier_seats_rejecting` and `test_late_answers_are_sent_as_rejections_and_counted`, and Task 7's `test_a_native_trading_game_answers_and_counts_the_robots_offers`.
 4. More than 19 of a resource in hands (JSettlers' unlimited bank). Expected: the position imports and play goes on, the bank shows 0 of it, the payout is counted in `bank_limit_hits`, and with the limit on (every native game) nothing changes. Pinned by Task 2's `without_the_limit_both_claimants_are_paid_and_the_bank_shows_none`, `a_snapshot_with_more_than_19_of_a_resource_in_hands_imports_only_without_the_limit` and `test_a_position_with_20_cards_of_a_resource_imports_only_without_the_limit`, and Task 4's `test_more_than_19_cards_import_only_without_the_bank_limit` and `test_declines_and_bank_limit_payouts_are_counted`.
@@ -91,7 +91,7 @@ Each is a **Ruling** (with its reason) the results file repeats, so it can be ov
 - **Timeouts.** Built-in robots' forced end of turn (`SOCServer.ROBOT_FORCE_ENDTURN_SECONDS`, 8 s) is raised to 60 s so our thinking during a robot's turn (an answer, a discard) never forces it, and a stubborn robot's (`ROBOT_FORCE_ENDTURN_STUBBORN_SECONDS`, 4 s) likewise; our own turns have `jsettlers.bots.timeout.turn` 600 s, and the bridge waits 540 s for a reply, so a slow one is a counted `java-timeout` before the server's end.
 - **Turn cap.** At our `max_turns` (1000) the driver aborts the game: no winner, `aborted: true`, `abort_reason: "turn-cap"`.
 - **The aligned arm.** `CappedBrain` sends the stock negotiator's offer only if it is one card a side, sends it to every opponent, at most two a turn (counted by `SOCGame.getTurnCount`, since a forced end of turn skips `resetFieldsAtEndTurn`), and never counter-offers; when the negotiator's offer does not fit, that robot stops offering until the stock brain clears `doneTrading` (a new turn, or a declined request mid-turn, `resetFieldsAndBuildingPlan`), and may then offer again within the same caps. Its client logs in as a built-in robot (the default brain class), so a stalled capped robot turn is force-ended after the same 60 s as a stock robot's: `jsettlers.bots.timeout.turn` (600 s) applies to every third-party robot on turn, our seat included, so it stays 600 and the capped robots do not report a third-party class (the server reads that class only for this timeout, the login version check and its third-party join pool, which the arena does not use). Records count robot offers (`robot_offers`) and those outside these caps (`robot_offers_over_caps`) in every arm.
-- **Records**, per game: `seed`, `candidate_seat`, `winner`, `vp`, `turns`, `rounds`, `aborted`, `abort_reason` (`turn-cap` or `robot-desync`, null when not aborted by the driver), `robot_desync` (a setup settlement was cancelled by a forced end), `last_build_turn` (per seat of ours, the last turn it built a piece or bought a card after setup, null if never: stock robots can stop building at 8-9 VP while nobody holds Longest Road, so Task 9 reports results with and without those games), `fallbacks`, `fallback_reasons`, `belief_resets`, `our_offers`, `our_offers_accepted`, `offers_to_us`, `offers_to_us_accepted`, `unrepresentable`, `counters_rejected`, `late`, `beaten` (an acceptance of ours refused because another player's trade executed first), `robot_offers`, `robot_offers_over_caps`, `bank_limit_hits`, `arm` (the order of `RECORD_KEYS`).
+- **Records**, per game: `seed`, `candidate_seat`, `winner`, `vp`, `turns`, `rounds`, `aborted`, `abort_reason` (`turn-cap` or `robot-desync`, null when not aborted by the driver), `robot_desync` (a setup settlement was cancelled by a forced end), `last_build_turn` (per seat of ours, the last turn it built a piece or bought a card after setup, null if never: stock robots can stop building at 8-9 VP while nobody holds Longest Road, so Task 9 reports results with and without those games), `fallbacks`, `fallback_reasons`, `belief_resets`, `forced_end_turns` (turns of ours the server ended, the stream's `forced-end-turn` steps of our seat: an exception in the bridge brain is survived by `SOCRobotBrain.run`, sends no fallback, and leaves our turn to be force-ended after 600 s), `our_offers`, `our_offers_accepted`, `offers_to_us`, `offers_to_us_accepted`, `unrepresentable`, `counters_rejected`, `late`, `beaten` (an acceptance of ours refused because another player's trade executed first), `robot_offers`, `robot_offers_over_caps`, `bank_limit_hits`, `arm`, `board` (`boards.normalized` of the board played, in the native-boards check only, whose boards are JSettlers' own and unseeded; null otherwise) (the order of `RECORD_KEYS`). Summaries count `oracle.jsettlers.arena.kept(records)`: every seed with a `robot-desync` game is left out whole and counted apart.
 - **Workers.** One JVM per worker process, games one at a time. A JVM that reports an error or sends nothing for 15 minutes fails the run, naming its log; a JVM exits when its stdin closes.
 - **B** is chosen in Task 9 Step 4 by an explicit table from the results files present at run time; the candidate name stays the spec's `net:B@1000+t+o` (no `+c`) whatever B is.
 - **Fresh seeds:** the arms from 8,000,000,000 (the spec's), the native-boards check on the first 20 of them, the differential gate from 9,000,000,000, the smoke run from 9,100,000,000; no self-play (below 1e9), gate (1e9 + 0..200) or SPRT (2e9 to 7.001e9) used them. Tests use seeds below 100.
@@ -5004,7 +5004,7 @@ AFTER_WIN = "after-win"  # a decision JSettlers asks once our rules have ended t
 ROBOT_DESYNC = "robot-desync"  # `abort_reason` of a game stopped once a robot's copy of it went wrong
 ABORT_REASONS = ("turn-cap", ROBOT_DESYNC)
 COUNTERS = ("our_offers", "our_offers_accepted", "offers_to_us", "offers_to_us_accepted", "unrepresentable",
-            "counters_rejected", "late", "robot_offers", "robot_offers_over_caps")
+            "counters_rejected", "late", "beaten", "robot_offers", "robot_offers_over_caps")
 RECORD_KEYS = ("seed", "candidate_seat", "winner", "vp", "turns", "rounds", "aborted", "abort_reason", "robot_desync",
                "last_build_turn", "fallbacks", "fallback_reasons", "belief_resets", *COUNTERS, "bank_limit_hits", "arm")
 BUILD_STEPS = frozenset({"build", "road_building", "buy"})  # a piece built (setup aside) or a card bought
@@ -6405,19 +6405,20 @@ git -c user.email=sean.may101@gmail.com commit -m "cli: arena --baseline jsettle
 
 **Files:**
 - Create: `docs/bot/results-jsettlers.md`
-- Run outputs (not committed; `runs/` is ignored): `runs/jsettlers/diff-gate.{jsonl,log}`, `runs/jsettlers/smoke.{jsonl,log}`, `runs/jsettlers/b.log`, `runs/jsettlers/nets/{B.bin,opening.bin,opening.bin.json}`, `runs/jsettlers/{native,aligned,no-trades,native-boards}.{jsonl,log}`, `runs/jsettlers/tables.md`, `runs/jsettlers/logs/` (the JVM logs)
+- Uses: `runs/jsettlers/idle.sh` (committed by the final fix wave, force-added since `runs/` is ignored): the machine guard of preflight C5.
+- Run outputs (not committed; `runs/` is ignored): `runs/jsettlers/diff-gate.{jsonl,log}`, `runs/jsettlers/smoke.{jsonl,log}`, `runs/jsettlers/b.log`, `runs/jsettlers/nets/{B.bin,opening.bin,opening.bin.json}`, `runs/jsettlers/{native,aligned,no-trades,native-boards}.{jsonl,log}`, `runs/jsettlers/tables.md`, `runs/jsettlers/logs/{before,native,aligned,no-trades,native-boards}/` (the JVM logs, moved per arm), and a failed run's `<out>.partial` (the games it finished, for triage only)
 
 **Interfaces:**
-- Consumes: `alphasettler jsettlers-diff` (Task 5), `alphasettler arena --baseline jsettlers:smart` (Task 8), the record keys of Task 6, the results files `docs/bot/results-3d3.md` and (if present) `docs/bot/results-3d4.md` and the nets they name, the Catanatron line in `runs/vs-catanatron/gen034-1000to-vs-alphabeta-trades.log`.
+- Consumes: `alphasettler jsettlers-diff` (Task 5), `alphasettler arena --baseline jsettlers:smart` (Task 8), the record keys of Task 6 (with the final fix wave's `forced_end_turns` and `board`), `oracle.jsettlers.arena.kept` (the records a summary counts, the CLI's and Step 7's alike), the results files `docs/bot/results-3d3.md` and (if present) `docs/bot/results-3d4.md` and the nets they name, the Catanatron line in `runs/vs-catanatron/gen034-1000to-vs-alphabeta-trades.log`.
 - Produces: the run outputs above and `docs/bot/results-jsettlers.md`.
 
-Every step but Step 8 is run by the controller in the background. Each step starts with `pgrep -fl 'arm.sh' || echo idle` and waits (polling every 5 minutes) until it prints `idle`. If a measurement step fails, record the failure with its numbers in the results; never rerun a measurement on the same seeds after changing anything. The gate (Step 2) is a check of the translation, not a measurement: after a fix it is rerun on its own seeds.
+Every step but Step 8 is run by the controller in the background. Each step starts with `bash runs/jsettlers/idle.sh` and waits (polling every 5 minutes) until it prints `idle` and exits 0 (preflight C5). The guard requires an idle machine: no other `arm.sh`, `.venv/bin/alphasettler`, `cargo`, `rustc`, `maturin`, `pytest`, `net_speed` or `oracle.play` process (the user's interactive game is load too); AC power (`pmset -g batt` says `AC Power`); and the lid open (`ioreg -r -k AppleClamshellState` shows `"AppleClamshellState" = No`; a clamshell sleep voided 3d-4's arm F). Unlike every earlier measurement these arms are wall-clock sensitive: an answer from 4.5 s is a rejection (`late`), robots wait 5 s for answers, a stalled turn is force-ended at 60 s, and 8 workers each run a JVM beside `net:B@1000` on a 10-core machine, so contention moves the native arm's win rate through `late`. Hence the native-arm condition: in the native arm `late` is at most 5% of `offers_to_us` (both on its `trades:` line); otherwise record the breach (both counts) in the results and rerun the native arm with `--threads 4` on the next fresh range (Step 5). If a measurement step fails, record the failure with its numbers in the results; never rerun a measurement on the same seeds after changing anything. The gate (Step 2) is a check of the translation, not a measurement: after a fix it is rerun on its own seeds.
 
 - [ ] **Step 1: Build at Task 8's commit (controller runs this)**
 
 ```bash
 git log -1 --format=%s
-pgrep -fl 'arm.sh' || echo idle
+bash runs/jsettlers/idle.sh
 PATH=$HOME/.cargo/bin:$PATH cargo build --release -p settler-bots
 bash scripts/fetch-jsettlers.sh && bash jsettlers/build.sh
 test ! -e runs/jsettlers/native.jsonl && mkdir -p runs/jsettlers/nets
@@ -6435,10 +6436,11 @@ Pass (done criterion 2): exit 0 and the first line ends `0 mismatches, N stopped
 - [ ] **Step 3: The smoke run, 2 seeds with `ismcts@20+t` (controller runs this)**
 
 ```bash
-.venv/bin/alphasettler arena --candidate ismcts@20+t --baseline jsettlers:smart --trades --seeds 2 \
-  --seed-start 9100000000 --threads 4 --out runs/jsettlers/smoke.jsonl 2>&1 | tee runs/jsettlers/smoke.log
+set -o pipefail
+bash runs/jsettlers/idle.sh && .venv/bin/alphasettler arena --candidate ismcts@20+t --baseline jsettlers:smart --trades \
+  --seeds 2 --seed-start 9100000000 --threads 4 --out runs/jsettlers/smoke.jsonl 2>&1 | tee runs/jsettlers/smoke.log
 ```
-Pass (spec Section 7): exit 0, `belief resets: 0`, eight records, and the `fallbacks:`, `trades:` and `bank limit hits:` lines present. A belief reset or a stalled game goes back to an implementer with the JVM log the error names.
+Pass (spec Section 7): exit 0, `belief resets: 0`, eight records, and the `fallbacks:`, `forced ends of our turn:`, `trades:` and `bank limit hits:` lines present. A guard that prints `busy`, `on battery` or `lid closed` is not a failure: wait and start the step again. A belief reset or a stalled game goes back to an implementer with the JVM log the error names.
 
 - [ ] **Step 4: Decide B (controller runs this)**
 
@@ -6468,63 +6470,125 @@ Pass: `b.log` names the results file, B and the opening model with their sha256;
 
 - [ ] **Step 5: The three arms, 100 seeds each from 8,000,000,000 (controller runs this)**
 
-Run one after another (each uses 8 workers, one JVM each), in this order:
+Run one after another (each uses 8 workers, one JVM each), in this order, the guard before each (an arm runs for
+hours; the machine must still be idle when the next starts). Each arm's JVM logs are moved to their own directory once
+it ends (the CLI writes them loose under `runs/jsettlers/logs/`; Step 7 greps them per arm):
 ```bash
-.venv/bin/alphasettler arena --candidate net:B@1000+t+o --baseline jsettlers:smart --trades --seeds 100 \
-  --seed-start 8000000000 --threads 8 --nets-dir runs/jsettlers/nets --out runs/jsettlers/native.jsonl \
-  2>&1 | tee runs/jsettlers/native.log
-.venv/bin/alphasettler arena --candidate net:B@1000+t+o --baseline jsettlers:smart --trades --aligned --seeds 100 \
-  --seed-start 8000000000 --threads 8 --nets-dir runs/jsettlers/nets --out runs/jsettlers/aligned.jsonl \
-  2>&1 | tee runs/jsettlers/aligned.log
-.venv/bin/alphasettler arena --candidate net:B@1000+o --baseline jsettlers:smart --seeds 100 \
-  --seed-start 8000000000 --threads 8 --nets-dir runs/jsettlers/nets --out runs/jsettlers/no-trades.jsonl \
-  2>&1 | tee runs/jsettlers/no-trades.log
+set -o pipefail
+L=runs/jsettlers/logs
+mkdir -p $L/before && find $L -maxdepth 1 -name '*.log' -exec mv {} $L/before/ \;
+bash runs/jsettlers/idle.sh && .venv/bin/alphasettler arena --candidate net:B@1000+t+o --baseline jsettlers:smart \
+  --trades --seeds 100 --seed-start 8000000000 --threads 8 --nets-dir runs/jsettlers/nets \
+  --out runs/jsettlers/native.jsonl 2>&1 | tee runs/jsettlers/native.log
+mkdir $L/native && find $L -maxdepth 1 -name '*.log' -exec mv {} $L/native/ \;
+grep '^trades:' runs/jsettlers/native.log   # the native-arm condition, checked before the next arm starts
+bash runs/jsettlers/idle.sh && .venv/bin/alphasettler arena --candidate net:B@1000+t+o --baseline jsettlers:smart \
+  --trades --aligned --seeds 100 --seed-start 8000000000 --threads 8 --nets-dir runs/jsettlers/nets \
+  --out runs/jsettlers/aligned.jsonl 2>&1 | tee runs/jsettlers/aligned.log
+mkdir $L/aligned && find $L -maxdepth 1 -name '*.log' -exec mv {} $L/aligned/ \;
+bash runs/jsettlers/idle.sh && .venv/bin/alphasettler arena --candidate net:B@1000+o --baseline jsettlers:smart \
+  --seeds 100 --seed-start 8000000000 --threads 8 --nets-dir runs/jsettlers/nets \
+  --out runs/jsettlers/no-trades.jsonl 2>&1 | tee runs/jsettlers/no-trades.log
+mkdir $L/no-trades && find $L -maxdepth 1 -name '*.log' -exec mv {} $L/no-trades/ \;
 ```
-Pass for each: exit 0, 400 records, a summary line (win rate, CI, z vs 0.25, mean VP, mean turns), `belief resets: 0`. A nonzero belief-reset count is recorded in the results, not hidden. A run that fails (an error naming a JVM log) writes no records (they are written when the match ends), only its empty output file: record the error, remove that file, and rerun the arm whole on the same seeds if no code changed, or, after an implementer's fix, on the next fresh range (8,000,001,000), saying so in the results.
+Pass for each: exit 0, 400 records, a summary line (win rate, CI, z vs 0.25, mean VP, mean turns), its `dropped:` line,
+`belief resets: 0`. A nonzero belief-reset count is recorded in the results, not hidden. The native arm passes only if
+also its `late` is at most 5% of its `offers_to_us` (its `trades:` line, over the summarised games). Otherwise record
+the breach (both counts and the arm's summary line) in the results, keep `native.jsonl` as `native-8-threads.jsonl`
+(not a result), and rerun the native arm with `--threads 4` on the next fresh range (`--seed-start 8000001000`), saying
+so in the results; the aligned and no-trades arms then also run with `--threads 4` on that range, so the three arms
+stay paired, and Step 7 reads the rerun's files. A rerun that breaches again is reported as it stands, both breaches
+named.
+
+A run that fails stops at the first worker's error or death (exit 3; the error names the worker and, for a JVM
+failure, the JVM's log): its output file is empty and `<out>.partial` holds the games finished before the failure
+(triage only, never a result). Record the error and the partial file's game count, remove the output file, move the
+partial file aside (`mv runs/jsettlers/native.jsonl.partial runs/jsettlers/native-failed-1.jsonl`; the CLI refuses to
+start while either file exists) and the arm's loose JVM logs to `runs/jsettlers/logs/<arm>-failed-1/`, then rerun the
+arm whole on the same seeds if no code changed, or, after an implementer's fix, on the next fresh range
+(8,000,001,000; all three arms move with it), saying so in the results.
 
 - [ ] **Step 6: The native-boards check, 20 seeds (controller runs this)**
 
 ```bash
-.venv/bin/alphasettler arena --candidate net:B@1000+t+o --baseline jsettlers:smart --trades --native-boards --seeds 20 \
-  --seed-start 8000000000 --threads 8 --nets-dir runs/jsettlers/nets --out runs/jsettlers/native-boards.jsonl \
-  2>&1 | tee runs/jsettlers/native-boards.log
+set -o pipefail
+L=runs/jsettlers/logs
+bash runs/jsettlers/idle.sh && .venv/bin/alphasettler arena --candidate net:B@1000+t+o --baseline jsettlers:smart \
+  --trades --native-boards --seeds 20 --seed-start 8000000000 --threads 8 --nets-dir runs/jsettlers/nets \
+  --out runs/jsettlers/native-boards.jsonl 2>&1 | tee runs/jsettlers/native-boards.log
+mkdir $L/native-boards && find $L -maxdepth 1 -name '*.log' -exec mv {} $L/native-boards/ \;
 ```
-Pass: exit 0, 80 records, `belief resets: 0`. Its boards are JSettlers' own (clump-breaking on), so it shares the dice and deck streams with the native arm but not the boards: it is a check of the board ruling, not a paired comparison.
+Pass: exit 0, 80 records, `belief resets: 0`, every record's `board` non-null. It uses the native arm's thread count and seed range (after a native-arm breach in Step 5, `--threads 4 --seed-start 8000001000`). Its boards are JSettlers' own (clump-breaking on, unseeded), so it shares the dice and deck streams with the native arm but not the boards, and the rotations of a seed do not share a board either (each record names its board): it is a check of the board ruling, not a paired comparison. Native seed 48's setup mismatch (ledger) is triaged here from its record's board if its range holds seed 48. A failed run is handled as in Step 5.
 
 - [ ] **Step 7: The tables (controller runs this)**
 
+Every count is over the records the CLI summarised, `oracle.jsettlers.arena.kept(records)` (a seed with a
+`robot-desync` game is left out whole; its seeds and games are the `dropped` column, as on the CLI's `dropped:` line).
+Each arm has a second row that also leaves out every seed with a turn-cap game (the stock Longest-Road stall,
+stall-debug.md).
 ```bash
 .venv/bin/python3 - <<'EOF' | tee runs/jsettlers/tables.md
 import json
 from collections import Counter
 from alphasettler.stats import summarize
-from oracle.jsettlers.arena import COUNTERS
-print("| arm | games | win rate [95% CI] | z vs 0.25 | mean VP | mean turns | aborted | fallbacks | belief resets |")
-print("|---|---|---|---|---|---|---|---|---|")
-rows = {}
-for arm in ("native", "aligned", "no-trades", "native-boards"):
-    rs = [json.loads(l) for l in open(f"runs/jsettlers/{arm}.jsonl")]
-    rows[arm] = rs
+from oracle.jsettlers.arena import COUNTERS, kept
+
+ARMS = ("native", "aligned", "no-trades", "native-boards")
+
+
+def row(label, rs, dropped_seeds, played):
+    drop = f"{dropped_seeds} seeds ({played - len(rs)} games)"
+    if not rs:
+        print(f"| {label} | 0 | {drop} | no seed left |  |  |  |  |  |  |  |")
+        return
     s = summarize(rs)
-    print(f"| {arm} | {s.games} | {s.win_rate:.3f} [{s.ci_low:.3f}, {s.ci_high:.3f}] | {s.z_vs_null:.2f} | "
-          f"{s.mean_vp:.2f} | {s.mean_turns:.1f} | {sum(r['aborted'] for r in rs)} | {sum(r['fallbacks'] for r in rs)} | "
-          f"{sum(r['belief_resets'] for r in rs)} |")
+    print(f"| {label} | {s.games} | {drop} | {s.win_rate:.3f} [{s.ci_low:.3f}, {s.ci_high:.3f}] | {s.z_vs_null:.2f} | "
+          f"{s.mean_vp:.2f} | {s.mean_turns:.1f} | {sum(r['abort_reason'] == 'turn-cap' for r in rs)} | "
+          f"{sum(r['fallbacks'] for r in rs)} | {sum(r['belief_resets'] for r in rs)} | "
+          f"{sum(r['forced_end_turns'] for r in rs)} |")
+
+
+print("| arm | games | dropped | win rate [95% CI] | z vs 0.25 | mean VP | mean turns | turn-cap games | fallbacks "
+      "| belief resets | forced ends of our turn |")
+print("|---|---|---|---|---|---|---|---|---|---|---|")
+rows = {}
+for arm in ARMS:
+    rs = [json.loads(l) for l in open(f"runs/jsettlers/{arm}.jsonl")]
+    ks, desynced = kept(rs)
+    rows[arm] = ks
+    row(arm, ks, len(desynced), len(rs))
+    capped = {r["seed"] for r in ks if r["abort_reason"] == "turn-cap"}
+    row(f"{arm}, without turn-cap seeds", [r for r in ks if r["seed"] not in capped], len(desynced) + len(capped),
+        len(rs))
 print()
 print("| arm | " + " | ".join(COUNTERS) + " | bank_limit_hits |")
 print("|---|" + "---|" * (len(COUNTERS) + 1))
-for arm, rs in rows.items():
-    print(f"| {arm} | " + " | ".join(str(sum(r[k] for r in rs)) for k in COUNTERS)
-          + f" | {sum(r['bank_limit_hits'] for r in rs)} |")
+for arm, ks in rows.items():
+    print(f"| {arm} | " + " | ".join(str(sum(r[k] for r in ks)) for k in COUNTERS)
+          + f" | {sum(r['bank_limit_hits'] for r in ks)} |")
 print()
-for arm, rs in rows.items():
+for arm, ks in rows.items():
     reasons = Counter()
-    for r in rs:
+    for r in ks:
         reasons.update(r["fallback_reasons"])
     print(f"- {arm} fallbacks by reason: {dict(sorted(reasons.items())) or 'none'}")
+for arm, ks in rows.items():
+    capped = [r for r in ks if r["abort_reason"] == "turn-cap"]
+    gaps = [r["turns"] - max((t for t in r["last_build_turn"] if t is not None), default=0) for r in capped]
+    stall = f"{sum(gaps) / len(gaps):.1f}" if gaps else "n/a"
+    late, offers = sum(r["late"] for r in ks), sum(r["offers_to_us"] for r in ks)
+    print(f"- {arm}: {len(capped)} turn-cap games (mean turns since the last build {stall}); late {late} of "
+          f"{offers} offers to us ({100 * late / offers if offers else 0:.1f}%), beaten {sum(r['beaten'] for r in ks)}")
 EOF
+for arm in native aligned no-trades native-boards; do
+  echo "- $arm JVM logs: $(cat runs/jsettlers/logs/$arm/*.log | grep -c 'For robot robot bridge: force') forced ends of the bridge's turn, $(cat runs/jsettlers/logs/$arm/*.log | grep -c 'caught an exception') robot brain exceptions (any seat)"
+done | tee -a runs/jsettlers/tables.md
 grep -h "win rate" runs/vs-catanatron/gen034-1000to-vs-alphabeta-trades.log
 ```
-Pass: four rows in each table, and the Catanatron line `net:gen-034@1000+t+o vs catanatron:alphabeta: win rate 0.713 [0.665, 0.760] ...`.
+Pass: eight rows in the first table (each arm, then the same arm without its turn-cap seeds), four in the second, four
+fallback lines, four stall lines, four JVM-log lines, and the Catanatron line
+`net:gen-034@1000+t+o vs catanatron:alphabeta: win rate 0.713 [0.665, 0.760] ...`. Each arm's `games` and `dropped`
+agree with its CLI `dropped:` line (the same `kept`). After a native-arm breach (Step 5), the files read are the rerun's.
 
 - [ ] **Step 8: Write `docs/bot/results-jsettlers.md`**
 
@@ -6554,11 +6618,15 @@ Triaged in the gate: <each mismatch found and its fix or allowlist entry, one li
 
 ## The smoke run
 
-<the summary, fallbacks, belief resets, trades and bank-limit lines of runs/jsettlers/smoke.log>
+<the summary, dropped, fallbacks, belief resets, forced ends of our turn, trades and bank-limit lines of runs/jsettlers/smoke.log>
 
 ## Against three smart robots (done criteria 1 and 3)
 
 <the first table of runs/jsettlers/tables.md>
+
+<the turn-cap and late lines and the JVM-log lines of runs/jsettlers/tables.md>
+
+The native-arm condition (`late` at most 5% of `offers_to_us`): <met, with both counts; or the breach and the rerun of Step 5>.
 
 Beside the Catanatron line: `net:gen-034@1000+t+o` against three Catanatron AlphaBeta with trades, 0.713
 [0.665, 0.760] over 100 seeds (`runs/vs-catanatron/`, z vs 0.25 = 18.91, mean VP 9.05, mean turns 74.1).
@@ -6588,12 +6656,34 @@ Beside the Catanatron line: `net:gen-034@1000+t+o` against three Catanatron Alph
 - Our offers go to the opponents whose lone acceptance our bot would confirm; with none the offer is made and declined in our engine only, and the bot decides again; `our_offers` counts both.
 - Robot offers to us while we are on turn are rejected unasked (`counters_rejected`); outside our trading game rejected unasked (`unrepresentable`); answered at the offerer's Main position with its earlier offers clamped to 1; 4.5 s or later sent as a rejection (`late`); an acceptance the server refused once the offer was gone is `late` (withdrawn) or `beaten` (another player's trade executed first).
 - The bridge's stock negotiator never offers for our seat and never counter-offers; a fallback answer is the stock brain's.
-- Fallbacks are counted by reason: position, declined, engine, choice, preroll-card, turn-cap, java-timeout, victim.
+- Fallbacks are counted by reason: position, declined, engine, choice, preroll-card, turn-cap, java-timeout, victim, forced-discard (a discard of ours the server forced, before our reply or with none).
+- A turn of ours the server force-ended (after 600 s, e.g. an exception in the bridge brain, which `SOCRobotBrain.run` survives without a fallback) is counted in `forced_end_turns`; the JVM logs are grepped per arm for the same and for brain exceptions.
 - Built-in robots' forced end of turn is raised from 8 s to 60 s (so our thinking during a robot's turn never forces it); our turns have 600 s.
-- A game at our 1000-turn cap is aborted: no winner, `aborted: true`.
-- The aligned arm's robots send only one-card-a-side offers, to every opponent, at most two a turn, no counters; an offer that does not fit ends their offering for the turn.
+- A game at our 1000-turn cap is aborted: no winner, `aborted: true`. Turn-cap games stay in as no-winner losses (as in the Catanatron arena); every table also has a row without each seed that has one (the stock Longest-Road stall: nobody holds Longest Road on a robot's copy of the game, so a robot at 8-9 VP stops building), with the cap count and the mean turns since the last build.
+- A setup settlement the server cancelled by a forced end leaves a stock robot on a board it does not have (`robot-desync`): the game is aborted at once and its whole seed (all four rotations) is left out of every summary and table (`oracle.jsettlers.arena.kept`), the dropped seeds and games counted per arm; the arms are then not exactly paired.
+- A stale acceptance of ours that executes a later offer from the same robot (`SOCAcceptOffer` names only the offerer) is not counted: the differential replay is robots-only and does not see it.
+- The native-boards check's boards are JSettlers' own and unseeded: each record names its board (`board`), and the check is unpaired.
+- The arms start only on an idle machine on AC power with the lid open (`runs/jsettlers/idle.sh`); the native arm is valid only with `late` at most 5% of `offers_to_us`, else it is rerun with 4 workers on the next fresh range.
+- One worker's error or death stops the whole arm at once (exit 3); the games it finished are kept apart in the output's `.partial` file, never used as a result.
+- The aligned arm's robots send only one-card-a-side offers, to every opponent, at most two a turn, no counters; an offer that does not fit stops that robot's offering until the stock brain clears `doneTrading` (a new turn, or a declined request mid-turn), within the same caps.
 - B is chosen by an explicit table from the latest results file; the candidate stays `net:B@1000+t+o`.
 - Fresh seeds: arms from 8,000,000,000, the native-boards check on the first 20 of them, the gate from 9,000,000,000, the smoke run from 9,100,000,000.
+
+## Caveats
+
+- Our bot is shown the resources of every discard; JSettlers shows opponents only the count: a small information edge for our bot.
+- The stock Longest-Road stall: the win rate is given with and without the seeds with a turn-capped game, beside the cap count and the mean turns since the last build.
+- Desync seeds are dropped whole (count per arm above), so the arms are not exactly paired.
+- The native-boards check is unpaired (JSettlers' own boards are unseeded).
+- Common random numbers cover the board, dice, deck, steals and first player only; the robots' own randomness and thread timing are free.
+- The native arm is biased by the robots' offers our trading game cannot hold (`unrepresentable`) and by the counter-offers rejected unasked (`counters_rejected`); the aligned arm is the one comparable to the Catanatron line.
+- Our offers go only to the robots that hold the card and whose acceptance our bot would confirm; the first acceptor's trade stands.
+- A development card other than a knight before the roll falls back to the stock brain (`preroll-card`).
+- A stale acceptance of ours that executes a later offer of the same robot is not counted.
+- The gate checks the translation of robots-only games, not the bridge's action mapping; the fallback counters stand in for that.
+- Answer timing: `late` and `beaten` are reported per arm; the state machine's load (8 JVMs beside the bot) moves them.
+- The JVM-log grep counts (forced ends of the bridge's turn, robot brain exceptions) are reported per arm.
+- The bank is unlimited in JSettlers; `bank_limit_hits` is reported per arm.
 
 ## Reading
 
@@ -6644,7 +6734,7 @@ git -c user.email=sean.may101@gmail.com commit -m "docs: JSettlers2 results, thr
 | §5 answer time: late answers counted (`late`) | 6 (`LATE`, `test_late_answers_are_sent_as_rejections_and_counted`) |
 | §5 robot-robot trades reach our bot as trade events with real bundles | 4 (`_offer`, `_trade`, `_reject`, `_clear`) |
 | §5 rulings: native arm the headline; aligned arm's capped negotiator; our bot answers only one-card offers | 7 (`CappedBrain`), 9; 6 (`unrepresentable`) |
-| §5 records: our_offers, our_offers_accepted, offers_to_us, offers_to_us_accepted, unrepresentable, counters_rejected, late, bank_limit_hits, fallbacks, belief_resets | 6 (`RECORD_KEYS`, `test_a_no_trades_bridge_game_records_every_counter`) |
+| §5 records: our_offers, our_offers_accepted, offers_to_us, offers_to_us_accepted, unrepresentable, counters_rejected, late, bank_limit_hits, fallbacks, belief_resets (and, by ruling, beaten) | 6 (`RECORD_KEYS`, `test_a_no_trades_bridge_game_records_every_counter`), 7 (`beaten`) |
 | §6 out of scope: fast robots, STAC, 5-6 players, sea boards, two-card offers by our bot, network play, human play | `BASELINES = ("smart",)`; `PL` 4; injected classic boards; `max_trade_cards` 1; string port only |
 | §7 Python: tables are bijections checked against a probe; snapshot round trips; event translation for every classic-board sequence; trade counters on scripted offers | 1 (`test_jsettlers_tables.py`), 4 (`test_jsettlers_translate.py`, `test_jsettlers_events.py`), 6 (`test_jsettlers_seat.py`) |
 | §7 Rust: `bank_limit` off lets production and trades exceed 19; with it on every test and digest unchanged | 2 (`engine/tests/bank_limit.rs`, the pins of Step 1) |

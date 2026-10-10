@@ -462,3 +462,26 @@ def test_each_seats_last_build_or_purchase_turn_is_read_from_the_stream():
     s.send("all", f"SOCPutPiece:game=x|playerNumber={s.js(0)}|pieceType=0|coord={js_edge:x}", changed=True)
     seat.observe(s.flush())
     assert seat.last_build == [9, 5, None, None]
+
+
+def forced_end_of(s, seat_js, nxt_js):
+    """`seat_js` asks to build and never completes it; the server ends its turn (SOCForceEndTurnThread)."""
+    s.raw["current"], s.raw["state"] = seat_js, T.PLAY1
+    s.send("all", "SOCGameState:game=x|state=20", changed=True)
+    s.send(f"f{seat_js}", "SOCBuildRequest:game=x|pieceType=0")
+    s.raw["current"], s.raw["state"] = nxt_js, T.ROLL_OR_CARD
+    s.send("all", f"SOCTurn:game=x|playerNumber={nxt_js}|gameState=15", changed=True)
+    s.send("all", f"SOCRollDicePrompt:game=x|playerNumber={nxt_js}")
+
+
+def test_forced_ends_of_our_own_turn_are_counted_and_a_robots_are_not():
+    # Our bridge brain's exception is survived by SOCRobotBrain.run and our turn is force-ended after 600 s: no
+    # fallback is sent, so the stream is where it shows.
+    s, seat, _ = seat_at(current=0)
+    forced_end_of(s, s.js(0), s.js(1))
+    seat.observe(s.flush())
+    s.steps = []
+    assert seat.forced_end_turns == 1 and sum(seat.fallbacks.values()) == 0
+    forced_end_of(s, s.js(1), s.js(2))
+    seat.observe(s.flush())
+    assert seat.forced_end_turns == 1
