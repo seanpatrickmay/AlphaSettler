@@ -59,6 +59,8 @@ public final class ArenaMain {
             names.add(name);
             start(new SOCRobotClient(sci, name, "pw"), srv);
         }
+        start(new BridgeClient(sci, pipe), srv);
+        names.add(ArenaServer.BRIDGE);
         long deadline = System.currentTimeMillis() + 60_000;
         while (!srv.hasRobots(names)) {
             if (System.currentTimeMillis() > deadline) throw new IllegalStateException("robots did not connect: " + names);
