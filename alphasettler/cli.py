@@ -8,7 +8,10 @@ a fixed pool of generations, and `fast-loop` runs small generations trained that
 (the train extra) fits the opening model of spec 3d-1 on recorded games' setups. `opening-diagnose` prints spec 3d-1's
 opening diagnosis (D1-D3 and the verdict on record directories, or D4 for a bot). `jsettlers-diff` replays
 robots-only JSettlers2 games through our engine (needs the harness: scripts/fetch-jsettlers.sh, jsettlers/build.sh;
-exit 0 with no mismatch, 1 with any, 2 when the harness is missing, 3 when it fails)."""
+exit 0 with no mismatch, 1 with any, 2 when the harness is missing, 3 when it fails). `arena --baseline jsettlers:smart`
+plays the candidate as one seat against three JSettlers2 smart robots in JSettlers' own server (`--trades`, `--aligned`,
+`--native-boards`; needs the harness). Its summary leaves out the seeds with a game stopped for a stock robot's desync
+in setup (reported on their own line; the JSONL keeps every game)."""
 
 from __future__ import annotations
 
@@ -60,6 +63,9 @@ def _parser() -> argparse.ArgumentParser:
     rules.add_argument("--trades", action="store_true",
                        help="the trading game: 2 domestic offers a turn, 1 card a side (+t bots offer)")
     a.add_argument("--nets-dir", default=DEFAULT_NETS_DIR, help="where net:NAME bots find NAME.bin")
+    a.add_argument("--aligned", action="store_true",
+                   help="jsettlers: the robots' offers capped to our trading game (with --trades)")
+    a.add_argument("--native-boards", action="store_true", help="jsettlers: JSettlers' own boards instead of ours")
 
     sp = sub.add_parser("sprt", help="candidate vs three baselines in batches until a sequential test decides")
     sp.add_argument("--candidate", required=True)
@@ -771,6 +777,64 @@ def _catanatron_arena(args, out: Path) -> int:
     return 0
 
 
+def _jsettlers_arena(args, out: Path) -> int:
+    """Our candidate as one seat against three JSettlers2 robots in JSettlers' own server. `--trades` plays
+    the trading game with JSettlers' player trading on (`--aligned` caps the robots' offers to it);
+    otherwise JSettlers' no-trading option is on and the candidate offers nothing."""
+    why = _jsettlers_missing()
+    if why is not None:
+        print(f"error: the JSettlers harness is not ready: {why}", file=sys.stderr)
+        return 2
+    import oracle.jsettlers.arena as js_arena
+
+    if args.aligned and not args.trades:
+        raise ValueError("--aligned needs --trades")
+    if args.native_boards and not args.trades:
+        raise ValueError("--native-boards needs --trades (it checks the native arm)")
+    baseline = args.baseline.split(":", 1)[1]
+    nets_dir = str(Path(args.nets_dir).resolve())
+    js_arena.check(args.candidate, baseline, args.seeds, args.seed_start, nets_dir)
+    with open_output(out) as f:
+        records = js_arena.run_match(args.candidate, baseline, args.seeds, args.seed_start, args.threads, nets_dir,
+                                     trades=args.trades, aligned=args.aligned, native_boards=args.native_boards)
+        _write_records(f, args.candidate, args.baseline, records)
+    code = _print_jsettlers_summary(args.candidate, args.baseline, records, js_arena.COUNTERS)
+    print(f"wrote {out}")
+    return code
+
+
+def _print_jsettlers_summary(candidate: str, baseline: str, records: list[dict], counters) -> int:
+    """The jsettlers arena's report. A game stopped for a robot desync in setup is a stock robot bug, not a result:
+    its whole seed (all four seat rotations, which the per-seed statistics need) is left out of the win rate and the
+    count of such games printed on its own line. Games that hit the turn cap stay in as no-winner losses, as in the
+    Catanatron arena. Returns 1 if no seed is left to summarize, else 0."""
+    desynced = {r["seed"] for r in records if r["abort_reason"] == "robot-desync"}
+    kept = [r for r in records if r["seed"] not in desynced]
+    code = 0
+    if kept:
+        print(format_summary(f"{candidate} vs {baseline} ({records[0]['arm']})", summarize(kept)))
+    else:
+        print(f"{candidate} vs {baseline} ({records[0]['arm']}): no seed left to summarize")
+        code = 1
+    print(f"dropped (robot desync in setup): {sum(r['abort_reason'] == 'robot-desync' for r in records)} games, "
+          f"{len(desynced)} seeds left out of the summary")
+    reasons: dict = {}
+    for r in records:
+        for k, v in r["fallback_reasons"].items():
+            reasons[k] = reasons.get(k, 0) + v
+    print(f"fallbacks: {sum(r['fallbacks'] for r in records)} {dict(sorted(reasons.items()))}")
+    print(_resets_line(records))
+    print("trades: " + ", ".join(f"{k} {sum(r[k] for r in records)}" for k in counters))
+    capped = [r for r in records if r["abort_reason"] == "turn-cap"]
+    # The stock Longest-Road stall: nobody builds for the last stretch of a game that then runs to the cap. A game's
+    # last build is the latest of any seat's (None = never built); the gap is its turns minus that.
+    gaps = [r["turns"] - max((t for t in r["last_build_turn"] if t is not None), default=0) for r in capped]
+    stall = f"{sum(gaps) / len(gaps):.1f}" if gaps else "n/a"
+    print(f"bank limit hits: {sum(r['bank_limit_hits'] for r in records)}, "
+          f"aborted at the turn cap: {len(capped)} (mean turns since the last build: {stall})")
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if getattr(args, "trades", False):
@@ -783,6 +847,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "arena":
             name = args.baseline.replace(":", "-")
             out = Path(args.out or f"runs/{_stamp()}-{args.candidate}-vs-{name}.jsonl")
+            if (args.aligned or args.native_boards) and not args.baseline.startswith("jsettlers:"):
+                raise ValueError("--aligned and --native-boards are only with a jsettlers: baseline")
+            if args.baseline.startswith("jsettlers:"):
+                return _jsettlers_arena(args, out)
             if args.baseline.startswith("catanatron:"):
                 return _catanatron_arena(args, out)
             records, summary = run(args.candidate, args.baseline, args.seeds, args.seed_start, args.threads, config, out,
