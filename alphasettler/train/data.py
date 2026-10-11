@@ -208,6 +208,8 @@ class Tensors:
     full: torch.Tensor
     outcome: torch.Tensor
     vp: torch.Tensor
+    q: torch.Tensor
+    has_q: torch.Tensor
 
 
 def to_tensors(batch: dict, device: torch.device) -> Tensors:
@@ -228,4 +230,6 @@ def to_tensors(batch: dict, device: torch.device) -> Tensors:
         full=u8("full", 1).view(n).float(),
         outcome=f32("outcome", SEATS),
         vp=f32("vp", SEATS),
+        q=f32("q", SEATS),
+        has_q=u8("has_q", 1).view(n).float(),
     )

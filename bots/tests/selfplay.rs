@@ -49,6 +49,16 @@ fn every_searched_decision_is_recorded_and_replays() {
 }
 
 #[test]
+fn every_searched_decision_records_its_root_value() {
+    let g = play(3, no_trades(), 10, 0);
+    for d in &g.decisions {
+        let q = d.q.expect("a searched decision records q");
+        assert!((q.iter().sum::<f32>() - 1.0).abs() < 1e-3, "{q:?}");
+        assert!(q.iter().all(|&x| (0.0..=1.0 + 1e-4).contains(&x)));
+    }
+}
+
+#[test]
 fn self_play_does_not_depend_on_thread_count() {
     assert_eq!(
         run(0..4, no_trades(), 10, 0, 1).unwrap(),

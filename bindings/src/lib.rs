@@ -366,6 +366,9 @@ fn game_dict<'py>(
         if let Some(t) = &dec.target {
             e.set_item("target", t.clone())?;
         }
+        if let Some(q) = &dec.q {
+            e.set_item("q", q.to_vec())?;
+        }
         if observations {
             while applied < dec.index as usize {
                 s.apply(g.actions[applied]);

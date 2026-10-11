@@ -16,6 +16,10 @@ pub const VP_TARGET_DEN: f32 = 10.0;
 pub const MAX_SAMPLE: usize = 1 << 16;
 /// How far a recorded `target` may sum from 1.
 pub const TARGET_TOLERANCE: f64 = 1e-4;
+/// How far a recorded `q` may sum from 1.
+pub const Q_TOLERANCE: f64 = 1e-3;
+/// How far outside [0, 1] a recorded `q` entry may lie.
+pub const Q_RANGE_TOLERANCE: f32 = 1e-4;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordedDecision {
@@ -28,6 +32,8 @@ pub struct RecordedDecision {
     /// A Gumbel search's improved policy (spec P2 Section 5), aligned with the legal moves and
     /// summing to 1. When present it is the policy target, whatever the visits.
     pub target: Option<Vec<f32>>,
+    /// The search's root value, absolute seats (targets v2); None in records from before it.
+    pub q: Option<[f32; NUM_PLAYERS]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,6 +67,10 @@ pub struct Batch {
     pub outcome: Vec<f32>,
     /// n × 4, seat-relative: final VP / 10.
     pub vp: Vec<f32>,
+    /// n × 4, seat-relative: the decision's root search value; zeros without one.
+    pub q: Vec<f32>,
+    /// n: 1 if the decision has a root search value.
+    pub has_q: Vec<u8>,
 }
 
 impl Batch {
@@ -94,6 +104,18 @@ impl Batch {
         for r in 0..NUM_PLAYERS {
             self.vp.push(game.vp[abs(r, actor)] as f32 / VP_TARGET_DEN);
         }
+        match d.q {
+            Some(q) => {
+                for r in 0..NUM_PLAYERS {
+                    self.q.push(q[abs(r, actor)]);
+                }
+                self.has_q.push(1);
+            }
+            None => {
+                self.q.extend_from_slice(&[0.0; NUM_PLAYERS]);
+                self.has_q.push(0);
+            }
+        }
         self.n += 1;
     }
 
@@ -106,6 +128,8 @@ impl Batch {
         self.full.extend(other.full);
         self.outcome.extend(other.outcome);
         self.vp.extend(other.vp);
+        self.q.extend(other.q);
+        self.has_q.extend(other.has_q);
     }
 }
 
@@ -156,6 +180,17 @@ fn check_game(g: &RecordedGame, buf: &mut Vec<Action>) -> Result<Vec<u32>, Strin
                 let total: f64 = t.iter().map(|&x| x as f64).sum();
                 if (total - 1.0).abs() > TARGET_TOLERANCE {
                     return Err(format!("move {i}: the target sums to {total}, not 1"));
+                }
+            }
+            if let Some(q) = &d.q {
+                if let Some((j, x)) = q.iter().enumerate().find(|(_, x)| {
+                    !(x.is_finite() && **x >= -Q_RANGE_TOLERANCE && **x <= 1.0 + Q_RANGE_TOLERANCE)
+                }) {
+                    return Err(format!("move {i}: q entry {j} is {x}, not a probability"));
+                }
+                let total: f64 = q.iter().map(|&x| x as f64).sum();
+                if (total - 1.0).abs() > Q_TOLERANCE {
+                    return Err(format!("move {i}: q sums to {total}, not 1"));
                 }
             }
             let visited = d.visits.iter().any(|&v| v > 0);

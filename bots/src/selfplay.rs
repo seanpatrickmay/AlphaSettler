@@ -65,6 +65,8 @@ pub struct Decision {
     /// Gumbel self-play: the search's improved policy, aligned with `legal` and summing to 1
     /// (spec P2 Section 5); `None` otherwise.
     pub target: Option<Vec<f32>>,
+    /// The search's root value (absolute seats, targets v2); None if it did not search.
+    pub q: Option<[f32; NUM_PLAYERS]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -401,6 +403,7 @@ where
                             visits: r.visits,
                             full_search: full,
                             target: r.improved,
+                            q: r.root_q,
                         });
                     }
                     a

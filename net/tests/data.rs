@@ -30,6 +30,7 @@ fn recorded_every(seed: u64, config: GameConfig, every: usize) -> RecordedGame {
                 visits: buf.iter().map(|_| rng.below(4)).collect(),
                 full_search: decisions.len() % 2 == 0,
                 target: None,
+                q: None,
             });
         }
         let a = buf[rng.below(buf.len() as u32) as usize];
@@ -58,6 +59,50 @@ fn drawn() -> GameConfig {
     GameConfig {
         max_turns: 30,
         ..GameConfig::default()
+    }
+}
+
+/// `recorded`, with q on every decision: 0.7 for seat 1 and 0.1 for the others.
+fn with_q(g: &RecordedGame) -> RecordedGame {
+    let mut g = g.clone();
+    for d in &mut g.decisions {
+        d.q = Some([0.1, 0.7, 0.1, 0.1]);
+    }
+    g
+}
+
+#[test]
+fn q_is_written_seat_relative_to_the_actor_and_flagged() {
+    let games = vec![with_q(&recorded(1, decided())), recorded(2, decided())];
+    let set = TrainingSet::new(games.clone()).unwrap();
+    for (game, has) in [(0usize, 1u8), (1, 0)] {
+        for (k, d) in games[game].decisions.iter().enumerate() {
+            let mut b = Batch::default();
+            set.position(game, k, &mut b);
+            assert_eq!(b.has_q, vec![has]);
+            if has == 1 {
+                let r = (1 + NUM_PLAYERS - d.actor as usize) % NUM_PLAYERS; // seat 1 relative to the actor
+                for i in 0..NUM_PLAYERS {
+                    assert_eq!(b.q[i], if i == r { 0.7 } else { 0.1 });
+                }
+            } else {
+                assert_eq!(b.q, vec![0.0; 4]);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_bad_q_is_an_error_naming_the_decision() {
+    for bad in [
+        [0.5, 0.5, 0.5, 0.5],
+        [f32::NAN, 0.5, 0.25, 0.25],
+        [-0.5, 0.5, 0.5, 0.5],
+    ] {
+        let mut g = recorded(1, decided());
+        g.decisions[0].q = Some(bad);
+        let e = TrainingSet::new(vec![g]).unwrap_err();
+        assert!(e.contains("move 0") && e.contains("q"), "{e}");
     }
 }
 

@@ -97,12 +97,20 @@ fn recorded_game(g: &Bound<'_, PyAny>) -> PyResult<RecordedGame> {
             Some(t) if !t.is_none() => Some(t.extract::<Vec<f32>>()?),
             _ => None,
         };
+        let q = match d.get_item("q")? {
+            Some(t) if !t.is_none() => Some(
+                <[f32; NUM_PLAYERS]>::try_from(t.extract::<Vec<f32>>()?)
+                    .map_err(|_| value_error("a decision's q needs 4 entries"))?,
+            ),
+            _ => None,
+        };
         decisions.push(RecordedDecision {
             index: int_arg(&field(d, "index", "decision")?, "decision index")?,
             actor: seat(&field(d, "actor", "decision")?, "decision actor")?,
             visits: int_list(&field(d, "visits", "decision")?, "visits")?,
             full_search: field(d, "full_search", "decision")?.extract()?,
             target,
+            q,
         });
     }
     let vp: Vec<u8> = int_list(&field(g, "vp", "game record")?, "vp")?;
@@ -156,6 +164,8 @@ fn batch_dict<'py>(py: Python<'py>, b: &Batch) -> PyResult<Bound<'py, PyDict>> {
     d.set_item("full", PyBytes::new(py, &b.full))?;
     d.set_item("outcome", PyBytes::new(py, &le_bytes(&b.outcome)))?;
     d.set_item("vp", PyBytes::new(py, &le_bytes(&b.vp)))?;
+    d.set_item("q", PyBytes::new(py, &le_bytes(&b.q)))?;
+    d.set_item("has_q", PyBytes::new(py, &b.has_q))?;
     Ok(d)
 }
 
@@ -179,9 +189,9 @@ fn encode<'py>(
 }
 
 /// Recorded games (dicts with `seed`, `config`, `actions`, `decisions[]` with `index`, `actor`,
-/// `visits`, `full_search` and an optional `target`, `winner` and `vp`), each replayed once and
-/// checked. Build it a record file at a time with `extend`, so the window is never all Python
-/// dicts at once.
+/// `visits`, `full_search` and an optional `target` and `q`, `winner` and `vp`), each replayed
+/// once and checked. Build it a record file at a time with `extend`, so the window is never all
+/// Python dicts at once.
 #[pyclass(name = "TrainingSet", module = "alphasettler._engine")]
 struct PyTrainingSet {
     inner: TrainingSet,
