@@ -457,3 +457,51 @@ fn offers_are_searched_only_when_the_config_allows_them() {
         assert_eq!(answered, offers, "offers {offers}");
     }
 }
+
+#[test]
+fn root_q_is_the_mean_value_of_every_simulation() {
+    let s = city_wins(4);
+    let obs = s.observation(0);
+    let legal = s.legal_actions();
+    let b = Belief::from_observation(&obs, 64, 4);
+    let (r, tree) = search_tree(
+        &obs,
+        &legal,
+        &b,
+        &mut UniformEvaluator,
+        &cfg(200),
+        &mut Rng::new(1),
+    )
+    .unwrap();
+    let q = r.root_q.expect("a search that ran has a root value");
+    let root = &tree.nodes[ROOT as usize];
+    let visits: u32 = root.children.iter().map(|c| c.visits).sum();
+    for p in 0..NUM_PLAYERS {
+        // UniformEvaluator's root evaluation is 1/4 for every seat.
+        let sum: f32 = 0.25 + root.children.iter().map(|c| c.value_sum[p]).sum::<f32>();
+        assert!((q[p] - sum / (1 + visits) as f32).abs() < 1e-5, "seat {p}");
+    }
+    assert!((q.iter().sum::<f32>() - 1.0).abs() < 1e-4);
+    assert!(
+        q[0] > 0.25,
+        "the winning city pulls the actor's value up: {q:?}"
+    );
+}
+
+#[test]
+fn a_decision_returned_without_searching_has_no_root_q() {
+    let s = after_setup(3, no_trades());
+    let obs = s.observation(0);
+    let legal = s.legal_actions();
+    let b = Belief::from_observation(&obs, 8, 0);
+    let r = search(
+        &obs,
+        &legal,
+        &b,
+        &mut UniformEvaluator,
+        &cfg(500),
+        &mut Rng::new(0),
+    )
+    .unwrap();
+    assert_eq!((r.simulations, r.root_q), (0, None));
+}
