@@ -1,16 +1,20 @@
 """Fast experiments (alphasettler/train/fast.py): the pool, the step batches, the schedule and a
 budgeted run. Needs the `train` extra, like test_train.py."""
 
+import dataclasses
 import json
 import math
+from pathlib import Path
 
 import pytest
 import torch
 
-from alphasettler import Bot
+from alphasettler import Bot, files
+from alphasettler.train import model as model_mod
 from alphasettler.train.data import to_tensors
 from alphasettler.train.fast import (
-    MIN_LR_FRACTION, FastConfig, fast_train, load_pool, lr_at, score_net, step_batch, value_mask,
+    EMA_DECAY, EMA_LR, MIN_LR_FRACTION, FastConfig, fast_train, load_pool, lr_at, score_net, sidecar, step_batch,
+    value_mask,
 )
 
 from test_train import cli, generation
@@ -91,3 +95,147 @@ def test_cli_fast_train_and_score(tmp_path):
     r = cli("fast-score", *map(str, gens), "--nets", str(out), "--device", "cpu")
     assert r.returncode == 0, r.stderr
     assert f"{out}: score" in r.stdout
+
+
+def test_a_targets_v2_run_writes_a_sidecar_that_the_next_run_continues_from(tmp_path):
+    pool = load_pool(tmp_path, two_gens(tmp_path))
+    cfg = dataclasses.replace(TINY, targets=2)
+    first = tmp_path / "a.bin"
+    s = fast_train(pool, first, cfg)
+    side = torch.load(sidecar(first), weights_only=True)
+    assert s["targets"] == 2 and side["bin_sha256"] == files.sha256_file(first)
+    assert side["extras"] and side["raw"] is None and side["optimizer"] is None
+    assert "extras_node" in s["best"]
+    second = tmp_path / "b.bin"
+    fast_train(pool, second, cfg, first)  # loads a.bin.train.pt
+    assert sidecar(second).exists()
+
+
+def test_a_sidecar_that_does_not_match_its_net_is_an_error(tmp_path):
+    pool = load_pool(tmp_path, two_gens(tmp_path))
+    cfg = dataclasses.replace(TINY, targets=2)
+    a, b = tmp_path / "a.bin", tmp_path / "b.bin"
+    fast_train(pool, a, cfg)
+    fast_train(pool, b, dataclasses.replace(cfg, seed=1))
+    sidecar(b).replace(sidecar(a))  # a's sidecar now names b's sha256
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        fast_train(pool, tmp_path / "c.bin", cfg, a)
+
+
+def test_targets_v2_from_a_net_without_a_sidecar_starts_fresh_heads(tmp_path, capsys):
+    pool = load_pool(tmp_path, two_gens(tmp_path))
+    a = tmp_path / "a.bin"
+    fast_train(pool, a, TINY)  # targets 1 writes no sidecar
+    assert not sidecar(a).exists()
+    fast_train(pool, tmp_path / "b.bin", dataclasses.replace(TINY, targets=2), a)
+    assert "training-only heads start fresh" in capsys.readouterr().out
+
+
+def test_targets_must_be_1_or_2():
+    with pytest.raises(ValueError):
+        dataclasses.replace(TINY, targets=3).check()
+
+
+def test_with_ema_the_learning_rate_is_constant_after_a_warmup_only_when_asked():
+    cfg = FastConfig(minutes=1.0, lr=2.5e-4, warmup=10, ema=True)
+    assert lr_at(cfg, 0, 0.0) == pytest.approx(2.5e-5)
+    assert lr_at(cfg, 50, 59.0) == pytest.approx(2.5e-4)
+    assert lr_at(cfg, 0, 0.0, warm=False) == pytest.approx(2.5e-4)
+
+
+def test_the_ema_constants_are_the_specs():
+    assert (EMA_DECAY, EMA_LR) == (0.9998, 2.5e-4)
+
+
+def test_without_ema_warm_does_not_change_the_schedule():
+    cfg = FastConfig(minutes=1.0, lr=1e-3, warmup=10)
+    for step, elapsed in ((0, 0.0), (5, 1.0), (50, 30.0)):
+        assert lr_at(cfg, step, elapsed, warm=False) == lr_at(cfg, step, elapsed)
+
+
+def test_an_ema_run_exports_the_average_and_carries_raw_weights_and_adam_on(tmp_path):
+    pool = load_pool(tmp_path, two_gens(tmp_path))
+    cfg = dataclasses.replace(TINY, targets=2, ema=True)
+    a = tmp_path / "a.bin"
+    s = fast_train(pool, a, cfg)
+    assert s["ema"] is True and s["warmup_skipped"] is False and s["config"]["ema"] is True
+    side = torch.load(sidecar(a), weights_only=True)
+    assert side["raw"] and side["optimizer"] and side["extras"]
+    exported = model_mod.load(a).state_dict()
+    assert any(not torch.equal(exported[k], side["raw"][k]) for k in exported), "the export is the average"
+    assert score_net(pool, a, "cpu", 2)["score"] == pytest.approx(s["best"]["score"], abs=1e-5), \
+        "held-out evaluation scores the exported average"
+    b = tmp_path / "b.bin"
+    s = fast_train(pool, b, cfg, a)
+    assert s["warmup_skipped"] is True
+
+
+def test_an_ema_run_continues_the_raw_weights_and_averages_from_the_inits(tmp_path):
+    pool = load_pool(tmp_path, two_gens(tmp_path))
+    a = tmp_path / "a.bin"
+    fast_train(pool, a, dataclasses.replace(TINY, ema=True))
+    raw_a = torch.load(sidecar(a), weights_only=True)["raw"]
+    avg_a = model_mod.load(a).state_dict()
+    b = tmp_path / "b.bin"
+    fast_train(pool, b, dataclasses.replace(TINY, ema=True, lr=1e-12), a)  # Adam moves each weight <= steps * lr
+    raw_b = torch.load(sidecar(b), weights_only=True)["raw"]
+    assert all(torch.allclose(raw_b[k], raw_a[k], atol=1e-6) for k in raw_a), "the raw net continues from a's raw"
+    avg_b = model_mod.load(b).state_dict()
+
+    def distance(x, y):
+        return sum((x[k] - y[k]).pow(2).sum().item() for k in x)
+
+    assert distance(avg_b, avg_a) < distance(avg_b, raw_a), "the average starts from a's exported average"
+
+
+def test_an_ema_run_without_targets_v2_writes_a_sidecar_without_heads(tmp_path, capsys):
+    pool = load_pool(tmp_path, two_gens(tmp_path))
+    a = tmp_path / "a.bin"
+    fast_train(pool, a, dataclasses.replace(TINY, ema=True))
+    side = torch.load(sidecar(a), weights_only=True)
+    assert side["extras"] is None and side["raw"] and side["optimizer"]
+    fast_train(pool, tmp_path / "b.bin", dataclasses.replace(TINY, targets=2), a)
+    out = capsys.readouterr().out
+    assert f"notice: {sidecar(a)} has no training-only heads" in out and "training-only heads start fresh" in out
+    assert "no sidecar for" not in out
+
+
+def test_an_ema_run_from_a_sidecar_without_adam_state_warms_up(tmp_path):
+    pool = load_pool(tmp_path, two_gens(tmp_path))
+    a = tmp_path / "a.bin"
+    fast_train(pool, a, dataclasses.replace(TINY, targets=2))  # raw and optimizer None
+    s = fast_train(pool, tmp_path / "b.bin", dataclasses.replace(TINY, targets=2, ema=True), a)
+    assert s["warmup_skipped"] is False
+
+
+def test_a_run_without_ema_reports_it_and_ignores_raw_weights_and_adam(tmp_path):
+    pool = load_pool(tmp_path, two_gens(tmp_path))
+    a = tmp_path / "a.bin"
+    fast_train(pool, a, dataclasses.replace(TINY, targets=2, ema=True))
+    s = fast_train(pool, tmp_path / "b.bin", dataclasses.replace(TINY, targets=2), a)
+    assert s["ema"] is False and s["warmup_skipped"] is False
+    side = torch.load(sidecar(tmp_path / "b.bin"), weights_only=True)
+    assert side["raw"] is None and side["optimizer"] is None
+
+
+def test_a_sidecar_without_a_sha256_is_an_error(tmp_path):
+    pool = load_pool(tmp_path, two_gens(tmp_path))
+    cfg = dataclasses.replace(TINY, targets=2)
+    a = tmp_path / "a.bin"
+    fast_train(pool, a, cfg)
+    side = torch.load(sidecar(a), weights_only=True)
+    del side["bin_sha256"]
+    torch.save(side, sidecar(a))
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        fast_train(pool, tmp_path / "b.bin", cfg, a)
+
+
+def test_cli_fast_train_with_ema(tmp_path):
+    gens = two_gens(tmp_path)
+    out = tmp_path / "nets" / "f.bin"
+    r = cli("fast-train", *map(str, gens), "--out", str(out), "--minutes", "0.01", "--device", "cpu",
+            "--width", "8", "--rounds", "1", "--policy-batch", "8", "--value-batch", "4", "--threads", "2",
+            "--ema", "--lr", "2.5e-4")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(Path(str(out) + ".json").read_text())["ema"] is True
+    assert torch.load(sidecar(out), weights_only=True)["raw"]

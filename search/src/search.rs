@@ -73,6 +73,10 @@ pub struct SearchResult {
     /// summing to 1, 0 for a move the search does not consider (an offer without `offers`).
     /// `None` for PUCT and for a decision returned without searching.
     pub improved: Option<Vec<f32>>,
+    /// The mean of every simulation's backed-up value at the root, in absolute seats: the root's
+    /// first evaluation plus every root child's value sum, over 1 + their visits (targets v2,
+    /// spec Section 3). `None` when the decision was returned without searching.
+    pub root_q: Option<[f32; NUM_PLAYERS]>,
     /// The chosen compound's steps after `action` (empty for a plain move).
     pub plan: Vec<Action>,
     /// Every root compound move (all its steps) with its visits, in move order; empty when the
@@ -660,6 +664,7 @@ pub fn search_tree<E: Evaluator>(
             simulations: 0,
             nodes: 0,
             improved: None,
+            root_q: None,
             plan,
             compound_visits: root_compounds.iter().map(|c| (c.actions(), 0)).collect(),
         };
@@ -725,6 +730,17 @@ pub fn search_tree<E: Evaluator>(
         visits[i] += v;
         compound_visits.push((c.actions(), v));
     }
+    let root_q = sim.root_value.map(|v| {
+        let mut sum = v;
+        let mut n = 1u32;
+        for c in &root.children {
+            n += c.visits;
+            for p in 0..NUM_PLAYERS {
+                sum[p] += c.value_sum[p];
+            }
+        }
+        sum.map(|x| x / n as f32)
+    });
     let (simulations, nodes) = (sim.done, sim.tree.nodes.len());
     Ok((
         SearchResult {
@@ -733,6 +749,7 @@ pub fn search_tree<E: Evaluator>(
             simulations,
             nodes,
             improved,
+            root_q,
             plan,
             compound_visits,
         },

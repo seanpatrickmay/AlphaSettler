@@ -124,6 +124,78 @@ def test_cli_fast_loop_keeps_the_trading_setting_it_was_set_up_with(tmp_path):
     assert r.returncode == 2 and "without --trades" in r.stderr
 
 
+def test_a_targets_v2_loop_records_the_setting_and_carries_the_sidecar_between_generations(tmp_path, capsys):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    FastLoop.init(root, [seed], tmp_path / "start.bin", first=1, targets_v2=True)
+    loop = FastLoop(root, FastLoopSettings(generations=2, **TINY))
+    assert loop.targets == 2
+    assert loop.run() == 2
+    state = json.loads((root / STATE).read_text())
+    assert state["targets"] == 2
+    for k in (1, 2):
+        assert (root / "nets" / f"{gen_name(k)}.bin.train.pt").exists()
+    out = capsys.readouterr().out
+    first = out[out.index("gen-001: train"):out.index("gen-001: gate")]
+    second = out[out.index("gen-002: train"):out.index("gen-002: gate")]
+    assert "start fresh" in first, "start.bin has no sidecar"
+    assert "start fresh" not in second, "gen-002 continues from gen-001's sidecar"
+
+
+def test_cli_fast_loop_keeps_the_targets_setting_it_was_set_up_with(tmp_path):
+    root, _ = setup(tmp_path)  # set up without --targets-v2
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).targets == 1
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--targets-v2")
+    assert r.returncode == 2 and (f"{root} was set up without --targets-v2, and a loop keeps the setting it was "
+                                  f"set up with") in r.stderr, r.stderr
+
+
+def test_a_loop_set_up_before_targets_v2_reads_as_targets_1(tmp_path):
+    root, _ = setup(tmp_path)
+    state = json.loads((root / STATE).read_text())
+    del state["targets"]
+    (root / STATE).write_text(json.dumps(state))
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).targets == 1
+
+
+def test_an_ema_loop_records_the_setting_and_trains_at_the_constant_rate(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    r = cli("fast-loop", "--dir", str(root), "--generations", "2", "--first", "1", "--targets-v2", "--ema",
+            "--seed-dirs", str(seed), "--start-net", str(tmp_path / "start.bin"), "--games", "2",
+            "--window-games", "3", "--minutes", "0.01", "--gate-seeds", "1", "--gate-simulations", "6",
+            "--device", "cpu", "--threads", "2")
+    assert r.returncode == 0, r.stderr
+    state = json.loads((root / STATE).read_text())
+    assert state["ema"] is True and state["targets"] == 2
+    summaries = [json.loads((root / gen_name(k) / "net.bin.json").read_text()) for k in (1, 2)]
+    for s in summaries:
+        assert s["config"]["lr"] == 2.5e-4 and s["config"]["ema"] is True
+    assert summaries[0]["warmup_skipped"] is False, "start.bin has no Adam state"
+    assert summaries[1]["warmup_skipped"] is True, "gen-002 continues gen-001's Adam"
+    for k in (1, 2):
+        assert (root / "nets" / f"{gen_name(k)}.bin.train.pt").exists()
+
+
+def test_cli_fast_loop_keeps_the_ema_setting_it_was_set_up_with(tmp_path):
+    root, _ = setup(tmp_path)  # set up without --ema
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).ema is False
+    assert json.loads((root / STATE).read_text())["ema"] is False
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--ema")
+    assert r.returncode == 2 and (f"{root} was set up without --ema, and a loop keeps the setting it was "
+                                  f"set up with") in r.stderr, r.stderr
+
+
+def test_a_loop_set_up_before_ema_reads_as_without_it(tmp_path):
+    root, _ = setup(tmp_path)
+    state = json.loads((root / STATE).read_text())
+    del state["ema"]
+    (root / STATE).write_text(json.dumps(state))
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).ema is False
+
+
 @pytest.mark.parametrize("trades", [True, False])
 def test_cli_fast_loop_records_the_trading_setting_of_a_new_loop(tmp_path, trades):
     seed = generation(tmp_path, "seed-gen", seed_start=0)
@@ -551,3 +623,29 @@ def test_a_compound_league_loop_keeps_its_pool_names_plain(tmp_path):
     assert loop.compound is True
     assert loop.league_pool() == {"nets": ["net:league-000@100+t"],
                                   "styles": [f"style:{s}@100+t" for s in LEAGUE_STYLES]}
+
+
+def test_a_targets_v2_generation_trained_without_its_sidecar_is_trained_again_on_resume(tmp_path, monkeypatch,
+                                                                                        capsys):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    FastLoop.init(root, [seed], tmp_path / "start.bin", first=1, targets_v2=True)
+    gate = FastLoop._gate
+
+    def crash(*args):
+        raise KeyboardInterrupt("stopped before the gate")
+
+    monkeypatch.setattr(FastLoop, "_gate", crash)
+    for _ in range(2):  # trained, then resumed with the sidecar there: not trained again
+        with pytest.raises(KeyboardInterrupt):
+            FastLoop(root, FastLoopSettings(generations=1, **TINY)).run()
+    assert capsys.readouterr().out.count(" steps from ") == 1
+    gdir = root / gen_name(1)
+    assert (gdir / "net.bin").exists() and (gdir / "net.bin.json").exists()
+    (gdir / "net.bin.train.pt").unlink()
+    (root / "nets" / f"{gen_name(1)}.bin.train.pt").unlink()
+    monkeypatch.setattr(FastLoop, "_gate", gate)
+    assert FastLoop(root, FastLoopSettings(generations=1, **TINY)).run() == 1
+    assert " steps from " in capsys.readouterr().out, "no sidecar: the generation trains again"
+    assert (gdir / "net.bin.train.pt").exists() and (root / "nets" / f"{gen_name(1)}.bin.train.pt").exists()

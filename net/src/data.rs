@@ -8,14 +8,29 @@ use crate::encode::{abs, encode_state, rel, HIDDEN_LEN, PUBLIC_LEN};
 use crate::policy::policy_id;
 use settler_engine::legal::legal_actions;
 use settler_engine::rng::Rng;
-use settler_engine::{Action, GameConfig, PlayerId, State, ACTION_SPACE_SIZE, NUM_PLAYERS};
+use settler_engine::topology::{NUM_EDGES, NUM_NODES};
+use settler_engine::{
+    Action, DevCard, GameConfig, PlayerId, State, ACTION_SPACE_SIZE, NUM_PLAYERS,
+};
 
 /// Final VP targets are VP / this.
 pub const VP_TARGET_DEN: f32 = 10.0;
-/// Most positions one `sample` call returns (about 9.7 KB each, so about 640 MB).
+/// Turns-left targets are turns / this (targets v2).
+pub const TURNS_DEN: f32 = 100.0;
+/// Final node classes: empty, a settlement per relative seat, a city per relative seat.
+pub const NODE_CLASSES: usize = 9;
+/// Final edge classes: none, a road per relative seat.
+pub const EDGE_CLASSES: usize = 5;
+/// Final settlements, cities and VP cards held are counts / these.
+pub const PART_DENS: [f32; 3] = [5.0, 4.0, 5.0];
+/// Most positions one `sample` call returns (about 12.3 KB each, so about 810 MB).
 pub const MAX_SAMPLE: usize = 1 << 16;
 /// How far a recorded `target` may sum from 1.
 pub const TARGET_TOLERANCE: f64 = 1e-4;
+/// How far a recorded `q` may sum from 1.
+pub const Q_TOLERANCE: f64 = 1e-3;
+/// How far outside [0, 1] a recorded `q` entry may lie.
+pub const Q_RANGE_TOLERANCE: f32 = 1e-4;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordedDecision {
@@ -28,6 +43,8 @@ pub struct RecordedDecision {
     /// A Gumbel search's improved policy (spec P2 Section 5), aligned with the legal moves and
     /// summing to 1. When present it is the policy target, whatever the visits.
     pub target: Option<Vec<f32>>,
+    /// The search's root value, absolute seats (targets v2); None in records from before it.
+    pub q: Option<[f32; NUM_PLAYERS]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,10 +78,89 @@ pub struct Batch {
     pub outcome: Vec<f32>,
     /// n × 4, seat-relative: final VP / 10.
     pub vp: Vec<f32>,
+    /// n × 4, seat-relative: the decision's root search value; zeros without one.
+    pub q: Vec<f32>,
+    /// n: 1 if the decision has a root search value.
+    pub has_q: Vec<u8>,
+    /// n × NUM_NODES, seat-relative final node class: 0 empty, 1 + r settlement, 5 + r city.
+    pub own_node: Vec<u8>,
+    /// n × NUM_EDGES, seat-relative final edge class: 0 none, 1 + r road.
+    pub own_edge: Vec<u8>,
+    /// n × 12: relative seat r major, then final settlements, cities and VP cards held, each
+    /// over its `PART_DENS`.
+    pub parts: Vec<f32>,
+    /// n × 2: the final Longest Road, then Largest Army, holder: 0 none, 1 + relative seat.
+    pub holders: Vec<u8>,
+    /// n: turns from the decision to the game's end / TURNS_DEN.
+    pub turns_left: Vec<f32>,
+}
+
+/// A game's final-state targets (targets v2, spec Section 4), in absolute seats; ~150 bytes.
+#[derive(Clone, Debug)]
+struct Final {
+    /// 0 empty, 1 + p settlement, 5 + p city.
+    node: [u8; NUM_NODES],
+    /// 0 none, 1 + p road.
+    edge: [u8; NUM_EDGES],
+    /// Settlements, cities and VP cards held.
+    parts: [[u8; 3]; NUM_PLAYERS],
+    road: Option<PlayerId>,
+    army: Option<PlayerId>,
+    turn: u32,
+}
+
+impl Final {
+    /// Node i is bit i of `settlements` and `cities`, edge i bit i of `roads` (the encoder's
+    /// order). The engine keeps cities and settlements disjoint; a node in both reads as a city.
+    fn of(s: &State) -> Final {
+        let mut node = [0u8; NUM_NODES];
+        let mut edge = [0u8; NUM_EDGES];
+        for (p, pl) in s.players.iter().enumerate() {
+            for (n, c) in node.iter_mut().enumerate() {
+                if pl.cities >> n & 1 == 1 {
+                    *c = 5 + p as u8;
+                } else if pl.settlements >> n & 1 == 1 {
+                    *c = 1 + p as u8;
+                }
+            }
+            for (e, c) in edge.iter_mut().enumerate() {
+                if pl.roads >> e & 1 == 1 {
+                    *c = 1 + p as u8;
+                }
+            }
+        }
+        Final {
+            node,
+            edge,
+            parts: std::array::from_fn(|p| {
+                let pl = &s.players[p];
+                [
+                    pl.settlements.count_ones() as u8,
+                    pl.cities.count_ones() as u8,
+                    pl.dev_hand[DevCard::VictoryPoint.index()],
+                ]
+            }),
+            road: s.longest_road_owner,
+            army: s.largest_army_owner,
+            turn: s.turn,
+        }
+    }
+}
+
+/// 0 for none, else 1 + `p`'s seat relative to `actor`.
+fn holder(p: Option<PlayerId>, actor: PlayerId) -> u8 {
+    p.map_or(0, |p| 1 + rel(p, actor) as u8)
 }
 
 impl Batch {
-    fn push(&mut self, s: &State, game: &RecordedGame, d: &RecordedDecision, legal: &[Action]) {
+    fn push(
+        &mut self,
+        s: &State,
+        game: &RecordedGame,
+        d: &RecordedDecision,
+        legal: &[Action],
+        f: &Final,
+    ) {
         let actor = d.actor;
         let (p0, h0) = (self.public.len(), self.hidden.len());
         self.public.resize(p0 + PUBLIC_LEN, 0.0);
@@ -94,6 +190,39 @@ impl Batch {
         for r in 0..NUM_PLAYERS {
             self.vp.push(game.vp[abs(r, actor)] as f32 / VP_TARGET_DEN);
         }
+        match d.q {
+            Some(q) => {
+                for r in 0..NUM_PLAYERS {
+                    self.q.push(q[abs(r, actor)]);
+                }
+                self.has_q.push(1);
+            }
+            None => {
+                self.q.extend_from_slice(&[0.0; NUM_PLAYERS]);
+                self.has_q.push(0);
+            }
+        }
+        // Classes 1..=4 and 5..=8 hold absolute seat c - 1 and c - 5 (`Final`).
+        self.own_node.extend(f.node.iter().map(|&c| match c {
+            0 => 0,
+            c @ 1..=4 => 1 + rel(c - 1, actor) as u8,
+            c => 5 + rel(c - 5, actor) as u8,
+        }));
+        self.own_edge.extend(f.edge.iter().map(|&c| match c {
+            0 => 0,
+            c => 1 + rel(c - 1, actor) as u8,
+        }));
+        for r in 0..NUM_PLAYERS {
+            for (j, den) in PART_DENS.iter().enumerate() {
+                self.parts.push(f.parts[abs(r, actor)][j] as f32 / den);
+            }
+        }
+        self.holders.push(holder(f.road, actor));
+        self.holders.push(holder(f.army, actor));
+        // A decision's turn is never past the final turn.
+        debug_assert!(s.turn <= f.turn);
+        self.turns_left
+            .push(f.turn.saturating_sub(s.turn) as f32 / TURNS_DEN);
         self.n += 1;
     }
 
@@ -106,12 +235,20 @@ impl Batch {
         self.full.extend(other.full);
         self.outcome.extend(other.outcome);
         self.vp.extend(other.vp);
+        self.q.extend(other.q);
+        self.has_q.extend(other.has_q);
+        self.own_node.extend(other.own_node);
+        self.own_edge.extend(other.own_edge);
+        self.parts.extend(other.parts);
+        self.holders.extend(other.holders);
+        self.turns_left.extend(other.turns_left);
     }
 }
 
 /// Checks that `g` replays, and returns the indices of its decisions that are policy targets
-/// (`Batch::full` 1: a decision with a valid `target`, or a full search with at least one visit).
-fn check_game(g: &RecordedGame, buf: &mut Vec<Action>) -> Result<Vec<u32>, String> {
+/// (`Batch::full` 1: a decision with a valid `target`, or a full search with at least one visit)
+/// and its final-state targets.
+fn check_game(g: &RecordedGame, buf: &mut Vec<Action>) -> Result<(Vec<u32>, Final), String> {
     let mut targets = Vec::new();
     g.config.validate()?;
     let mut s = State::new(g.seed, g.config);
@@ -158,6 +295,17 @@ fn check_game(g: &RecordedGame, buf: &mut Vec<Action>) -> Result<Vec<u32>, Strin
                     return Err(format!("move {i}: the target sums to {total}, not 1"));
                 }
             }
+            if let Some(q) = &d.q {
+                if let Some((j, x)) = q.iter().enumerate().find(|(_, x)| {
+                    !(x.is_finite() && **x >= -Q_RANGE_TOLERANCE && **x <= 1.0 + Q_RANGE_TOLERANCE)
+                }) {
+                    return Err(format!("move {i}: q entry {j} is {x}, not a probability"));
+                }
+                let total: f64 = q.iter().map(|&x| x as f64).sum();
+                if (total - 1.0).abs() > Q_TOLERANCE {
+                    return Err(format!("move {i}: q sums to {total}, not 1"));
+                }
+            }
             let visited = d.visits.iter().any(|&v| v > 0);
             if d.target.is_some() || (d.full_search && visited) {
                 targets.push(k as u32);
@@ -191,7 +339,7 @@ fn check_game(g: &RecordedGame, buf: &mut Vec<Action>) -> Result<Vec<u32>, Strin
             g.vp
         ));
     }
-    Ok(targets)
+    Ok((targets, Final::of(&s)))
 }
 
 /// Recorded games, checked once, from which training batches are replayed.
@@ -203,6 +351,8 @@ pub struct TrainingSet {
     full: usize,
     /// (game, decision) of every policy target (`check_game`).
     targets: Vec<(u32, u32)>,
+    /// Each game's final-state targets, in game order.
+    finals: Vec<Final>,
 }
 
 /// The empty set.
@@ -213,6 +363,7 @@ impl Default for TrainingSet {
             starts: vec![0],
             full: 0,
             targets: Vec::new(),
+            finals: Vec::new(),
         }
     }
 }
@@ -230,11 +381,13 @@ impl TrainingSet {
     pub fn extend(&mut self, games: Vec<RecordedGame>) -> Result<(), String> {
         let mut buf = Vec::new();
         let mut targets = Vec::new();
+        let mut finals = Vec::with_capacity(games.len());
         for (i, g) in games.iter().enumerate() {
             let game = (self.games.len() + i) as u32;
-            let found = check_game(g, &mut buf)
+            let (found, last) = check_game(g, &mut buf)
                 .map_err(|e| format!("game {} (seed {}): {e}", game, g.seed))?;
             targets.extend(found.into_iter().map(|k| (game, k)));
+            finals.push(last);
         }
         let mut total = self.decisions();
         self.starts.pop();
@@ -244,6 +397,7 @@ impl TrainingSet {
             self.full += g.decisions.iter().filter(|d| d.full_search).count();
         }
         self.targets.extend(targets);
+        self.finals.extend(finals);
         self.starts.push(total);
         self.games.extend(games);
         Ok(())
@@ -292,7 +446,7 @@ impl TrainingSet {
         }
         let mut legal = Vec::new();
         legal_actions(&s, &mut legal);
-        out.push(&s, g, d, &legal);
+        out.push(&s, g, d, &legal, &self.finals[game]);
     }
 
     /// `picks` in order, replayed on up to `threads` threads (at most 4 per core); independent of

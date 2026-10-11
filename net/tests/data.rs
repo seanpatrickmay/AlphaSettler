@@ -30,6 +30,7 @@ fn recorded_every(seed: u64, config: GameConfig, every: usize) -> RecordedGame {
                 visits: buf.iter().map(|_| rng.below(4)).collect(),
                 full_search: decisions.len() % 2 == 0,
                 target: None,
+                q: None,
             });
         }
         let a = buf[rng.below(buf.len() as u32) as usize];
@@ -59,6 +60,149 @@ fn drawn() -> GameConfig {
         max_turns: 30,
         ..GameConfig::default()
     }
+}
+
+/// `recorded`, with q on every decision: 0.7 for seat 1 and 0.1 for the others.
+fn with_q(g: &RecordedGame) -> RecordedGame {
+    let mut g = g.clone();
+    for d in &mut g.decisions {
+        d.q = Some([0.1, 0.7, 0.1, 0.1]);
+    }
+    g
+}
+
+#[test]
+fn q_is_written_seat_relative_to_the_actor_and_flagged() {
+    let games = vec![with_q(&recorded(1, decided())), recorded(2, decided())];
+    let set = TrainingSet::new(games.clone()).unwrap();
+    for (game, has) in [(0usize, 1u8), (1, 0)] {
+        for (k, d) in games[game].decisions.iter().enumerate() {
+            let mut b = Batch::default();
+            set.position(game, k, &mut b);
+            assert_eq!(b.has_q, vec![has]);
+            if has == 1 {
+                let r = (1 + NUM_PLAYERS - d.actor as usize) % NUM_PLAYERS; // seat 1 relative to the actor
+                for i in 0..NUM_PLAYERS {
+                    assert_eq!(b.q[i], if i == r { 0.7 } else { 0.1 });
+                }
+            } else {
+                assert_eq!(b.q, vec![0.0; 4]);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_bad_q_is_an_error_naming_the_decision() {
+    for bad in [
+        [0.5, 0.5, 0.5, 0.5],
+        [f32::NAN, 0.5, 0.25, 0.25],
+        [-0.5, 0.5, 0.5, 0.5],
+    ] {
+        let mut g = recorded(1, decided());
+        g.decisions[0].q = Some(bad);
+        let e = TrainingSet::new(vec![g]).unwrap_err();
+        assert!(e.contains("move 0") && e.contains("q"), "{e}");
+    }
+}
+
+/// The final state of `g`, replayed.
+fn final_state(g: &RecordedGame) -> State {
+    let mut s = State::new(g.seed, g.config);
+    for &a in &g.actions {
+        s.apply(a);
+    }
+    s
+}
+
+#[test]
+fn final_ownership_parts_holders_and_turns_left_are_seat_relative() {
+    // Seed 11 of a full no-trade game ends with Longest Road at seat 2, Largest Army at seat 3
+    // and VP cards [1, 1, 0, 3], so the holders and the VP-card parts are checked non-zero.
+    for (seed, config, awards) in [
+        (1, decided(), false),
+        (7, drawn(), false),
+        (11, no_trades(), true),
+    ] {
+        let g = recorded(seed, config);
+        let f = final_state(&g);
+        if awards {
+            assert_eq!(
+                (f.longest_road_owner, f.largest_army_owner),
+                (Some(2), Some(3))
+            );
+            let vp_cards: Vec<u8> = (0..NUM_PLAYERS)
+                .map(|p| f.players[p].dev_hand[DevCard::VictoryPoint.index()])
+                .collect();
+            assert_eq!(vp_cards, vec![1, 1, 0, 3]);
+        }
+        let set = TrainingSet::new(vec![g.clone()]).unwrap();
+        let mut actors = [false; NUM_PLAYERS];
+        for (k, d) in g.decisions.iter().enumerate() {
+            actors[d.actor as usize] = true;
+            let mut b = Batch::default();
+            set.position(0, k, &mut b);
+            let rel = |p: usize| (p + NUM_PLAYERS - d.actor as usize) % NUM_PLAYERS;
+            for n in 0..54 {
+                let want = (0..NUM_PLAYERS)
+                    .find_map(|p| {
+                        if f.players[p].settlements >> n & 1 == 1 {
+                            Some(1 + rel(p) as u8)
+                        } else if f.players[p].cities >> n & 1 == 1 {
+                            Some(5 + rel(p) as u8)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
+                assert_eq!(b.own_node[n], want, "node {n}");
+            }
+            for e in 0..72 {
+                let want = (0..NUM_PLAYERS)
+                    .find(|&p| f.players[p].roads >> e & 1 == 1)
+                    .map_or(0, |p| 1 + rel(p) as u8);
+                assert_eq!(b.own_edge[e], want, "edge {e}");
+            }
+            for p in 0..NUM_PLAYERS {
+                let r = rel(p);
+                let pl = &f.players[p];
+                assert_eq!(b.parts[r * 3], pl.settlements.count_ones() as f32 / 5.0);
+                assert_eq!(b.parts[r * 3 + 1], pl.cities.count_ones() as f32 / 4.0);
+                assert_eq!(
+                    b.parts[r * 3 + 2],
+                    pl.dev_hand[DevCard::VictoryPoint.index()] as f32 / 5.0
+                );
+            }
+            let holder = |o: Option<PlayerId>| o.map_or(0, |p| 1 + rel(p as usize) as u8);
+            assert_eq!(
+                b.holders,
+                vec![holder(f.longest_road_owner), holder(f.largest_army_owner)]
+            );
+            let mut s = State::new(g.seed, g.config);
+            for &a in &g.actions[..d.index as usize] {
+                s.apply(a);
+            }
+            assert_eq!(b.turns_left, vec![(f.turn - s.turn) as f32 / 100.0]);
+            assert!(b.turns_left[0] >= 0.0);
+        }
+        assert_eq!(actors, [true; NUM_PLAYERS], "every seat is an actor");
+    }
+}
+
+#[test]
+fn a_batch_of_many_positions_lays_the_new_targets_out_row_major() {
+    let set = TrainingSet::new(vec![recorded(1, decided()), recorded(2, drawn())]).unwrap();
+    let b = set.sample(40, 3, 2).unwrap();
+    assert_eq!(
+        (
+            b.own_node.len(),
+            b.own_edge.len(),
+            b.parts.len(),
+            b.holders.len(),
+            b.turns_left.len()
+        ),
+        (40 * 54, 40 * 72, 40 * 12, 40 * 2, 40)
+    );
 }
 
 #[test]

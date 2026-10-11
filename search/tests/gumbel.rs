@@ -367,6 +367,13 @@ fn a_single_searchable_move_is_returned_without_searching() {
 }
 
 #[test]
+fn a_gumbel_search_reports_a_root_value_that_sums_to_one() {
+    let r = run(&rich(1), &mut UniformEvaluator, &gumbel(50, false), 1);
+    let q = r.root_q.expect("a search that ran has a root value");
+    assert!((q.iter().sum::<f32>() - 1.0).abs() < 1e-4, "{q:?}");
+}
+
+#[test]
 fn the_default_root_is_puct_and_reports_no_improved_policy() {
     assert_eq!(SearchConfig::default().root, RootMode::Puct);
     let cfg = SearchConfig {

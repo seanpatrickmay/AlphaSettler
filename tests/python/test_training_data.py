@@ -6,6 +6,7 @@ from array import array
 from pathlib import Path
 
 import pytest
+import torch
 
 from alphasettler import Game, files, records
 from alphasettler._engine import (
@@ -14,6 +15,7 @@ from alphasettler._engine import (
     net_forward, resolve_net, selfplay_explore, write_random_net,
 )
 from alphasettler.selfplay import write_explore
+from alphasettler.train.data import to_tensors
 from opening_games import opening_model_file
 
 CONFIG = {"max_offers_per_turn": 0}
@@ -49,6 +51,37 @@ def test_explore_records_carry_their_settings_and_no_observations(tmp_path):
             assert sum(d["visits"]) == (5 if d["full_search"] else 2)
         assert g["belief_resets"] == 0
         assert records.replay_mismatches(g) == []
+
+
+def test_self_play_records_q_and_the_batch_carries_it_seat_relative(tmp_path):
+    games = explore_games(tmp_path, 2)
+    for g in games:
+        for d in g["decisions"]:
+            assert len(d["q"]) == 4 and abs(sum(d["q"]) - 1) < 1e-3
+            assert all(round(x, 6) == x for x in d["q"]), d["q"]  # six places, not an f32's full repr
+    ts = TrainingSet(games)
+    t = to_tensors(ts.sample(64, 0, 1), torch.device("cpu"))
+    assert t.has_q.eq(1).all()
+    assert torch.allclose(t.q.sum(1), torch.ones(64), atol=1e-3)
+
+
+def test_records_without_q_still_train_with_has_q_zero(tmp_path):
+    games = explore_games(tmp_path, 1)
+    for d in games[0]["decisions"]:
+        del d["q"]
+    t = to_tensors(TrainingSet(games).sample(16, 0, 1), torch.device("cpu"))
+    assert t.has_q.eq(0).all() and t.q.eq(0).all()
+
+
+def test_the_batch_carries_the_final_state_targets_with_their_shapes(tmp_path):
+    t = to_tensors(TrainingSet(explore_games(tmp_path, 2)).sample(32, 0, 1), torch.device("cpu"))
+    assert t.own_node.shape == (32, 54) and t.own_node.max() <= 8
+    assert t.own_edge.shape == (32, 72) and t.own_edge.max() <= 4
+    assert t.parts.shape == (32, 12) and t.holders.shape == (32, 2) and t.turns_left.shape == (32,)
+    assert (t.turns_left >= 0).all()
+    assert (t.own_node > 0).any(), "finished games have buildings"
+    assert t.own_node.dtype == t.own_edge.dtype == t.holders.dtype == torch.long
+    assert t.parts.dtype == t.turns_left.dtype == torch.float32
 
 
 def test_net_self_play_records_the_net_and_its_hash(tmp_path):
