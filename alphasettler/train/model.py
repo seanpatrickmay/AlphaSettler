@@ -103,7 +103,9 @@ class Net(nn.Module):
         return out + [self.node_policy, self.edge_policy, self.tile_policy, self.other_hidden, self.other_policy,
                       self.value_hidden, self.value, self.aux]
 
-    def forward(self, public: torch.Tensor, hidden: torch.Tensor):
+    def trunk(self, public: torch.Tensor, hidden: torch.Tensor):
+        """The encoders, the rounds and the value head's hidden layer: (node b x 54 x d, edge b x 72 x d,
+        tile b x 19 x d, glob b x d, pooled b x 4d, v b x 4d)."""
         b = public.shape[0]
         relu = torch.relu
         node = relu(self.node_encoder(public[:, :NODE_END].reshape(b, NODES, NET_NODE_WIDTH)))
@@ -117,14 +119,21 @@ class Net(nn.Module):
             edge = edge + relu(r.edge(torch.cat([edge, self.edge_nodes @ node, _spread(glob, EDGES)], 2)))
             glob = glob + relu(r.glob(torch.cat([glob, node.mean(1), edge.mean(1), tile.mean(1)], 1)))
         pooled = torch.cat([glob, node.mean(1), edge.mean(1), tile.mean(1)], 1)
+        v = relu(self.value_hidden(torch.cat([pooled, hidden], 1)))
+        return node, edge, tile, glob, pooled, v
+
+    def heads(self, node, edge, tile, glob, pooled, v):
+        """The policy logits, value logits and aux outputs from `trunk`'s outputs."""
         build = self.node_policy(torch.cat([node, _spread(glob, NODES)], 2))
         road = self.edge_policy(torch.cat([edge, _spread(glob, EDGES)], 2))[:, :, 0]
         robber = self.tile_policy(torch.cat([tile, _spread(glob, TILES)], 2))[:, :, 0]
-        other = self.other_policy(relu(self.other_hidden(pooled)))
+        other = self.other_policy(torch.relu(self.other_hidden(pooled)))
         s = NET_SETTLEMENT_BASE
         policy = torch.cat([other[:, :s], build[:, :, 0], build[:, :, 1], road, robber, other[:, s:]], 1)
-        v = relu(self.value_hidden(torch.cat([pooled, hidden], 1)))
         return policy, self.value(v), self.aux(v)
+
+    def forward(self, public: torch.Tensor, hidden: torch.Tensor):
+        return self.heads(*self.trunk(public, hidden))
 
 
 def _floats(t: torch.Tensor) -> bytes:

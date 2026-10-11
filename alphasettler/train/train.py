@@ -21,6 +21,7 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
@@ -28,6 +29,7 @@ from alphasettler import files
 from alphasettler._engine import NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, NET_MAX_SAMPLE, TrainingSet, net_forward
 from alphasettler.train import model as model_mod
 from alphasettler.train.data import HELD_OUT_EVERY, Tensors, Window, to_tensors
+from alphasettler.train.extras import Q_MIX, Extras, extras_losses
 
 PARITY_POSITIONS = 100
 PARITY_TOLERANCE = 1e-5
@@ -46,6 +48,8 @@ EVAL_SEED = 0xE7A1
 NEWEST_SHARE = 0.5
 # XORed into the older draw's seed: high bits only, so within a run it never equals a newest draw's.
 OLDER_SEED_SALT = 0x01DE_5EED << 32
+# The `Tensors` fields `extras_losses` reads.
+_EXTRAS_FIELDS = ("own_node", "own_edge", "parts", "holders", "turns_left")
 
 
 @dataclass(frozen=True)
@@ -165,24 +169,46 @@ def value_rows(n: int, seed: int, step: int) -> torch.Tensor:
     return rows
 
 
-def losses(net: model_mod.Net, t: Tensors, value_rows: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
+def losses(net: model_mod.Net, t: Tensors, value_rows: torch.Tensor | None = None,
+           extras: Extras | None = None) -> dict[str, torch.Tensor]:
     """Spec Section 4: policy cross-entropy over full-search rows only, value cross-entropy and
     AUX_WEIGHT x MSE(aux, final VP / 10) over the `value_rows` only (bool mask; None: every row),
-    and L2 x the squared weights (biases excluded)."""
-    logits, value, aux = net(t.public, t.hidden)
+    and L2 x the squared weights (biases excluded).
+
+    With `extras` (targets v2, spec 2026-10-11 Sections 3 and 4): the value target on rows with q
+    is (1 - Q_MIX) x outcome + Q_MIX x q, and the training-only heads' weighted losses, on the
+    `value_rows` too, are added to the total; the result gains their `extras_*` terms."""
+    if extras is None:
+        logits, value, aux = net(t.public, t.hidden)
+        out = None
+    else:
+        node, edge, tile, glob, pooled, v = net.trunk(t.public, t.hidden)
+        logits, value, aux = net.heads(node, edge, tile, glob, pooled, v)
+        out = extras(node, edge, glob, v)
     # -1e9, not -inf: the target is 0 off the mask, and 0 x -1e9 is 0 where 0 x -inf is NaN.
     logp = torch.log_softmax(logits.masked_fill(~t.mask, -1e9), dim=1)
     per_position = -(t.policy * logp).sum(dim=1)
     policy = (per_position * t.full).sum() / t.full.sum().clamp(min=1.0)
     outcome, vp = t.outcome, t.vp
+    if out is not None:
+        outcome = torch.where(t.has_q[:, None] > 0, (1 - Q_MIX) * t.outcome + Q_MIX * t.q, t.outcome)
+        targets = SimpleNamespace(**{k: getattr(t, k) for k in _EXTRAS_FIELDS})
     if value_rows is not None:
         rows = value_rows.to(value.device)
         value, aux, outcome, vp = value[rows], aux[rows], outcome[rows], vp[rows]
+        if out is not None:
+            out = {k: x[rows] for k, x in out.items()}
+            targets = SimpleNamespace(**{k: x[rows] for k, x in vars(targets).items()})
     value_loss = -(outcome * torch.log_softmax(value, dim=1)).sum(dim=1).mean()
     aux_loss = torch.nn.functional.mse_loss(aux, vp)
     l2 = sum((layer.weight ** 2).sum() for layer in net.layers())
     total = policy + value_loss + AUX_WEIGHT * aux_loss + L2 * l2
-    return {"policy": policy, "value": value_loss, "aux": aux_loss, "l2": l2, "total": total}
+    parts = {"policy": policy, "value": value_loss, "aux": aux_loss, "l2": l2, "total": total}
+    if out is not None:
+        more = extras_losses(out, targets)
+        parts.update(more)
+        parts["total"] = total + more["extras"]
+    return parts
 
 
 def held_out_batches(validation: TrainingSet, cfg: TrainConfig, device: torch.device, threads: int) -> list[Tensors]:
@@ -194,15 +220,23 @@ def held_out_batches(validation: TrainingSet, cfg: TrainConfig, device: torch.de
             for i in range(cfg.eval_batches)]
 
 
-def held_out_losses(net: model_mod.Net, batches: list[Tensors]) -> dict[str, float]:
-    """The mean over `batches` of the policy, value and aux losses (value and aux on every row),
-    and the selection score policy + value."""
-    was_training = net.training
-    net.eval()
+def held_out_losses(net: model_mod.Net, batches: list[Tensors], extras: Extras | None = None) -> dict[str, float]:
+    """The mean over `batches` of the policy, value and aux losses (value and aux on every row,
+    value against the outcome z alone), and the selection score policy + value; with `extras`,
+    also the mean of each `extras_*` term."""
+    modules = [m for m in (net, extras) if m is not None]
+    was_training = [m.training for m in modules]
+    for m in modules:
+        m.eval()
     with torch.no_grad():
         parts = [losses(net, t) for t in batches]
-    net.train(was_training)
-    out = {key: sum(p[key].item() for p in parts) / len(parts) for key in ("policy", "value", "aux")}
+        if extras is not None:
+            for p, t in zip(parts, batches):
+                p.update({k: x for k, x in losses(net, t, None, extras).items() if k.startswith("extras")})
+    for m, mode in zip(modules, was_training):
+        m.train(mode)
+    keys = [k for k in parts[0] if k in ("policy", "value", "aux") or k.startswith("extras")]
+    out = {key: sum(p[key].item() for p in parts) / len(parts) for key in keys}
     return {**out, "score": out["policy"] + out["value"]}
 
 
