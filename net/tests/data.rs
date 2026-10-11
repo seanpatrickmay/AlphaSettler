@@ -106,6 +106,89 @@ fn a_bad_q_is_an_error_naming_the_decision() {
     }
 }
 
+/// The final state of `g`, replayed.
+fn final_state(g: &RecordedGame) -> State {
+    let mut s = State::new(g.seed, g.config);
+    for &a in &g.actions {
+        s.apply(a);
+    }
+    s
+}
+
+#[test]
+fn final_ownership_parts_holders_and_turns_left_are_seat_relative() {
+    for (seed, config) in [(1, decided()), (7, drawn())] {
+        let g = recorded(seed, config);
+        let f = final_state(&g);
+        let set = TrainingSet::new(vec![g.clone()]).unwrap();
+        let mut actors = [false; NUM_PLAYERS];
+        for (k, d) in g.decisions.iter().enumerate() {
+            actors[d.actor as usize] = true;
+            let mut b = Batch::default();
+            set.position(0, k, &mut b);
+            let rel = |p: usize| (p + NUM_PLAYERS - d.actor as usize) % NUM_PLAYERS;
+            for n in 0..54 {
+                let want = (0..NUM_PLAYERS)
+                    .find_map(|p| {
+                        if f.players[p].settlements >> n & 1 == 1 {
+                            Some(1 + rel(p) as u8)
+                        } else if f.players[p].cities >> n & 1 == 1 {
+                            Some(5 + rel(p) as u8)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
+                assert_eq!(b.own_node[n], want, "node {n}");
+            }
+            for e in 0..72 {
+                let want = (0..NUM_PLAYERS)
+                    .find(|&p| f.players[p].roads >> e & 1 == 1)
+                    .map_or(0, |p| 1 + rel(p) as u8);
+                assert_eq!(b.own_edge[e], want, "edge {e}");
+            }
+            for p in 0..NUM_PLAYERS {
+                let r = rel(p);
+                let pl = &f.players[p];
+                assert_eq!(b.parts[r * 3], pl.settlements.count_ones() as f32 / 5.0);
+                assert_eq!(b.parts[r * 3 + 1], pl.cities.count_ones() as f32 / 4.0);
+                assert_eq!(
+                    b.parts[r * 3 + 2],
+                    pl.dev_hand[DevCard::VictoryPoint.index()] as f32 / 5.0
+                );
+            }
+            let holder = |o: Option<PlayerId>| o.map_or(0, |p| 1 + rel(p as usize) as u8);
+            assert_eq!(
+                b.holders,
+                vec![holder(f.longest_road_owner), holder(f.largest_army_owner)]
+            );
+            let mut s = State::new(g.seed, g.config);
+            for &a in &g.actions[..d.index as usize] {
+                s.apply(a);
+            }
+            assert_eq!(b.turns_left, vec![(f.turn - s.turn) as f32 / 100.0]);
+            assert!(b.turns_left[0] >= 0.0);
+        }
+        assert_eq!(actors, [true; NUM_PLAYERS], "every seat is an actor");
+    }
+}
+
+#[test]
+fn a_batch_of_many_positions_lays_the_new_targets_out_row_major() {
+    let set = TrainingSet::new(vec![recorded(1, decided()), recorded(2, drawn())]).unwrap();
+    let b = set.sample(40, 3, 2).unwrap();
+    assert_eq!(
+        (
+            b.own_node.len(),
+            b.own_edge.len(),
+            b.parts.len(),
+            b.holders.len(),
+            b.turns_left.len()
+        ),
+        (40 * 54, 40 * 72, 40 * 12, 40 * 2, 40)
+    );
+}
+
 #[test]
 fn a_position_equals_the_encoder_on_the_replayed_state() {
     let games = vec![recorded(1, decided()), recorded(2, drawn())];

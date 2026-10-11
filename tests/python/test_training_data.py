@@ -72,6 +72,15 @@ def test_records_without_q_still_train_with_has_q_zero(tmp_path):
     assert t.has_q.eq(0).all() and t.q.eq(0).all()
 
 
+def test_the_batch_carries_the_final_state_targets_with_their_shapes(tmp_path):
+    t = to_tensors(TrainingSet(explore_games(tmp_path, 2)).sample(32, 0, 1), torch.device("cpu"))
+    assert t.own_node.shape == (32, 54) and t.own_node.max() <= 8
+    assert t.own_edge.shape == (32, 72) and t.own_edge.max() <= 4
+    assert t.parts.shape == (32, 12) and t.holders.shape == (32, 2) and t.turns_left.shape == (32,)
+    assert (t.turns_left >= 0).all()
+    assert (t.own_node > 0).any(), "finished games have buildings"
+
+
 def test_net_self_play_records_the_net_and_its_hash(tmp_path):
     nets = tmp_path / "nets"
     nets.mkdir()

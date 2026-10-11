@@ -166,6 +166,11 @@ fn batch_dict<'py>(py: Python<'py>, b: &Batch) -> PyResult<Bound<'py, PyDict>> {
     d.set_item("vp", PyBytes::new(py, &le_bytes(&b.vp)))?;
     d.set_item("q", PyBytes::new(py, &le_bytes(&b.q)))?;
     d.set_item("has_q", PyBytes::new(py, &b.has_q))?;
+    d.set_item("own_node", PyBytes::new(py, &b.own_node))?;
+    d.set_item("own_edge", PyBytes::new(py, &b.own_edge))?;
+    d.set_item("parts", PyBytes::new(py, &le_bytes(&b.parts)))?;
+    d.set_item("holders", PyBytes::new(py, &b.holders))?;
+    d.set_item("turns_left", PyBytes::new(py, &le_bytes(&b.turns_left)))?;
     Ok(d)
 }
 

@@ -24,6 +24,7 @@ import torch
 
 from alphasettler import files, records
 from alphasettler._engine import NET_HIDDEN_LEN, NET_PUBLIC_LEN, TrainingSet, action_space_size
+from alphasettler.netformat import EDGES, NODES
 
 ACTIONS = action_space_size()
 SEATS = 4
@@ -210,6 +211,11 @@ class Tensors:
     vp: torch.Tensor
     q: torch.Tensor
     has_q: torch.Tensor
+    own_node: torch.Tensor
+    own_edge: torch.Tensor
+    parts: torch.Tensor
+    holders: torch.Tensor
+    turns_left: torch.Tensor
 
 
 def to_tensors(batch: dict, device: torch.device) -> Tensors:
@@ -232,4 +238,9 @@ def to_tensors(batch: dict, device: torch.device) -> Tensors:
         vp=f32("vp", SEATS),
         q=f32("q", SEATS),
         has_q=u8("has_q", 1).view(n).float(),
+        own_node=u8("own_node", NODES).long(),
+        own_edge=u8("own_edge", EDGES).long(),
+        parts=f32("parts", 12),
+        holders=u8("holders", 2).long(),
+        turns_left=f32("turns_left", 1).view(n),
     )
