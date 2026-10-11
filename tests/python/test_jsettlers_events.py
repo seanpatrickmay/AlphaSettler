@@ -540,7 +540,7 @@ def test_a_robots_game_translates_and_four_observers_keep_their_beliefs(tmp_path
     bots = [Bot("ismcts@20", seed * 4 + i, None) for i in range(4)]
     with Jvm(log=tmp_path / "jvm.log") as jvm:  # suite runs leave no logs under runs/
         jvm.send(game_command("e-full", seed, 2, bridge=False))
-        tracker, kinds, imported = None, set(), 0
+        tracker, kinds, imported, stalled = None, set(), 0, False
         while True:
             m = jvm.recv(600.0)
             if m["t"] == "start":
@@ -554,9 +554,17 @@ def test_a_robots_game_translates_and_four_observers_keep_their_beliefs(tmp_path
                 for i, b in enumerate(bots):
                     b.observe(i, [redact(e, i) for e in st.events])
                 if st.after is not None:
-                    import_game(seed, st.after, tracker.ctx, UNLIMITED)
+                    try:
+                        import_game(seed, st.after, tracker.ctx, UNLIMITED)
+                    except ValueError as e:
+                        # The stock Longest-Road stall (stall-debug.md) can run a robots game to our turn cap,
+                        # where our engine stops holding it; everything up to the cap was checked.
+                        if "max_turns" not in str(e):
+                            raise
+                        stalled = True
+                        break
                     imported += 1
-            if m["t"] == "over":
+            if m["t"] == "over" or stalled:
                 break
     assert {"setup", "roll", "build", "end_turn"} <= kinds and imported > 100
     assert [b.diagnostics().get("belief_resets", 0) for b in bots] == [0, 0, 0, 0]
