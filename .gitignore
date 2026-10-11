@@ -25,3 +25,5 @@ runs/
 
 # Third-party engines cloned for benchmarking (never vendored)
 bench/compare/.cache/
+# JSettlers2's server jar (downloaded by scripts/fetch-jsettlers.sh; jsettlers/build/ is covered by build/)
+jsettlers/lib/

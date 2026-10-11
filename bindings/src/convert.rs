@@ -78,6 +78,7 @@ pub fn parse_config(config: Option<&Bound<'_, PyDict>>) -> PyResult<GameConfig> 
                 "max_trade_cards" => c.max_trade_cards = int_arg(&v, "max_trade_cards")?,
                 "max_turns" => c.max_turns = int_arg(&v, "max_turns")?,
                 "catanatron_compat" => c.catanatron_compat = v.extract()?,
+                "bank_limit" => c.bank_limit = v.extract()?,
                 other => return Err(value_error(format!("unknown config key {other:?}"))),
             }
         }
@@ -94,6 +95,10 @@ pub fn config_dict<'py>(py: Python<'py>, c: &GameConfig) -> PyResult<Bound<'py, 
     d.set_item("max_trade_cards", c.max_trade_cards)?;
     d.set_item("max_turns", c.max_turns)?;
     d.set_item("catanatron_compat", c.catanatron_compat)?;
+    // Written only when off, so every resolved config and record file from before is unchanged.
+    if !c.bank_limit {
+        d.set_item("bank_limit", false)?;
+    }
     Ok(d)
 }
 

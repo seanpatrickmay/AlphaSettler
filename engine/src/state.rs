@@ -146,6 +146,33 @@ impl State {
         self.rng_misc = Rng::new(mix(seed, MISC_SALT));
     }
 
+    /// Whether the bank can pay `n` cards of resource `r`: always without the bank limit.
+    #[inline]
+    pub fn bank_has(&self, r: usize, n: u8) -> bool {
+        !self.config.bank_limit || self.bank[r] >= n
+    }
+
+    /// Pay `h` out of the bank. Without the bank limit the bank is only a display (see
+    /// `refresh_bank`), so it stops at 0 instead of running short.
+    #[inline]
+    pub fn bank_pay(&mut self, h: &Hand) {
+        if self.config.bank_limit {
+            hand_sub(&mut self.bank, h);
+        } else {
+            for r in 0..NUM_RESOURCES {
+                self.bank[r] = self.bank[r].saturating_sub(h[r]);
+            }
+        }
+    }
+
+    /// Without the bank limit: set the bank to 19 less the cards in hands, never below 0.
+    pub fn refresh_bank(&mut self) {
+        for r in 0..NUM_RESOURCES {
+            let held: u32 = self.players.iter().map(|p| p.hand[r] as u32).sum();
+            self.bank[r] = (BANK_PER_RESOURCE as u32).saturating_sub(held) as u8;
+        }
+    }
+
     /// The player who must choose the next action.
     pub fn current_actor(&self) -> PlayerId {
         match self.phase {

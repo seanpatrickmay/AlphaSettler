@@ -1,4 +1,4 @@
-"""Command line: `alphasettler arena`, `compare`, `oracle-diff`, `selfplay`, `fit-heuristic`, `train`,
+"""Command line: `alphasettler arena`, `compare`, `oracle-diff`, `jsettlers-diff`, `selfplay`, `fit-heuristic`, `train`,
 `sprt`, `fast-train`, `fast-score`, `fast-loop`, `train-loop`, `net-upgrade`, `opening-train` and `opening-diagnose`;
 `net-upgrade` rewrites an older net (encoder v2 or v3) for this build's encoder v4. `selfplay --simulations S`
 writes 3a records; `selfplay --pcr` and `selfplay --net NAME` write 3b exploration records; `train` (the train extra)
@@ -6,7 +6,12 @@ trains a network on them; `train-loop` (the train extra) runs the resumable self
 gate generations; `fast-train` and `fast-score` (the train extra) train and score candidate nets on
 a fixed pool of generations, and `fast-loop` runs small generations trained that way. `opening-train`
 (the train extra) fits the opening model of spec 3d-1 on recorded games' setups. `opening-diagnose` prints spec 3d-1's
-opening diagnosis (D1-D3 and the verdict on record directories, or D4 for a bot)."""
+opening diagnosis (D1-D3 and the verdict on record directories, or D4 for a bot). `jsettlers-diff` replays
+robots-only JSettlers2 games through our engine (needs the harness: scripts/fetch-jsettlers.sh, jsettlers/build.sh;
+exit 0 with no mismatch, 1 with any, 2 when the harness is missing, 3 when it fails). `arena --baseline jsettlers:smart`
+plays the candidate as one seat against three JSettlers2 smart robots in JSettlers' own server (`--trades`, `--aligned`,
+`--native-boards`; needs the harness). Its summary leaves out the seeds with a game stopped for a stock robot's desync
+in setup (reported on their own line; the JSONL keeps every game)."""
 
 from __future__ import annotations
 
@@ -58,6 +63,9 @@ def _parser() -> argparse.ArgumentParser:
     rules.add_argument("--trades", action="store_true",
                        help="the trading game: 2 domestic offers a turn, 1 card a side (+t bots offer)")
     a.add_argument("--nets-dir", default=DEFAULT_NETS_DIR, help="where net:NAME bots find NAME.bin")
+    a.add_argument("--aligned", action="store_true",
+                   help="jsettlers: the robots' offers capped to our trading game (with --trades)")
+    a.add_argument("--native-boards", action="store_true", help="jsettlers: JSettlers' own boards instead of ours")
 
     sp = sub.add_parser("sprt", help="candidate vs three baselines in batches until a sequential test decides")
     sp.add_argument("--candidate", required=True)
@@ -94,6 +102,12 @@ def _parser() -> argparse.ArgumentParser:
     o.add_argument("--seed-start", type=int, default=0)
     o.add_argument("--workers", type=_positive_int, default=None)
     o.add_argument("--out", default=None, help="JSONL path, one line per game")
+
+    jd = sub.add_parser("jsettlers-diff", help="differential replay of robots-only JSettlers2 games (needs the harness)")
+    jd.add_argument("--games", type=_positive_int, required=True)
+    jd.add_argument("--seed-start", type=int, default=9_000_000_000)
+    jd.add_argument("--workers", type=_positive_int, default=None, help="worker processes, one JVM each")
+    jd.add_argument("--out", default=None, help="JSONL path, one line per game")
 
     s = sub.add_parser("selfplay", help="IsmctsBot self-play records for training and weight fits")
     s.add_argument("--games", type=_positive_int, required=True)
@@ -697,6 +711,45 @@ def _oracle_diff(args) -> int:
     return 1 if s.mismatches else 0
 
 
+def _jsettlers_missing() -> str | None:
+    from oracle.jsettlers import missing
+
+    return missing()
+
+
+def _jsettlers_diff(args) -> int:
+    why = _jsettlers_missing()
+    if why is not None:
+        print(f"error: the JSettlers harness is not ready: {why}", file=sys.stderr)
+        return 2
+    from oracle.jsettlers.diff import format_summary, run, summarize
+
+    if args.seed_start < 0 or args.seed_start + args.games > SEED_LIMIT:
+        raise ValueError(f"seeds {args.seed_start}..{args.seed_start + args.games} are outside the u64 seed range")
+    with ExitStack() as stack:
+        f = stack.enter_context(open_output(args.out)) if args.out else None
+        try:
+            results = run(range(args.seed_start, args.seed_start + args.games), args.workers)
+        except (OSError, EOFError, RuntimeError) as e:  # the JVM's error, exit or silence (TimeoutError is an OSError)
+            print(f"error: the JSettlers harness failed: {type(e).__name__}: {e}", file=sys.stderr)
+            return 3
+        s = summarize(results)
+        print(format_summary(s))
+        if f is not None:
+            for r in results:
+                rec = {"seed": r.seed, "steps": r.steps, "allowlisted": dict(r.allowlisted), "mismatch": r.mismatch,
+                       "winner": r.winner, "turns": r.turns, "capped": r.capped}
+                if r.mismatch is not None:
+                    rec["trace"] = r.trace  # the stream up to the mismatch
+                f.write(json.dumps(rec) + "\n")
+            print(f"wrote {args.out}")
+    for r in s.mismatches[:5]:
+        print(f"mismatch seed {r.seed}: {r.mismatch}", file=sys.stderr)
+        for line in r.trace[-5:]:
+            print(f"    {line}", file=sys.stderr)
+    return 1 if s.mismatches else 0
+
+
 def _catanatron_arena(args, out: Path) -> int:
     """Our candidate inside Catanatron against three of its bots. `--trades` plays the trading game
     (a `+t` candidate offers, Catanatron's bots answer); otherwise ours plays with offers off, and
@@ -724,6 +777,82 @@ def _catanatron_arena(args, out: Path) -> int:
     return 0
 
 
+def _jsettlers_arena(args, out: Path) -> int:
+    """Our candidate as one seat against three JSettlers2 robots in JSettlers' own server. `--trades` plays
+    the trading game with JSettlers' player trading on (`--aligned` caps the robots' offers to it);
+    otherwise JSettlers' no-trading option is on and the candidate offers nothing. Exits 2 for a bad request or a
+    missing harness, 3 when the JVM fails, 1 when every seed was dropped from the summary (see
+    `_print_jsettlers_summary`). Each game's record is appended to `<out>.partial` as it ends; the file is removed
+    once `out` is written, and kept (with every game finished before the failure) when the harness fails."""
+    if args.aligned and not args.trades:
+        raise ValueError("--aligned needs --trades")
+    if args.native_boards and not args.trades:
+        raise ValueError("--native-boards needs --trades (it checks the native arm)")
+    why = _jsettlers_missing()
+    if why is not None:
+        print(f"error: the JSettlers harness is not ready: {why}", file=sys.stderr)
+        return 2
+    import oracle.jsettlers.arena as js_arena
+
+    baseline = args.baseline.split(":", 1)[1]
+    nets_dir = str(Path(args.nets_dir).resolve())
+    js_arena.check(args.candidate, baseline, args.seeds, args.seed_start, nets_dir)
+    partial = out.with_name(out.name + ".partial")
+    if partial.exists():
+        raise ValueError(f"{partial} exists (a failed run's games): move it aside first")
+    with open_output(out) as f, open_output(partial) as pf:
+        try:
+            records = js_arena.run_match(args.candidate, baseline, args.seeds, args.seed_start, args.threads, nets_dir,
+                                         trades=args.trades, aligned=args.aligned, native_boards=args.native_boards,
+                                         on_record=lambda r: _write_records(pf, args.candidate, args.baseline, [r]))
+        except (OSError, EOFError, RuntimeError) as e:  # a worker's error, exit or silence (TimeoutError is an OSError)
+            print(f"error: the JSettlers harness failed: {type(e).__name__}: {e}", file=sys.stderr)
+            print(f"the games finished before it are in {partial}", file=sys.stderr)
+            return 3
+        _write_records(f, args.candidate, args.baseline, records)
+    partial.unlink()
+    code = _print_jsettlers_summary(args.candidate, args.baseline, records, js_arena.COUNTERS)
+    print(f"wrote {out}")
+    return code
+
+
+def _print_jsettlers_summary(candidate: str, baseline: str, records: list[dict], counters) -> int:
+    """The jsettlers arena's report. The summary is over `oracle.jsettlers.arena.kept(records)` (a seed with a game
+    stopped for a robot desync in setup is left out whole), and the games left out are printed on their own line, so
+    summary games plus dropped games are the games played. Every count printed beside the summary (fallbacks,
+    belief resets, forced ends of our turn, trades, bank limit hits, turn-cap games and the stall) is over those
+    same summarised games; the JSONL keeps all of them. Games that hit the turn cap stay in as no-winner losses, as
+    in the Catanatron arena. Returns 1 when every seed is dropped (no summary), else 0."""
+    from oracle.jsettlers.arena import kept as kept_records
+
+    kept, desynced = kept_records(records)
+    code = 0
+    if kept:
+        print(format_summary(f"{candidate} vs {baseline} ({records[0]['arm']})", summarize(kept)))
+    else:
+        print(f"{candidate} vs {baseline} ({records[0]['arm']}): no seed left to summarize")
+        code = 1
+    print(f"dropped: {len(records) - len(kept)} games "
+          f"({sum(r['abort_reason'] == 'robot-desync' for r in records)} robot desync in setup), "
+          f"{len(desynced)} seeds left out of the summary")
+    reasons: dict = {}
+    for r in kept:
+        for k, v in r["fallback_reasons"].items():
+            reasons[k] = reasons.get(k, 0) + v
+    print(f"fallbacks: {sum(r['fallbacks'] for r in kept)} {dict(sorted(reasons.items()))}")
+    print(_resets_line(kept))
+    print(f"forced ends of our turn: {sum(r['forced_end_turns'] for r in kept)}")
+    print("trades: " + ", ".join(f"{k} {sum(r[k] for r in kept)}" for k in counters))
+    capped = [r for r in kept if r["abort_reason"] == "turn-cap"]
+    # The stock Longest-Road stall: nobody builds for the last stretch of a game that then runs to the cap. A game's
+    # last build is the latest of any seat's (None = never built); the gap is its turns minus that.
+    gaps = [r["turns"] - max((t for t in r["last_build_turn"] if t is not None), default=0) for r in capped]
+    stall = f"{sum(gaps) / len(gaps):.1f}" if gaps else "n/a"
+    print(f"bank limit hits: {sum(r['bank_limit_hits'] for r in kept)}, "
+          f"aborted at the turn cap: {len(capped)} (mean turns since the last build: {stall})")
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if getattr(args, "trades", False):
@@ -736,6 +865,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "arena":
             name = args.baseline.replace(":", "-")
             out = Path(args.out or f"runs/{_stamp()}-{args.candidate}-vs-{name}.jsonl")
+            if (args.aligned or args.native_boards) and not args.baseline.startswith("jsettlers:"):
+                raise ValueError("--aligned and --native-boards are only with a jsettlers: baseline")
+            if args.baseline.startswith("jsettlers:"):
+                return _jsettlers_arena(args, out)
             if args.baseline.startswith("catanatron:"):
                 return _catanatron_arena(args, out)
             records, summary = run(args.candidate, args.baseline, args.seeds, args.seed_start, args.threads, config, out,
@@ -747,6 +880,8 @@ def main(argv: list[str] | None = None) -> int:
             return _sprt(args, config)
         elif args.command == "oracle-diff":
             return _oracle_diff(args)
+        elif args.command == "jsettlers-diff":
+            return _jsettlers_diff(args)
         elif args.command == "selfplay":
             return _selfplay(args)
         elif args.command == "fit-heuristic":

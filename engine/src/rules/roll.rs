@@ -70,24 +70,26 @@ fn produce<S: EventSink>(s: &mut State, roll: u8, sink: &mut S) {
             owed[p][r.index()] += n as u8;
         }
     }
-    for r in 0..NUM_RESOURCES {
-        let total: u32 = (0..NUM_PLAYERS).map(|p| owed[p][r] as u32).sum();
-        if total <= s.bank[r] as u32 {
-            continue;
-        }
-        let claimants: Vec<usize> = (0..NUM_PLAYERS).filter(|&p| owed[p][r] > 0).collect();
-        if claimants.len() == 1 {
-            owed[claimants[0]][r] = s.bank[r];
-        } else {
-            for p in 0..NUM_PLAYERS {
-                owed[p][r] = 0;
+    if s.config.bank_limit {
+        for r in 0..NUM_RESOURCES {
+            let total: u32 = (0..NUM_PLAYERS).map(|p| owed[p][r] as u32).sum();
+            if total <= s.bank[r] as u32 {
+                continue;
+            }
+            let claimants: Vec<usize> = (0..NUM_PLAYERS).filter(|&p| owed[p][r] > 0).collect();
+            if claimants.len() == 1 {
+                owed[claimants[0]][r] = s.bank[r];
+            } else {
+                for p in 0..NUM_PLAYERS {
+                    owed[p][r] = 0;
+                }
             }
         }
     }
     for p in 0..NUM_PLAYERS {
         if hand_total(&owed[p]) > 0 {
             hand_add(&mut s.players[p].hand, &owed[p]);
-            hand_sub(&mut s.bank, &owed[p]);
+            s.bank_pay(&owed[p]);
             sink.emit(Event::Produced {
                 player: p as PlayerId,
                 resources: owed[p],
