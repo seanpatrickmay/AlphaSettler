@@ -14,7 +14,12 @@ What differs from `train.train`, and why:
 - The learning rate warms up linearly over `warmup` steps, then follows a cosine over the
   wall-clock budget down to MIN_LR_FRACTION of its peak.
 - Batches are sampled on a background thread (the Rust sampler releases the GIL), so sampling
-  overlaps the GPU step."""
+  overlaps the GPU step.
+
+With `targets=2` (targets v2, spec 2026-10-11 Sections 4 and 5), the value target mixes in the
+search value q and the training-only heads (`extras.Extras`) train on the value rows. They are not
+in the weights file: `fast_train` writes them to the `sidecar` beside `out`, and a run with `init`
+continues from `init`'s sidecar (fresh heads, with a notice, if it has none)."""
 
 from __future__ import annotations
 
@@ -33,6 +38,7 @@ from alphasettler import files
 from alphasettler._engine import NET_DEFAULT_ROUNDS, NET_DEFAULT_WIDTH, NET_MAX_SAMPLE, TrainingSet
 from alphasettler.train import model as model_mod
 from alphasettler.train.data import Tensors, read_generation, to_tensors
+from alphasettler.train.extras import Extras
 from alphasettler.train.train import (
     EVAL_BATCH, _round, held_out_losses, losses, parity_check, pick_device,
 )
@@ -59,6 +65,7 @@ class FastConfig:
     eval_seconds: float = 60.0
     device: str = "auto"
     threads: int | None = None
+    targets: int = 1  # 2: targets v2, the z/q value mix and the training-only heads
 
     def check(self) -> None:
         if not (math.isfinite(self.minutes) and self.minutes > 0):
@@ -72,7 +79,38 @@ class FastConfig:
                 raise ValueError(f"{name} must be 1..={NET_MAX_SAMPLE}, got {getattr(self, name)}")
         if not (math.isfinite(self.eval_seconds) and self.eval_seconds > 0):
             raise ValueError(f"eval_seconds must be positive, got {self.eval_seconds}")
+        if self.targets not in (1, 2):
+            raise ValueError(f"targets must be 1 or 2, got {self.targets}")
         model_mod.check_arch(self.width, self.rounds)
+
+
+def sidecar(path: str | Path) -> Path:
+    """The training-only state beside the weights file `path`."""
+    return Path(str(path) + ".train.pt")
+
+
+def _load_sidecar(init: str | Path) -> dict | None:
+    """`init`'s sidecar, or None if it has none; ValueError if it is another net's."""
+    p = sidecar(init)
+    if not p.exists():
+        return None
+    side = torch.load(p, weights_only=True)
+    if side["bin_sha256"] != files.sha256_file(init):
+        raise ValueError(f"{p} is not the sidecar of {init} (sha256 mismatch)")
+    return side
+
+
+def _write_sidecar(out: Path, state: dict) -> None:
+    """`state` with `out`'s sha256 to `sidecar(out)`, temp then rename."""
+    path = sidecar(out)
+    tmp = files.temp_path(path)
+    try:
+        torch.save({"bin_sha256": files.sha256_file(out), **state}, tmp)
+        files.fsync_file(tmp)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    os.replace(tmp, path)
 
 
 @dataclass
@@ -170,30 +208,44 @@ def _to(t: Tensors, device: torch.device) -> Tensors:
 
 def fast_train(pool: Pool, out: str | Path, cfg: FastConfig, init: str | Path | None = None) -> dict:
     """Train for `cfg.minutes` of wall clock, write the weights with the best held-out score to
-    `out` (after the parity check) and its summary to `out` + ".json"; return the summary."""
+    `out` (after the parity check) and its summary to `out` + ".json"; return the summary. With
+    `cfg.targets == 2`, the training-only heads of that same evaluation go to `sidecar(out)`."""
     cfg.check()
     out = Path(out)
     device = pick_device(cfg.device)
     threads = cfg.threads or os.cpu_count() or 1
+    side = _load_sidecar(init) if init is not None and cfg.targets == 2 else None
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(cfg.seed)
         net = model_mod.load(init) if init is not None else model_mod.Net(cfg.width, cfg.rounds)
+        extras = Extras(net.width) if cfg.targets == 2 else None
+    if extras is not None:
+        if side is not None and side["extras"] is not None:
+            extras.load_state_dict(side["extras"])
+        elif init is not None:
+            print(f"notice: no sidecar for {init}; the training-only heads start fresh", flush=True)
+        extras.to(device).train()
     net.to(device).train()
-    opt = torch.optim.Adam(net.parameters(), lr=cfg.lr)
+    params = list(net.parameters()) + ([] if extras is None else list(extras.parameters()))
+    opt = torch.optim.Adam(params, lr=cfg.lr)
     evals = held_out(pool.validation, device, threads)
     rows = value_mask(cfg)
     history: list[dict] = []
-    best_score, best_row, best_state = math.inf, None, None
+    best_score, best_row, best_state, best_extras = math.inf, None, None, None
+
+    def snapshot(m: torch.nn.Module) -> dict:
+        return {k: v.detach().to("cpu", copy=True) for k, v in m.state_dict().items()}
 
     def evaluate(step: int, elapsed: float) -> None:
-        nonlocal best_score, best_row, best_state
-        h = held_out_losses(net, evals)
+        nonlocal best_score, best_row, best_state, best_extras
+        h = held_out_losses(net, evals, extras)
         row = {"step": step, "seconds": round(elapsed, 1), **{k: _round(v) for k, v in h.items()}}
         history.append(row)
         better = h["score"] < best_score
         if better:
             best_score, best_row = h["score"], row
-            best_state = {k: v.detach().to("cpu", copy=True) for k, v in net.state_dict().items()}
+            best_state = snapshot(net)
+            best_extras = None if extras is None else snapshot(extras)
         print(f"held out after {step} steps ({elapsed / 60:.1f} min): score {h['score']:.4f} "
               f"(policy {h['policy']:.4f}, value {h['value']:.4f}, aux {h['aux']:.5f}){', best' if better else ''}",
               flush=True)
@@ -210,7 +262,7 @@ def fast_train(pool: Pool, out: str | Path, cfg: FastConfig, init: str | Path | 
                 break
             for g in opt.param_groups:
                 g["lr"] = lr_at(cfg, step, elapsed)
-            parts = losses(net, _to(prefetch.get(), device), rows)
+            parts = losses(net, _to(prefetch.get(), device), rows, extras)
             opt.zero_grad()
             parts["total"].backward()
             opt.step()
@@ -232,7 +284,10 @@ def fast_train(pool: Pool, out: str | Path, cfg: FastConfig, init: str | Path | 
         tmp.unlink(missing_ok=True)
         raise
     os.replace(tmp, out)
-    summary = {"config": asdict(cfg), "init": None if init is None else str(init), "device": device.type,
+    if extras is not None:  # before the summary: fast-loop takes `out` with its summary as finished
+        _write_sidecar(out, {"extras": best_extras, "raw": None, "optimizer": None})
+    summary = {"config": asdict(cfg), "init": None if init is None else str(init), "targets": cfg.targets,
+               "device": device.type,
                "width": net.width, "rounds": net.rounds, "steps": step, "seconds": round(elapsed, 1),
                "steps_per_second": round(step / elapsed, 2),
                "policy_rows": step * cfg.policy_batch, "value_rows": step * cfg.value_batch,

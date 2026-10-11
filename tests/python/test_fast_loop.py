@@ -124,6 +124,41 @@ def test_cli_fast_loop_keeps_the_trading_setting_it_was_set_up_with(tmp_path):
     assert r.returncode == 2 and "without --trades" in r.stderr
 
 
+def test_a_targets_v2_loop_records_the_setting_and_carries_the_sidecar_between_generations(tmp_path, capsys):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    FastLoop.init(root, [seed], tmp_path / "start.bin", first=1, targets_v2=True)
+    loop = FastLoop(root, FastLoopSettings(generations=2, **TINY))
+    assert loop.targets == 2
+    assert loop.run() == 2
+    state = json.loads((root / STATE).read_text())
+    assert state["targets"] == 2
+    for k in (1, 2):
+        assert (root / "nets" / f"{gen_name(k)}.bin.train.pt").exists()
+    out = capsys.readouterr().out
+    first = out[out.index("gen-001: train"):out.index("gen-001: gate")]
+    second = out[out.index("gen-002: train"):out.index("gen-002: gate")]
+    assert "start fresh" in first, "start.bin has no sidecar"
+    assert "start fresh" not in second, "gen-002 continues from gen-001's sidecar"
+
+
+def test_cli_fast_loop_keeps_the_targets_setting_it_was_set_up_with(tmp_path):
+    root, _ = setup(tmp_path)  # set up without --targets-v2
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).targets == 1
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--targets-v2")
+    assert r.returncode == 2 and (f"{root} was set up without --targets-v2, and a loop keeps the setting it was "
+                                  f"set up with") in r.stderr, r.stderr
+
+
+def test_a_loop_set_up_before_targets_v2_reads_as_targets_1(tmp_path):
+    root, _ = setup(tmp_path)
+    state = json.loads((root / STATE).read_text())
+    del state["targets"]
+    (root / STATE).write_text(json.dumps(state))
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).targets == 1
+
+
 @pytest.mark.parametrize("trades", [True, False])
 def test_cli_fast_loop_records_the_trading_setting_of_a_new_loop(tmp_path, trades):
     seed = generation(tmp_path, "seed-gen", seed_start=0)

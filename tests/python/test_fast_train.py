@@ -1,16 +1,17 @@
 """Fast experiments (alphasettler/train/fast.py): the pool, the step batches, the schedule and a
 budgeted run. Needs the `train` extra, like test_train.py."""
 
+import dataclasses
 import json
 import math
 
 import pytest
 import torch
 
-from alphasettler import Bot
+from alphasettler import Bot, files
 from alphasettler.train.data import to_tensors
 from alphasettler.train.fast import (
-    MIN_LR_FRACTION, FastConfig, fast_train, load_pool, lr_at, score_net, step_batch, value_mask,
+    MIN_LR_FRACTION, FastConfig, fast_train, load_pool, lr_at, score_net, sidecar, step_batch, value_mask,
 )
 
 from test_train import cli, generation
@@ -91,3 +92,42 @@ def test_cli_fast_train_and_score(tmp_path):
     r = cli("fast-score", *map(str, gens), "--nets", str(out), "--device", "cpu")
     assert r.returncode == 0, r.stderr
     assert f"{out}: score" in r.stdout
+
+
+def test_a_targets_v2_run_writes_a_sidecar_that_the_next_run_continues_from(tmp_path):
+    pool = load_pool(tmp_path, two_gens(tmp_path))
+    cfg = dataclasses.replace(TINY, targets=2)
+    first = tmp_path / "a.bin"
+    s = fast_train(pool, first, cfg)
+    side = torch.load(sidecar(first), weights_only=True)
+    assert s["targets"] == 2 and side["bin_sha256"] == files.sha256_file(first)
+    assert side["extras"] and side["raw"] is None and side["optimizer"] is None
+    assert "extras_node" in s["best"]
+    second = tmp_path / "b.bin"
+    fast_train(pool, second, cfg, first)  # loads a.bin.train.pt
+    assert sidecar(second).exists()
+
+
+def test_a_sidecar_that_does_not_match_its_net_is_an_error(tmp_path):
+    pool = load_pool(tmp_path, two_gens(tmp_path))
+    cfg = dataclasses.replace(TINY, targets=2)
+    a, b = tmp_path / "a.bin", tmp_path / "b.bin"
+    fast_train(pool, a, cfg)
+    fast_train(pool, b, dataclasses.replace(cfg, seed=1))
+    sidecar(b).replace(sidecar(a))  # a's sidecar now names b's sha256
+    with pytest.raises(ValueError, match="sha256 mismatch"):
+        fast_train(pool, tmp_path / "c.bin", cfg, a)
+
+
+def test_targets_v2_from_a_net_without_a_sidecar_starts_fresh_heads(tmp_path, capsys):
+    pool = load_pool(tmp_path, two_gens(tmp_path))
+    a = tmp_path / "a.bin"
+    fast_train(pool, a, TINY)  # targets 1 writes no sidecar
+    assert not sidecar(a).exists()
+    fast_train(pool, tmp_path / "b.bin", dataclasses.replace(TINY, targets=2), a)
+    assert "training-only heads start fresh" in capsys.readouterr().out
+
+
+def test_targets_must_be_1_or_2():
+    with pytest.raises(ValueError):
+        dataclasses.replace(TINY, targets=3).check()

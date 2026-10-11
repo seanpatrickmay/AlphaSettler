@@ -164,6 +164,9 @@ def _parser() -> argparse.ArgumentParser:
     ft.add_argument("--eval-seconds", type=float, default=60.0, help="held-out evaluation interval")
     ft.add_argument("--device", default="auto", choices=["auto", "mps", "cpu"])
     ft.add_argument("--threads", type=_positive_int, default=None)
+    ft.add_argument("--targets-v2", action="store_true",
+                    help="targets v2: the z/q value mix and the training-only heads, kept in OUT.train.pt "
+                         "(and continued from INIT.train.pt)")
 
     fs = sub.add_parser("fast-score", help="held-out losses of weights files on a pool's held-out set (train extra)")
     fs.add_argument("records", nargs="+", help="generation directories to pool")
@@ -198,6 +201,8 @@ def _parser() -> argparse.ArgumentParser:
                          "net files and every net the loop promotes) and a style (roads, army, production)")
     fl.add_argument("--compound", action="store_true",
                     help="first run only: self-play and both gate sides search compound build moves (+c)")
+    fl.add_argument("--targets-v2", action="store_true",
+                    help="first run only: train with targets v2, the training-only heads carried between generations")
 
     nu = sub.add_parser("net-upgrade", help="rewrite an encoder v2 or v3 net for encoder v4, same moves")
     nu.add_argument("old", help="the encoder v2 or v3 weights file")
@@ -493,7 +498,8 @@ def _fast_train(args) -> int:
 
     cfg = FastConfig(minutes=args.minutes, lr=args.lr, warmup=args.warmup, policy_batch=args.policy_batch,
                      value_batch=args.value_batch, width=args.width, rounds=args.rounds, seed=args.seed,
-                     eval_seconds=args.eval_seconds, device=args.device, threads=args.threads)
+                     eval_seconds=args.eval_seconds, device=args.device, threads=args.threads,
+                     targets=2 if args.targets_v2 else 1)
     cfg.check()
     if args.init:
         model.load(args.init)  # a bad --init fails now, not after the pool is read
@@ -539,7 +545,8 @@ def _fast_loop(args) -> int:
             print("error: a new fast loop needs --seed-dirs, --start-net and --first", file=sys.stderr)
             return 2
         FastLoop.init(root, args.seed_dirs, args.start_net, args.first, trades=args.trades,
-                      gumbel=args.gumbel, opening=args.opening, league=args.league, compound=args.compound)
+                      gumbel=args.gumbel, opening=args.opening, league=args.league, compound=args.compound,
+                      targets_v2=args.targets_v2)
     s = FastLoopSettings(generations=args.generations, games=args.games, window_games=args.window_games,
                          minutes=args.minutes, lr=args.lr, gate_seeds=args.gate_seeds,
                          gate_simulations=args.gate_simulations, device=args.device, threads=args.threads, opening=args.opening)
@@ -550,6 +557,10 @@ def _fast_loop(args) -> int:
         return 2
     if args.compound and not loop.compound:
         print(f"error: {root} was set up without --compound, and a loop keeps the setting it was set up with",
+              file=sys.stderr)
+        return 2
+    if args.targets_v2 and loop.targets != 2:
+        print(f"error: {root} was set up without --targets-v2, and a loop keeps the setting it was set up with",
               file=sys.stderr)
         return 2
     error = mode_mismatch(root, loop.gumbel, args.gumbel)
