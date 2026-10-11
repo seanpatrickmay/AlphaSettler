@@ -23,7 +23,7 @@ pub const NODE_CLASSES: usize = 9;
 pub const EDGE_CLASSES: usize = 5;
 /// Final settlements, cities and VP cards held are counts / these.
 pub const PART_DENS: [f32; 3] = [5.0, 4.0, 5.0];
-/// Most positions one `sample` call returns (about 9.7 KB each, so about 640 MB).
+/// Most positions one `sample` call returns (about 12.3 KB each, so about 810 MB).
 pub const MAX_SAMPLE: usize = 1 << 16;
 /// How far a recorded `target` may sum from 1.
 pub const TARGET_TOLERANCE: f64 = 1e-4;
@@ -220,6 +220,7 @@ impl Batch {
         self.holders.push(holder(f.road, actor));
         self.holders.push(holder(f.army, actor));
         // A decision's turn is never past the final turn.
+        debug_assert!(s.turn <= f.turn);
         self.turns_left
             .push(f.turn.saturating_sub(s.turn) as f32 / TURNS_DEN);
         self.n += 1;

@@ -79,6 +79,8 @@ def test_the_batch_carries_the_final_state_targets_with_their_shapes(tmp_path):
     assert t.parts.shape == (32, 12) and t.holders.shape == (32, 2) and t.turns_left.shape == (32,)
     assert (t.turns_left >= 0).all()
     assert (t.own_node > 0).any(), "finished games have buildings"
+    assert t.own_node.dtype == t.own_edge.dtype == t.holders.dtype == torch.long
+    assert t.parts.dtype == t.turns_left.dtype == torch.float32
 
 
 def test_net_self_play_records_the_net_and_its_hash(tmp_path):

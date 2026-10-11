@@ -117,9 +117,25 @@ fn final_state(g: &RecordedGame) -> State {
 
 #[test]
 fn final_ownership_parts_holders_and_turns_left_are_seat_relative() {
-    for (seed, config) in [(1, decided()), (7, drawn())] {
+    // Seed 11 of a full no-trade game ends with Longest Road at seat 2, Largest Army at seat 3
+    // and VP cards [1, 1, 0, 3], so the holders and the VP-card parts are checked non-zero.
+    for (seed, config, awards) in [
+        (1, decided(), false),
+        (7, drawn(), false),
+        (11, no_trades(), true),
+    ] {
         let g = recorded(seed, config);
         let f = final_state(&g);
+        if awards {
+            assert_eq!(
+                (f.longest_road_owner, f.largest_army_owner),
+                (Some(2), Some(3))
+            );
+            let vp_cards: Vec<u8> = (0..NUM_PLAYERS)
+                .map(|p| f.players[p].dev_hand[DevCard::VictoryPoint.index()])
+                .collect();
+            assert_eq!(vp_cards, vec![1, 1, 0, 3]);
+        }
         let set = TrainingSet::new(vec![g.clone()]).unwrap();
         let mut actors = [false; NUM_PLAYERS];
         for (k, d) in g.decisions.iter().enumerate() {
