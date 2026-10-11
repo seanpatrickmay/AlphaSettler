@@ -159,6 +159,43 @@ def test_a_loop_set_up_before_targets_v2_reads_as_targets_1(tmp_path):
     assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).targets == 1
 
 
+def test_an_ema_loop_records_the_setting_and_trains_at_the_constant_rate(tmp_path):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    r = cli("fast-loop", "--dir", str(root), "--generations", "2", "--first", "1", "--targets-v2", "--ema",
+            "--seed-dirs", str(seed), "--start-net", str(tmp_path / "start.bin"), "--games", "2",
+            "--window-games", "3", "--minutes", "0.01", "--gate-seeds", "1", "--gate-simulations", "6",
+            "--device", "cpu", "--threads", "2")
+    assert r.returncode == 0, r.stderr
+    state = json.loads((root / STATE).read_text())
+    assert state["ema"] is True and state["targets"] == 2
+    summaries = [json.loads((root / gen_name(k) / "net.bin.json").read_text()) for k in (1, 2)]
+    for s in summaries:
+        assert s["config"]["lr"] == 2.5e-4 and s["config"]["ema"] is True
+    assert summaries[0]["warmup_skipped"] is False, "start.bin has no Adam state"
+    assert summaries[1]["warmup_skipped"] is True, "gen-002 continues gen-001's Adam"
+    for k in (1, 2):
+        assert (root / "nets" / f"{gen_name(k)}.bin.train.pt").exists()
+
+
+def test_cli_fast_loop_keeps_the_ema_setting_it_was_set_up_with(tmp_path):
+    root, _ = setup(tmp_path)  # set up without --ema
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).ema is False
+    assert json.loads((root / STATE).read_text())["ema"] is False
+    r = cli("fast-loop", "--dir", str(root), "--generations", "0", "--ema")
+    assert r.returncode == 2 and (f"{root} was set up without --ema, and a loop keeps the setting it was "
+                                  f"set up with") in r.stderr, r.stderr
+
+
+def test_a_loop_set_up_before_ema_reads_as_without_it(tmp_path):
+    root, _ = setup(tmp_path)
+    state = json.loads((root / STATE).read_text())
+    del state["ema"]
+    (root / STATE).write_text(json.dumps(state))
+    assert FastLoop(root, FastLoopSettings(generations=0, **TINY)).ema is False
+
+
 @pytest.mark.parametrize("trades", [True, False])
 def test_cli_fast_loop_records_the_trading_setting_of_a_new_loop(tmp_path, trades):
     seed = generation(tmp_path, "seed-gen", seed_start=0)

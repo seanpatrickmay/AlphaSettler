@@ -19,10 +19,17 @@ What differs from `train.train`, and why:
 With `targets=2` (targets v2, spec 2026-10-11 Sections 4 and 5), the value target mixes in the
 search value q and the training-only heads (`extras.Extras`) train on the value rows. They are not
 in the weights file: `fast_train` writes them to the `sidecar` beside `out`, and a run with `init`
-continues from `init`'s sidecar (fresh heads, with a notice, if it has none)."""
+continues from `init`'s sidecar (fresh heads, with a notice, if it has none).
+
+With `ema` (spec 2026-10-11 Section 6), the learning rate is a constant `lr` after the warmup, an
+exponential moving average of the weights (EMA_DECAY per step) is what held-out evaluation scores and
+what is exported (its best evaluation), and the sidecar carries the final step's raw weights, heads and
+Adam state. A run with `init` continues the raw net, the heads and Adam from `init`'s sidecar (skipping
+the warmup when it has Adam state) and starts the average from `init` itself, the previous average."""
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import os
@@ -50,6 +57,10 @@ EVAL_SEED = 0xFA57
 PREFETCH = 4
 # XORed into each step's seed for the value rows, so they never share a draw with the policy rows.
 VALUE_SEED_SALT = 0x7A1E << 48
+# `ema` (spec 2026-10-11 Section 6): the average's per-step decay (a horizon of about 5,000 steps) and
+# the constant learning rate fast-loop trains at, about the mean of the cosine it replaces.
+EMA_DECAY = 0.9998
+EMA_LR = 2.5e-4
 
 
 @dataclass(frozen=True)
@@ -66,6 +77,7 @@ class FastConfig:
     device: str = "auto"
     threads: int | None = None
     targets: int = 1  # 2: targets v2, the z/q value mix and the training-only heads
+    ema: bool = False  # export a weight average; a constant lr; raw weights and Adam carried in the sidecar
 
     def check(self) -> None:
         if not (math.isfinite(self.minutes) and self.minutes > 0):
@@ -95,7 +107,7 @@ def _load_sidecar(init: str | Path) -> dict | None:
     if not p.exists():
         return None
     side = torch.load(p, weights_only=True)
-    if side["bin_sha256"] != files.sha256_file(init):
+    if side.get("bin_sha256") != files.sha256_file(init):
         raise ValueError(f"{p} is not the sidecar of {init} (sha256 mismatch)")
     return side
 
@@ -138,8 +150,11 @@ def load_pool(root: str | Path, gen_dirs: list[Path]) -> Pool:
     return Pool(train_set, validation, read, notices)
 
 
-def lr_at(cfg: FastConfig, step: int, elapsed: float) -> float:
-    """Linear warmup over `cfg.warmup` steps, then a cosine over the budget to MIN_LR_FRACTION."""
+def lr_at(cfg: FastConfig, step: int, elapsed: float, warm: bool = True) -> float:
+    """Linear warmup over `cfg.warmup` steps, then a cosine over the budget to MIN_LR_FRACTION. With
+    `cfg.ema`, the warmup (only when `warm`) then the constant `cfg.lr`."""
+    if cfg.ema:
+        return cfg.lr * (step + 1) / cfg.warmup if warm and step < cfg.warmup else cfg.lr
     if step < cfg.warmup:
         return cfg.lr * (step + 1) / cfg.warmup
     frac = min(1.0, elapsed / (cfg.minutes * 60))
@@ -206,28 +221,60 @@ def _to(t: Tensors, device: torch.device) -> Tensors:
     return Tensors(**{k: v.to(device, non_blocking=True) for k, v in vars(t).items()})
 
 
+def _cpu(x):
+    """`x` (a state dict, nested) with every tensor copied to the CPU."""
+    if isinstance(x, torch.Tensor):
+        return x.detach().to("cpu", copy=True)
+    if isinstance(x, dict):
+        return {k: _cpu(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return type(x)(_cpu(v) for v in x)
+    return x
+
+
 def fast_train(pool: Pool, out: str | Path, cfg: FastConfig, init: str | Path | None = None) -> dict:
     """Train for `cfg.minutes` of wall clock, write the weights with the best held-out score to
     `out` (after the parity check) and its summary to `out` + ".json"; return the summary. With
-    `cfg.targets == 2`, the training-only heads of that same evaluation go to `sidecar(out)`."""
+    `cfg.targets == 2`, the training-only heads of that same evaluation go to `sidecar(out)`. With
+    `cfg.ema`, the weights are the average's best and the sidecar holds the final step's raw net,
+    heads and Adam state."""
     cfg.check()
     out = Path(out)
     device = pick_device(cfg.device)
     threads = cfg.threads or os.cpu_count() or 1
-    side = _load_sidecar(init) if init is not None and cfg.targets == 2 else None
+    side = _load_sidecar(init) if init is not None and (cfg.targets == 2 or cfg.ema) else None
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(cfg.seed)
         net = model_mod.load(init) if init is not None else model_mod.Net(cfg.width, cfg.rounds)
         extras = Extras(net.width) if cfg.targets == 2 else None
+    average = None
+    if cfg.ema:
+        average = copy.deepcopy(net)  # init's weights (the previous average), or the fresh raw net
+        average.requires_grad_(False)
+        average.to(device).train()
+        if side is not None and side.get("raw") is not None:
+            net.load_state_dict(side["raw"])
     if extras is not None:
-        if side is not None and side["extras"] is not None:
+        if side is not None and side.get("extras") is not None:
             extras.load_state_dict(side["extras"])
+        elif side is not None:
+            print(f"notice: {sidecar(init)} has no training-only heads; the training-only heads start fresh",
+                  flush=True)
         elif init is not None:
             print(f"notice: no sidecar for {init}; the training-only heads start fresh", flush=True)
         extras.to(device).train()
     net.to(device).train()
     params = list(net.parameters()) + ([] if extras is None else list(extras.parameters()))
     opt = torch.optim.Adam(params, lr=cfg.lr)
+    warm = True
+    if cfg.ema and side is not None and side.get("optimizer") is not None:
+        try:
+            opt.load_state_dict(side["optimizer"])  # its state moves to each parameter's device
+        except ValueError as e:
+            raise ValueError(f"{sidecar(init)}'s Adam state does not fit this run's parameters "
+                             f"(trained with another targets setting?): {e}") from e
+        warm = False
+    scored = net if average is None else average
     evals = held_out(pool.validation, device, threads)
     rows = value_mask(cfg)
     history: list[dict] = []
@@ -238,13 +285,13 @@ def fast_train(pool: Pool, out: str | Path, cfg: FastConfig, init: str | Path | 
 
     def evaluate(step: int, elapsed: float) -> None:
         nonlocal best_score, best_row, best_state, best_extras
-        h = held_out_losses(net, evals, extras)
+        h = held_out_losses(scored, evals, extras)
         row = {"step": step, "seconds": round(elapsed, 1), **{k: _round(v) for k, v in h.items()}}
         history.append(row)
         better = h["score"] < best_score
         if better:
             best_score, best_row = h["score"], row
-            best_state = snapshot(net)
+            best_state = snapshot(scored)
             best_extras = None if extras is None else snapshot(extras)
         print(f"held out after {step} steps ({elapsed / 60:.1f} min): score {h['score']:.4f} "
               f"(policy {h['policy']:.4f}, value {h['value']:.4f}, aux {h['aux']:.5f}){', best' if better else ''}",
@@ -261,11 +308,15 @@ def fast_train(pool: Pool, out: str | Path, cfg: FastConfig, init: str | Path | 
             if elapsed >= budget:
                 break
             for g in opt.param_groups:
-                g["lr"] = lr_at(cfg, step, elapsed)
+                g["lr"] = lr_at(cfg, step, elapsed, warm)
             parts = losses(net, _to(prefetch.get(), device), rows, extras)
             opt.zero_grad()
             parts["total"].backward()
             opt.step()
+            if average is not None:
+                with torch.no_grad():
+                    for ema_p, p in zip(average.parameters(), net.parameters()):
+                        ema_p.mul_(EMA_DECAY).add_(p.detach(), alpha=1 - EMA_DECAY)
             step += 1
             if elapsed >= next_eval:
                 evaluate(step, elapsed)
@@ -274,20 +325,24 @@ def fast_train(pool: Pool, out: str | Path, cfg: FastConfig, init: str | Path | 
         prefetch.close()
     elapsed = time.monotonic() - start
     evaluate(step, elapsed)
-    net.load_state_dict(best_state)
+    final = None if average is None else {"extras": None if extras is None else snapshot(extras),
+                                           "raw": snapshot(net), "optimizer": _cpu(opt.state_dict())}
+    scored.load_state_dict(best_state)
     tmp = files.temp_path(out)
     try:
-        tmp.write_bytes(model_mod.to_bytes(net))
-        err = parity_check(net, tmp, pool.train)
+        tmp.write_bytes(model_mod.to_bytes(scored))
+        err = parity_check(scored, tmp, pool.train)
         files.fsync_file(tmp)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
     os.replace(tmp, out)
-    if extras is not None:  # before the summary: fast-loop takes `out` with its summary as finished
+    if final is not None:  # before the summary: fast-loop takes `out` with its summary as finished
+        _write_sidecar(out, final)
+    elif extras is not None:
         _write_sidecar(out, {"extras": best_extras, "raw": None, "optimizer": None})
     summary = {"config": asdict(cfg), "init": None if init is None else str(init), "targets": cfg.targets,
-               "device": device.type,
+               "ema": cfg.ema, "warmup_skipped": not warm, "device": device.type,
                "width": net.width, "rounds": net.rounds, "steps": step, "seconds": round(elapsed, 1),
                "steps_per_second": round(step / elapsed, 2),
                "policy_rows": step * cfg.policy_batch, "value_rows": step * cfg.value_batch,
