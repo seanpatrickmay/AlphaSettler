@@ -11,7 +11,7 @@ from jsettlers_harness import require
 from oracle.jsettlers import actions as A
 from oracle.jsettlers import diff
 from oracle.jsettlers import tables as T
-from oracle.jsettlers.arena import FALLBACK_REASONS, RECORD_KEYS, check, kept, play_game, run_match, run_workers
+from oracle.jsettlers.arena import FALLBACK_REASONS, RECORD_KEYS, _worker, check, kept, play_game, run_match, run_workers
 from oracle.jsettlers.boards import first_player, js_layout, native_board, normalized
 from oracle.jsettlers.jvm import Jvm
 from test_jsettlers_events import Script
@@ -261,6 +261,24 @@ def test_one_broken_worker_stops_every_worker_at_once(broken, match):
         run_workers(dispatch, [("slow",), (work.__name__, *args)], on_record=got.append, poll=0.1)
     assert time.monotonic() - t < 8
     assert len([r for r in got if not r.get("slow")]) == 2
+
+
+def test_a_worker_whose_parent_is_gone_stops_after_the_game_in_hand():
+    # A killed parent never runs its cleanup; the worker sees it is no longer its parent's child and stops
+    # instead of playing every game of its chunk as an orphan.
+    import queue as q_
+
+    q, played = q_.Queue(), []
+
+    def games():
+        for n in range(3):
+            played.append(n)
+            yield {"seed": n}
+
+    with pytest.raises(SystemExit) as e:
+        _worker(0, q, games, (), parent=-1)
+    assert e.value.code == 1 and played == [0]
+    assert q.get_nowait()[0] == "error" and q.empty()  # the game in hand is not sent; nobody is left to take it
 
 
 def dispatch(name, *args):

@@ -13,6 +13,9 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 import queue
+import signal
+import sys
+import threading
 import time
 from collections import Counter
 from pathlib import Path
@@ -539,11 +542,14 @@ def _games(jobs, candidate, nets_dir, trades, aligned, native_boards, max_turns,
             yield play_game(jvm, s, k, candidate, nets_dir, trades, arm, native_boards, max_turns)
 
 
-def _worker(i: int, q, work, args) -> None:
+def _worker(i: int, q, work, args, parent: int | None = None) -> None:
     """A worker process: each record of `work(*args)` goes to `q` as it is made, then ("done", i); a failure
-    goes as ("error", i, its text) and the process exits 1."""
+    goes as ("error", i, its text) and the process exits 1. A worker whose parent `parent` is gone (killed,
+    so its cleanup never ran) stops after the game in hand rather than playing on as an orphan."""
     try:
         for r in work(*args):
+            if parent is not None and os.getppid() != parent:
+                raise SystemExit("the parent process is gone")
             q.put(("record", i, r))
     except BaseException as e:  # noqa: BLE001 - reported to the parent, which stops every worker
         q.put(("error", i, f"{type(e).__name__}: {e}"))
@@ -558,7 +564,8 @@ def run_workers(work, arglists: list[tuple], on_record=None, poll: float = POLL)
     dead one)."""
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
-    procs = [ctx.Process(target=_worker, args=(i, q, work, a), daemon=True) for i, a in enumerate(arglists)]
+    procs = [ctx.Process(target=_worker, args=(i, q, work, a, os.getpid()), daemon=True)
+             for i, a in enumerate(arglists)]
     finished, records = [False] * len(procs), []
 
     def take(m) -> None:
@@ -572,6 +579,9 @@ def run_workers(work, arglists: list[tuple], on_record=None, poll: float = POLL)
             if on_record is not None:
                 on_record(x)
 
+    # A plain `kill` (SIGTERM) of a long arm runs the cleanup below like an exception would.
+    on_main = threading.current_thread() is threading.main_thread()
+    old_term = signal.signal(signal.SIGTERM, lambda *_: sys.exit(143)) if on_main else None
     try:
         for p in procs:
             p.start()
@@ -594,10 +604,14 @@ def run_workers(work, arglists: list[tuple], on_record=None, poll: float = POLL)
                     raise RuntimeError(f"worker {i} (pid {procs[i].pid}) exited with code {procs[i].exitcode} "
                                        f"before its games were done")
     finally:
+        if on_main:
+            signal.signal(signal.SIGTERM, old_term)
         for p in procs:
             if p.is_alive():
                 p.terminate()  # its JVM exits when its stdin closes
         for p in procs:
+            if p.pid is None:  # never started (startup was interrupted)
+                continue
             p.join(10)
             if p.is_alive():
                 p.kill()

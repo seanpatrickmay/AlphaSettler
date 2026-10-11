@@ -15,7 +15,7 @@ ancestors() {
   done
 }
 
-busy=$(pgrep -f "arm.sh|\.venv/bin/alphasettler|cargo|rustc|maturin|pytest|net_speed|oracle\.play" \
+busy=$(pgrep -f "arm\.sh|\.venv/bin/alphasettler|cargo (build|test|run|bench|clippy)|rustc |maturin|pytest|net_speed|oracle\.play" \
   | grep -vxF -f <(ancestors) || true)
 if [ -n "$busy" ]; then
   ps -o pid=,command= -p "$(echo "$busy" | paste -sd, -)" | cut -c1-160 >&2
@@ -23,6 +23,6 @@ if [ -n "$busy" ]; then
   exit 1
 fi
 pmset -g batt | head -1 | grep -q "AC Power" || { echo "on battery: the arms start on AC only" >&2; exit 1; }
-ioreg -r -k AppleClamshellState | grep -q '"AppleClamshellState" = No' \
+ioreg -r -k AppleClamshellState | grep '"AppleClamshellState" = No' >/dev/null \
   || { echo "lid closed: the arms start with the lid open (a clamshell sleep voided arm F of 3d-4)" >&2; exit 1; }
 echo idle
