@@ -623,3 +623,29 @@ def test_a_compound_league_loop_keeps_its_pool_names_plain(tmp_path):
     assert loop.compound is True
     assert loop.league_pool() == {"nets": ["net:league-000@100+t"],
                                   "styles": [f"style:{s}@100+t" for s in LEAGUE_STYLES]}
+
+
+def test_a_targets_v2_generation_trained_without_its_sidecar_is_trained_again_on_resume(tmp_path, monkeypatch,
+                                                                                        capsys):
+    seed = generation(tmp_path, "seed-gen", seed_start=0)
+    save(Net(8, 1), tmp_path / "start.bin")
+    root = tmp_path / "loop"
+    FastLoop.init(root, [seed], tmp_path / "start.bin", first=1, targets_v2=True)
+    gate = FastLoop._gate
+
+    def crash(*args):
+        raise KeyboardInterrupt("stopped before the gate")
+
+    monkeypatch.setattr(FastLoop, "_gate", crash)
+    for _ in range(2):  # trained, then resumed with the sidecar there: not trained again
+        with pytest.raises(KeyboardInterrupt):
+            FastLoop(root, FastLoopSettings(generations=1, **TINY)).run()
+    assert capsys.readouterr().out.count(" steps from ") == 1
+    gdir = root / gen_name(1)
+    assert (gdir / "net.bin").exists() and (gdir / "net.bin.json").exists()
+    (gdir / "net.bin.train.pt").unlink()
+    (root / "nets" / f"{gen_name(1)}.bin.train.pt").unlink()
+    monkeypatch.setattr(FastLoop, "_gate", gate)
+    assert FastLoop(root, FastLoopSettings(generations=1, **TINY)).run() == 1
+    assert " steps from " in capsys.readouterr().out, "no sidecar: the generation trains again"
+    assert (gdir / "net.bin.train.pt").exists() and (root / "nets" / f"{gen_name(1)}.bin.train.pt").exists()

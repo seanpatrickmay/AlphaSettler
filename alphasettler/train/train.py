@@ -172,7 +172,7 @@ def value_rows(n: int, seed: int, step: int) -> torch.Tensor:
 def losses(net: model_mod.Net, t: Tensors, value_rows: torch.Tensor | None = None,
            extras: Extras | None = None) -> dict[str, torch.Tensor]:
     """Spec Section 4: policy cross-entropy over full-search rows only, value cross-entropy and
-    AUX_WEIGHT x MSE(aux, final VP / 10) over the `value_rows` only (bool mask; None: every row),
+    AUX_WEIGHT x MSE(aux, final VP / 10) over the `value_rows` only (bool mask or integer index; None: every row),
     and L2 x the squared weights (biases excluded).
 
     With `extras` (targets v2, spec 2026-10-11 Sections 3 and 4): the value target on rows with q
@@ -185,6 +185,20 @@ def losses(net: model_mod.Net, t: Tensors, value_rows: torch.Tensor | None = Non
         node, edge, tile, glob, pooled, v = net.trunk(t.public, t.hidden)
         logits, value, aux = net.heads(node, edge, tile, glob, pooled, v)
         out = extras(node, edge, glob, v)
+    return _losses(net, t, logits, value, aux, out, value_rows)
+
+
+def _row_index(value_rows: torch.Tensor, device: torch.device) -> torch.Tensor:
+    """`value_rows` as an integer index on `device`: a bool mask becomes one on the CPU first, as
+    indexing with a bool mask on MPS syncs the device on every index op."""
+    if value_rows.dtype == torch.bool:
+        value_rows = value_rows.to("cpu").nonzero().squeeze(1)
+    return value_rows.to(device)
+
+
+def _losses(net: model_mod.Net, t: Tensors, logits: torch.Tensor, value: torch.Tensor, aux: torch.Tensor,
+            out: dict | None, value_rows: torch.Tensor | None) -> dict[str, torch.Tensor]:
+    """`losses` from the heads' outputs and the extras' (`out`, None without extras)."""
     # -1e9, not -inf: the target is 0 off the mask, and 0 x -1e9 is 0 where 0 x -inf is NaN.
     logp = torch.log_softmax(logits.masked_fill(~t.mask, -1e9), dim=1)
     per_position = -(t.policy * logp).sum(dim=1)
@@ -194,7 +208,7 @@ def losses(net: model_mod.Net, t: Tensors, value_rows: torch.Tensor | None = Non
         outcome = torch.where(t.has_q[:, None] > 0, (1 - Q_MIX) * t.outcome + Q_MIX * t.q, t.outcome)
         targets = SimpleNamespace(**{k: getattr(t, k) for k in _EXTRAS_FIELDS})
     if value_rows is not None:
-        rows = value_rows.to(value.device)
+        rows = _row_index(value_rows, value.device)
         value, aux, outcome, vp = value[rows], aux[rows], outcome[rows], vp[rows]
         if out is not None:
             out = {k: x[rows] for k, x in out.items()}
@@ -229,10 +243,17 @@ def held_out_losses(net: model_mod.Net, batches: list[Tensors], extras: Extras |
     for m in modules:
         m.eval()
     with torch.no_grad():
-        parts = [losses(net, t) for t in batches]
-        if extras is not None:
-            for p, t in zip(parts, batches):
-                p.update({k: x for k, x in losses(net, t, None, extras).items() if k.startswith("extras")})
+        if extras is None:
+            parts = [losses(net, t) for t in batches]
+        else:
+            parts = []
+            for t in batches:
+                node, edge, tile, glob, pooled, v = net.trunk(t.public, t.hidden)
+                logits, value, aux = net.heads(node, edge, tile, glob, pooled, v)
+                p = _losses(net, t, logits, value, aux, None, None)
+                targets = SimpleNamespace(**{k: getattr(t, k) for k in _EXTRAS_FIELDS})
+                p.update(extras_losses(extras(node, edge, glob, v), targets))
+                parts.append(p)
     for m, mode in zip(modules, was_training):
         m.train(mode)
     keys = [k for k in parts[0] if k in ("policy", "value", "aux") or k.startswith("extras")]

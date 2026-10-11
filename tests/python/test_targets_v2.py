@@ -75,6 +75,20 @@ def test_held_out_value_is_scored_against_z_even_with_extras(tmp_path):
     plain, with_extras = held_out_losses(net, [t]), held_out_losses(net, [t], ex)
     assert with_extras["value"] == plain["value"] and with_extras["score"] == plain["score"]
     assert "extras_node" in with_extras and "extras_node" not in plain
+    net.eval(); ex.eval()
+    with torch.no_grad():
+        assert with_extras["extras_node"] == losses(net, t, None, ex)["extras_node"].item()
+
+
+def test_a_bool_mask_and_its_integer_index_give_equal_losses(tmp_path):
+    torch.manual_seed(0)
+    net, ex = model_mod.Net(8, 1), Extras(8)
+    t = batch(tmp_path)
+    t.has_q = (torch.arange(t.has_q.shape[0]) % 2).float()
+    mask = torch.arange(t.has_q.shape[0]) % 3 == 0
+    for e in (None, ex):
+        by_mask, by_index = losses(net, t, mask, e), losses(net, t, mask.nonzero().squeeze(1), e)
+        assert set(by_mask) == set(by_index) and all(torch.equal(by_mask[k], by_index[k]) for k in by_mask)
 
 
 def test_value_rows_select_the_rows_of_the_value_and_extra_losses(tmp_path):

@@ -367,7 +367,12 @@ fn game_dict<'py>(
             e.set_item("target", t.clone())?;
         }
         if let Some(q) = &dec.q {
-            e.set_item("q", q.to_vec())?;
+            // Six places: an f32's full double repr would make the record files ~3x bigger.
+            let q: Vec<f64> = q
+                .iter()
+                .map(|&x| ((x as f64) * 1e6).round() / 1e6)
+                .collect();
+            e.set_item("q", q)?;
         }
         if observations {
             while applied < dec.index as usize {

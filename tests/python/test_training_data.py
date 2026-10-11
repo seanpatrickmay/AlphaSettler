@@ -58,6 +58,7 @@ def test_self_play_records_q_and_the_batch_carries_it_seat_relative(tmp_path):
     for g in games:
         for d in g["decisions"]:
             assert len(d["q"]) == 4 and abs(sum(d["q"]) - 1) < 1e-3
+            assert all(round(x, 6) == x for x in d["q"]), d["q"]  # six places, not an f32's full repr
     ts = TrainingSet(games)
     t = to_tensors(ts.sample(64, 0, 1), torch.device("cpu"))
     assert t.has_q.eq(1).all()

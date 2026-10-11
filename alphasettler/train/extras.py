@@ -28,7 +28,8 @@ class Extras(nn.Module):
         s = self.scalar(v)
         return {"node": self.node(torch.cat([node, g.expand(-1, NODES, -1)], 2)),
                 "edge": self.edge(torch.cat([edge, g.expand(-1, EDGES, -1)], 2)),
-                "parts": s[:, :PARTS], "road": s[:, PARTS:PARTS + 5], "army": s[:, PARTS + 5:PARTS + 10],
+                "parts": s[:, :PARTS], "road": s[:, PARTS:PARTS + HOLDER_CLASSES],
+                "army": s[:, PARTS + HOLDER_CLASSES:PARTS + 2 * HOLDER_CLASSES],
                 "turns": s[:, -1]}
 
 

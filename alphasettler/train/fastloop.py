@@ -290,7 +290,9 @@ class FastLoop:
 
         out = gdir / "net.bin"
         summary_path = Path(str(out) + ".json")
-        if not (out.exists() and summary_path.exists()):
+        # With targets 2 or ema the sidecar carries the heads (and Adam) on: without it, retrain.
+        carried = self.targets == 2 or self.ema
+        if not (out.exists() and summary_path.exists() and (not carried or sidecar(out).exists())):
             dirs = self.window(gdir, games)
             pool = load_pool(Path(os.path.commonpath([str(d.parent) for d in dirs])), dirs)
             for line in pool.notices:
