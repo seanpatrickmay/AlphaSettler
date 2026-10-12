@@ -27,6 +27,30 @@ true floor. Uniform is 1.386.
 The value head sits 0.07 to 0.08 nats above the floor, and the gap is largest after turn 60. Late-game misreads are
 the biggest error, which the VP-parts and turns-left aux targets aim at.
 
+## D5: learning curve (`runs/diag/learning-curve.sh`)
+
+48/2 nets trained from scratch for 45 minutes each (about 102,000 steps) with the old targets, on the newest 4k to
+54k self-play games: L's generations newest first, then arm A's, then 3c's. Every net is scored on one fixed
+held-out set, the 400 held-out games of L's gen-053..056 (`runs/diag/curve/score.log`). T was scored on the same
+set afterwards (`runs/diag/curve/score-T.log`).
+
+| net | games | score | policy | value | aux |
+|---|---|---|---|---|---|
+| scratch | 4k | 2.8280 | 1.8238 | 1.0042 | 0.0387 |
+| scratch | 8k | 2.7915 | 1.8199 | 0.9716 | 0.0372 |
+| scratch | 16k | 2.7705 | 1.8165 | 0.9540 | 0.0364 |
+| scratch | 32k | 2.7727 | 1.8176 | 0.9551 | 0.0363 |
+| scratch | 54k | 2.7768 | 1.8215 | 0.9553 | 0.0365 |
+| A (gen-040) | | 2.7914 | 1.8382 | 0.9532 | 0.0362 |
+| L (gen-056) | | 2.7534 | 1.8103 | 0.9431 | 0.0359 |
+| T (gen-056) | | 2.7687 | 1.8136 | 0.9550 | 0.0361 |
+
+The curve is flat from 16k games on. At this net size and budget, more games of the same kind do not lower the
+loss, so the targets, not the amount of data, were the limit. That matches T's gain and L's H0.
+
+Held-out loss does not predict playing strength here. L scores best on its own games, and T scores worse on value
+because it trains toward the z/q mix. But T is the one that beats A.
+
 ## Arm T: `--targets-v2` (done criterion 2)
 
 `runs/tv2/T`. Each generation: 2000 self-play games, 10 minutes of training, a gate of 400 games against the best
@@ -82,5 +106,7 @@ fast loops.
 
 - **Ruling:** D5 runs between T's SPRT and arm E, not beside T. Its trainings are timed and must not share the
   machine. If wrong, about 4 hours later for E.
+- **Ruling:** T was scored on D5's held-out set by hand, during arm E's first self-play phase, outside the timed
+  training. The spec's D5 lists only A and L. If wrong, a 17-second slowdown of one self-play phase.
 - **Ruling:** T's held-out scores are not read as a regression. They are scored on T's own newest games and against
   z only, while T trains toward the z/q mix. If wrong, the SPRT would have caught a weaker net, and it did not.

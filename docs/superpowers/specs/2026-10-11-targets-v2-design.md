@@ -22,6 +22,13 @@ The diagnostics live in `runs/diag/`. This section is filled in when they finish
 - **D1, value noise floor** (`noise_floor.py`): the excess cross-entropy of A's and L's value heads over the empirical winner distribution of 48 continuations, by turn bucket.
 - **D5, learning curve** (`learning-curve.sh`): held-out loss of from-scratch nets trained on 4k to 54k games.
 
+**Results** (tables in `docs/bot/results-targets-v2.md`):
+- **D1:** A's value head is 0.079 nats over the floor, L's 0.068. The gap is largest after turn 60 (+0.107).
+- **D5:** the held-out score is flat from 16k games (2.771) to 54k (2.777).
+
+Neither the value head's distance from the floor nor more data explains the plateau on its own. That leaves the
+targets, which arm T then confirmed.
+
 ## 2. Done criteria
 
 1. **Tests.** Each stage has its own tests, all passing, and so does the whole existing suite: `cargo test`, `pytest`.
